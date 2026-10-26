@@ -1,0 +1,13 @@
+# Keep sqlite in the Cloud Build context (needed by Dockerfile).
+# Ignore only heavy / irrelevant local artifacts.
+node_modules/
+.git/
+.DS_Store
+*.log
+.env
+.env.local
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/

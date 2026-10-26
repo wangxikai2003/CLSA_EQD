@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+.env.local
+.DS_Store
+*.pyc
+__pycache__/
+.venv/
+venv/
+# SQLite is too large for GitHub (>100MB). Ship via local Cloud Run --source deploy.
+data/*.sqlite
+data/*.sqlite-*
+*.log
+.npm/
