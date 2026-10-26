@@ -263,9 +263,11 @@ def predict_iv(
         return {"product": product, "date": date, "strike": strike, "ttm": ttm, "iv": iv}
 
 
-# Static frontend (production)
-if DIST.exists():
-    app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")
+# Static frontend (production) — mount only when Vite build artifacts exist
+_assets = DIST / "assets"
+if DIST.exists() and (DIST / "index.html").exists():
+    if _assets.exists():
+        app.mount("/assets", StaticFiles(directory=_assets), name="assets")
 
     @app.get("/{full_path:path}")
     def spa(full_path: str):
