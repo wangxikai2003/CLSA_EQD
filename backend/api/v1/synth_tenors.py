@@ -1,4 +1,8 @@
-"""Synthetic constant-maturity futures + equity spot for spread / 期现 analysis."""
+"""Synthetic constant-maturity futures + equity spot for spread / 期现 analysis.
+
+Public product ids are Wind futures roots (IH/IF/IM, CU, …), not option roots (HO/IO/MO).
+Bloomberg yellow-key generics (e.g. IHc1 Index, CUc1 Comdty) are exposed as `bbg`.
+"""
 from __future__ import annotations
 
 import sqlite3
@@ -21,25 +25,163 @@ _SYNTH_TENORS = {
     "18M": 18 * _MONTH,
 }
 
+# product = Wind futures root (API/UI key). db_key = sqlite futures_eod.product.
 _UNIVERSE = [
-    {"product": "HO", "fut": "IH", "name": "上证50", "asset_class": "equity", "spot_code": "000016.SH"},
-    {"product": "IO", "fut": "IF", "name": "沪深300", "asset_class": "equity", "spot_code": "000300.SH"},
-    {"product": "MO", "fut": "IM", "name": "中证1000", "asset_class": "equity", "spot_code": "000852.SH"},
-    {"product": "CU", "fut": "CU", "name": "沪铜", "asset_class": "commodity", "spot_code": None},
-    {"product": "AU", "fut": "AU", "name": "黄金", "asset_class": "commodity", "spot_code": None},
-    {"product": "AG", "fut": "AG", "name": "白银", "asset_class": "commodity", "spot_code": None},
-    {"product": "RU", "fut": "RU", "name": "橡胶", "asset_class": "commodity", "spot_code": None},
-    {"product": "SC", "fut": "SC", "name": "原油", "asset_class": "commodity", "spot_code": None},
-    {"product": "M", "fut": "M", "name": "豆粕", "asset_class": "commodity", "spot_code": None},
-    {"product": "I", "fut": "I", "name": "铁矿", "asset_class": "commodity", "spot_code": None},
-    {"product": "C", "fut": "C", "name": "玉米", "asset_class": "commodity", "spot_code": None},
-    {"product": "SR", "fut": "SR", "name": "白糖", "asset_class": "commodity", "spot_code": None},
-    {"product": "CF", "fut": "CF", "name": "棉花", "asset_class": "commodity", "spot_code": None},
-    {"product": "MA", "fut": "MA", "name": "甲醇", "asset_class": "commodity", "spot_code": None},
-    {"product": "TA", "fut": "TA", "name": "PTA", "asset_class": "commodity", "spot_code": None},
+    {
+        "product": "IH",
+        "db_key": "HO",
+        "name": "上证50",
+        "asset_class": "equity",
+        "spot_code": "000016.SH",
+        "wind_root": "IH",
+        "bbg": "IHc1 Index",
+        "exch": "CFE",
+    },
+    {
+        "product": "IF",
+        "db_key": "IO",
+        "name": "沪深300",
+        "asset_class": "equity",
+        "spot_code": "000300.SH",
+        "wind_root": "IF",
+        "bbg": "IFc1 Index",
+        "exch": "CFE",
+    },
+    {
+        "product": "IM",
+        "db_key": "MO",
+        "name": "中证1000",
+        "asset_class": "equity",
+        "spot_code": "000852.SH",
+        "wind_root": "IM",
+        "bbg": "IMc1 Index",
+        "exch": "CFE",
+    },
+    {
+        "product": "CU",
+        "db_key": "CU",
+        "name": "沪铜",
+        "asset_class": "commodity",
+        "spot_code": None,
+        "wind_root": "CU",
+        "bbg": "CUc1 Comdty",
+        "exch": "SHF",
+    },
+    {
+        "product": "AU",
+        "db_key": "AU",
+        "name": "黄金",
+        "asset_class": "commodity",
+        "spot_code": None,
+        "wind_root": "AU",
+        "bbg": "AUc1 Comdty",
+        "exch": "SHF",
+    },
+    {
+        "product": "AG",
+        "db_key": "AG",
+        "name": "白银",
+        "asset_class": "commodity",
+        "spot_code": None,
+        "wind_root": "AG",
+        "bbg": "AGc1 Comdty",
+        "exch": "SHF",
+    },
+    {
+        "product": "RU",
+        "db_key": "RU",
+        "name": "橡胶",
+        "asset_class": "commodity",
+        "spot_code": None,
+        "wind_root": "RU",
+        "bbg": "RUc1 Comdty",
+        "exch": "SHF",
+    },
+    {
+        "product": "SC",
+        "db_key": "SC",
+        "name": "原油",
+        "asset_class": "commodity",
+        "spot_code": None,
+        "wind_root": "SC",
+        "bbg": "SCc1 Comdty",
+        "exch": "INE",
+    },
+    {
+        "product": "M",
+        "db_key": "M",
+        "name": "豆粕",
+        "asset_class": "commodity",
+        "spot_code": None,
+        "wind_root": "M",
+        "bbg": "DMc1 Comdty",
+        "exch": "DCE",
+    },
+    {
+        "product": "I",
+        "db_key": "I",
+        "name": "铁矿",
+        "asset_class": "commodity",
+        "spot_code": None,
+        "wind_root": "I",
+        "bbg": "IORc1 Comdty",
+        "exch": "DCE",
+    },
+    {
+        "product": "C",
+        "db_key": "C",
+        "name": "玉米",
+        "asset_class": "commodity",
+        "spot_code": None,
+        "wind_root": "C",
+        "bbg": "CSc1 Comdty",
+        "exch": "DCE",
+    },
+    {
+        "product": "SR",
+        "db_key": "SR",
+        "name": "白糖",
+        "asset_class": "commodity",
+        "spot_code": None,
+        "wind_root": "SR",
+        "bbg": "SBc1 Comdty",
+        "exch": "CZC",
+    },
+    {
+        "product": "CF",
+        "db_key": "CF",
+        "name": "棉花",
+        "asset_class": "commodity",
+        "spot_code": None,
+        "wind_root": "CF",
+        "bbg": "CTc1 Comdty",
+        "exch": "CZC",
+    },
+    {
+        "product": "MA",
+        "db_key": "MA",
+        "name": "甲醇",
+        "asset_class": "commodity",
+        "spot_code": None,
+        "wind_root": "MA",
+        "bbg": "MAc1 Comdty",
+        "exch": "CZC",
+    },
+    {
+        "product": "TA",
+        "db_key": "TA",
+        "name": "PTA",
+        "asset_class": "commodity",
+        "spot_code": None,
+        "wind_root": "TA",
+        "bbg": "TAc1 Comdty",
+        "exch": "CZC",
+    },
 ]
-_EQUITY = {u["product"] for u in _UNIVERSE if u["asset_class"] == "equity"}
-_COMMODITY = {u["product"] for u in _UNIVERSE if u["asset_class"] == "commodity"}
+_BY_PRODUCT = {u["product"]: u for u in _UNIVERSE}
+_EQUITY_DB_KEYS = {u["db_key"] for u in _UNIVERSE if u["asset_class"] == "equity"}
+_COMMODITY_DB_KEYS = {u["db_key"] for u in _UNIVERSE if u["asset_class"] == "commodity"}
+_DB_TO_PUBLIC = {u["db_key"]: u["product"] for u in _UNIVERSE}
 _SPOT_CODE = {u["product"]: u["spot_code"] for u in _UNIVERSE if u.get("spot_code")}
 
 _DB_CANDIDATES = [ROOT / "data" / "cffex_vol.sqlite", Path("/app/data/cffex_vol.sqlite")]
@@ -48,10 +190,14 @@ _SPOT_CANDIDATES = [
     Path("/app/data/index_spot.parquet"),
     REPO / "data" / "index_spot.parquet",
 ]
+# Prefer slim futures-only deploy DB (~20MB) over full commodity_vol (~1.4G)
 _COMMODITY_DB_CANDIDATES = [
+    ROOT / "data" / "commodity_fut.sqlite",
+    Path("/app/data/commodity_fut.sqlite"),
     ROOT / "data" / "commodity_vol.sqlite",
     Path("/app/data/commodity_vol.sqlite"),
     REPO / "data" / "commodity_vol.sqlite",
+    Path("/tmp/commodity_fut.sqlite"),
     Path("/tmp/commodity_vol.sqlite"),
 ]
 
@@ -130,17 +276,22 @@ def _lerp_settle(curve: List[tuple], target: float) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _synth_from_futures(fut: pd.DataFrame, products: Set[str], expiry_fn) -> Dict[str, Dict[str, List]]:
+def _synth_from_futures(fut: pd.DataFrame, db_keys: Set[str], expiry_fn) -> Dict[str, Dict[str, List]]:
+    """Return levels keyed by *public* Wind root (via _DB_TO_PUBLIC)."""
     tenor_keys = list(_SYNTH_TENORS.keys())
-    levels = {p: {t: [] for t in tenor_keys} for p in products}
-    fut = fut[fut["product"].isin(products)].copy()
+    public_keys = {_DB_TO_PUBLIC[k] for k in db_keys if k in _DB_TO_PUBLIC}
+    levels = {p: {t: [] for t in tenor_keys} for p in public_keys}
+    fut = fut[fut["product"].isin(db_keys)].copy()
     if fut.empty:
         return levels
     fut["trade_date"] = pd.to_datetime(fut["trade_date"])
     fut["expiry"] = fut["contract_ym"].map(expiry_fn)
     fut["dtm"] = (fut["expiry"] - fut["trade_date"]).dt.days.astype(float)
     fut = fut[fut["dtm"] > 0]
-    for product, g in fut.groupby("product"):
+    for db_prod, g in fut.groupby("product"):
+        pub = _DB_TO_PUBLIC.get(str(db_prod))
+        if not pub:
+            continue
         for td, day in g.groupby("trade_date"):
             by_t: Dict[float, tuple] = {}
             for r in day.itertuples():
@@ -151,7 +302,7 @@ def _synth_from_futures(fut: pd.DataFrame, products: Set[str], expiry_fn) -> Dic
                 hit = _lerp_settle(curve, float(tdays))
                 if not hit:
                     continue
-                levels[product][tlabel].append(
+                levels[pub][tlabel].append(
                     {
                         "d": dstr,
                         "settle": round(hit["settle"], 4),
@@ -193,6 +344,21 @@ def _load_spot_levels() -> Dict[str, List[Dict[str, Any]]]:
     return out
 
 
+def _product_meta(u: Dict[str, Any], has_spot: bool) -> Dict[str, Any]:
+    return {
+        "product": u["product"],
+        "db_key": u["db_key"],
+        "fut": u["product"],
+        "name": u["name"],
+        "asset_class": u["asset_class"],
+        "spot_code": u.get("spot_code"),
+        "wind_root": u["wind_root"],
+        "bbg": u["bbg"],
+        "exch": u["exch"],
+        "has_spot": has_spot,
+    }
+
+
 def build_payload() -> Dict[str, Any]:
     tenor_keys = list(_SYNTH_TENORS.keys())
     levels: Dict[str, Dict[str, List]] = {}
@@ -204,7 +370,7 @@ def build_payload() -> Dict[str, Any]:
         conn,
     )
     conn.close()
-    for p, tens in _synth_from_futures(eq, _EQUITY, _third_friday).items():
+    for p, tens in _synth_from_futures(eq, _EQUITY_DB_KEYS, _third_friday).items():
         levels[p] = tens
 
     for p, pts in _load_spot_levels().items():
@@ -214,18 +380,10 @@ def build_payload() -> Dict[str, Any]:
     for u in _UNIVERSE:
         if u["asset_class"] != "equity" or u["product"] not in levels:
             continue
-        products_out.append(
-            {
-                "product": u["product"],
-                "fut": u["fut"],
-                "name": u["name"],
-                "asset_class": u["asset_class"],
-                "spot_code": u["spot_code"],
-                "has_spot": bool(levels[u["product"]].get("SPOT")),
-            }
-        )
+        products_out.append(_product_meta(u, bool(levels[u["product"]].get("SPOT"))))
 
     commodity_enabled = False
+    commodity_db_path: Optional[str] = None
     cdb = _commodity_db()
     if cdb is not None:
         try:
@@ -235,23 +393,16 @@ def build_payload() -> Dict[str, Any]:
                 conn,
             )
             conn.close()
-            for p, tens in _synth_from_futures(cm, _COMMODITY, _month_end).items():
+            for p, tens in _synth_from_futures(cm, _COMMODITY_DB_KEYS, _month_end).items():
                 if not any(tens[t] for t in tenor_keys):
                     continue
                 levels[p] = tens
                 levels[p]["SPOT"] = []
-                meta = next(u for u in _UNIVERSE if u["product"] == p)
-                products_out.append(
-                    {
-                        "product": meta["product"],
-                        "fut": meta["fut"],
-                        "name": meta["name"],
-                        "asset_class": meta["asset_class"],
-                        "spot_code": None,
-                        "has_spot": False,
-                    }
-                )
+                meta = _BY_PRODUCT[p]
+                products_out.append(_product_meta(meta, False))
                 commodity_enabled = True
+            if commodity_enabled:
+                commodity_db_path = str(cdb)
         except Exception:
             commodity_enabled = False
 
@@ -262,6 +413,8 @@ def build_payload() -> Dict[str, Any]:
         "products": products_out,
         "levels": levels,
         "commodity_enabled": commodity_enabled,
+        "commodity_db": commodity_db_path,
+        "code_convention": "product=Wind futures root (IH not HO); bbg=Bloomberg generic; legs=full Wind codes",
         "spot_source": "WIND.AINDEXEODPRICES → data/index_spot.parquet (equity); commodity cash TBD",
         "method": (
             "Futures DTM linear combo → 3M/6M/9M/18M. Equity expiry≈3rd Friday; "
@@ -278,7 +431,6 @@ def synth_tenors(
     db = _equity_db()
     spot = next((p for p in _SPOT_CANDIDATES if p.exists()), None)
     cdb = _commodity_db()
-    # Cache full universe; filter by asset_class on read
     key = (
         db.stat().st_mtime,
         spot.stat().st_mtime if spot else None,

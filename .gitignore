@@ -7,8 +7,10 @@ dist/
 __pycache__/
 .venv/
 venv/
-# SQLite is too large for GitHub (>100MB). Ship via local Cloud Run --source deploy.
+# Full vol DBs are large; allow slim/deploy copies used by Dockerfile.
 data/*.sqlite
 data/*.sqlite-*
+!data/cffex_vol.sqlite
+!data/commodity_fut.sqlite
 *.log
 .npm/

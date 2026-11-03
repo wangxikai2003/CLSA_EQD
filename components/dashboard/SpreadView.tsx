@@ -156,7 +156,8 @@ const LegPickers: React.FC<{
       >
         {products.map((p) => (
           <option key={p.product} value={p.product}>
-            {p.product} {p.name}{p.asset_class === 'commodity' ? ' ·CMD' : ''}
+            {p.product} · {p.bbg ?? p.wind_root ?? p.product} · {p.name}
+            {p.asset_class === 'commodity' ? ' ·CMD' : ''}
           </option>
         ))}
       </select>
@@ -179,14 +180,14 @@ const SpreadView: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [assetFilter, setAssetFilter] = useState<'all' | 'equity' | 'commodity'>('all');
 
-  const [levelProducts, setLevelProducts] = useState<string[]>(['MO', 'IO']);
+  const [levelProducts, setLevelProducts] = useState<string[]>(['IM', 'IF']);
   const [levelKinds, setLevelKinds] = useState<LegKind[]>(['SPOT', '3M', '6M']);
 
-  // Spread 1 & 2 — SoS = S1 − S2 automatically
-  const [s1L, setS1L] = useState<LegSel>({ product: 'MO', kind: '3M' });
-  const [s1R, setS1R] = useState<LegSel>({ product: 'MO', kind: '6M' });
-  const [s2L, setS2L] = useState<LegSel>({ product: 'MO', kind: 'SPOT' });
-  const [s2R, setS2R] = useState<LegSel>({ product: 'MO', kind: '3M' });
+  // Spread 1 & 2 — SoS = S1 − S2 automatically (product ids = Wind futures roots)
+  const [s1L, setS1L] = useState<LegSel>({ product: 'IM', kind: '3M' });
+  const [s1R, setS1R] = useState<LegSel>({ product: 'IM', kind: '6M' });
+  const [s2L, setS2L] = useState<LegSel>({ product: 'IM', kind: 'SPOT' });
+  const [s2R, setS2R] = useState<LegSel>({ product: 'IM', kind: '3M' });
 
   useEffect(() => {
     setLoading(true);
@@ -199,8 +200,9 @@ const SpreadView: React.FC = () => {
           const keep = prev.filter((p) => prods.includes(p));
           return keep.length ? keep : prods.slice(0, 2);
         });
-        const first = d.products[0]?.product ?? 'MO';
-        const hasSpot = !!d.products.find((p) => p.product === first)?.has_spot;
+        const prefer = d.products.find((p) => p.product === 'IM') ?? d.products[0];
+        const first = prefer?.product ?? 'IM';
+        const hasSpot = !!prefer?.has_spot;
         setS1L({ product: first, kind: '3M' });
         setS1R({ product: first, kind: '6M' });
         setS2L({ product: first, kind: hasSpot ? 'SPOT' : '3M' });
@@ -297,7 +299,7 @@ const SpreadView: React.FC = () => {
           <p className="text-[11px] text-slate-500 max-w-3xl mt-1">
             合成期限用挂牌合约<strong>实际 DTM</strong>配比；股指可加 <strong>SPOT 现货</strong>做期现。
             Spread1 / Spread2 任选两腿；Spread-of-spread 自动为 Spread1 − Spread2。
-            结构按品种 universe 扩展（股指 + 商品期货，商品现货待接入）。
+            品种代码为 <strong>Wind 期货根</strong>（IH/IF/IM，非 HO/IO/MO）+ Bloomberg generic（如 IMc1 Index）。
           </p>
         </div>
         <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
@@ -323,8 +325,11 @@ const SpreadView: React.FC = () => {
       {err && <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded p-2">{err}</div>}
       {data && !data.commodity_enabled && assetFilter !== 'equity' && (
         <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded px-3 py-2">
-          商品库未挂载到运行环境时 Commodity 列表可能为空；本地若有 commodity_vol.sqlite 会自动启用。商品现货尚未落地。
+          商品期货库未启用（需 data/commodity_fut.sqlite）。商品现货尚未落地。
         </div>
+      )}
+      {data?.code_convention && (
+        <div className="text-[10px] text-slate-400 font-mono">{data.code_convention}</div>
       )}
 
       {/* Levels */}

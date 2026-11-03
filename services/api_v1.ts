@@ -201,11 +201,16 @@ export interface SynthTenorPoint {
 }
 
 export interface SynthProductMeta {
+  /** Wind futures root (IH/IF/IM, CU, …) — not option root HO/IO/MO */
   product: string;
+  db_key?: string;
   fut: string;
   name: string;
   asset_class: 'equity' | 'commodity';
   spot_code?: string | null;
+  wind_root?: string;
+  bbg?: string;
+  exch?: string;
   has_spot: boolean;
 }
 
@@ -217,6 +222,8 @@ export interface SynthTenorsResponse {
   levels: Record<string, Partial<Record<SynthLegKind, SynthTenorPoint[]>>>;
   coverage: Record<string, Record<string, number>>;
   commodity_enabled: boolean;
+  commodity_db?: string | null;
+  code_convention?: string;
   spot_source: string;
   method: string;
 }

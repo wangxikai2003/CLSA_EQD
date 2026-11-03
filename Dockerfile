@@ -19,7 +19,8 @@ COPY backend /app/backend
 COPY data/cffex_vol.sqlite /app/data/cffex_vol.sqlite
 COPY data/rates_eod.parquet /app/data/rates_eod.parquet
 COPY data/index_spot.parquet /app/data/index_spot.parquet
-# commodity_vol.sqlite (~1.4G) is optional; mount at /app/data/commodity_vol.sqlite to enable
+# Slim commodity futures-only DB (~20MB); full commodity_vol.sqlite (~1.4G) not shipped
+COPY data/commodity_fut.sqlite /app/data/commodity_fut.sqlite
 COPY --from=frontend /app/dist /app/dist
 ENV PORT=8080
 EXPOSE 8080
