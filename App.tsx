@@ -7,6 +7,7 @@ import VolatilitySurfaceChart from './components/VolatilitySurface';
 import BoosterResearch from './components/BoosterResearch';
 import DashboardLayout from './components/dashboard/DashboardLayout';
 import SpreadView from './components/dashboard/SpreadView';
+import QisView from './components/dashboard/QisView';
 import { PayoffChart, GreeksChart } from './components/Charts';
 import { generateAnalysisData, calculateStrategyGreeks, calculateProbabilities } from './services/pricingEngine';
 import { fitVolSurface, fitJwSviSurface, RAW_VOL_DATA, applyJwDeltas, ZERO_JW_DELTA } from './services/volatilityService';
@@ -21,6 +22,7 @@ enum ActiveTab {
     VOL_SURFACE = 'Volatility Surface',
     MARKET = 'Market Intel',
     SPREAD = 'Spread',
+    QIS = 'QIS',
     RESEARCH = 'Booster Research'
 }
 
@@ -340,7 +342,7 @@ const App: React.FC = () => {
              </div>
           </div>
           <div className="flex bg-[#000044] rounded p-1 gap-1">
-             {[ActiveTab.VANILLA, ActiveTab.EXOTIC, ActiveTab.VOL_SURFACE, ActiveTab.MARKET, ActiveTab.SPREAD, ActiveTab.RESEARCH].map(tab => (
+             {[ActiveTab.VANILLA, ActiveTab.EXOTIC, ActiveTab.VOL_SURFACE, ActiveTab.MARKET, ActiveTab.SPREAD, ActiveTab.QIS, ActiveTab.RESEARCH].map(tab => (
                  <button 
                     key={tab}
                     onClick={() => setActiveTab(tab)}
@@ -349,6 +351,7 @@ const App: React.FC = () => {
                     {tab === ActiveTab.RESEARCH && <Microscope size={14} />}
                     {tab === ActiveTab.MARKET && <LineChart size={14} />}
                     {tab === ActiveTab.SPREAD && <SplitSquareHorizontal size={14} />}
+                    {tab === ActiveTab.QIS && <Layers size={14} />}
                     {tab}
                  </button>
              ))}
@@ -1098,6 +1101,11 @@ const App: React.FC = () => {
         {/* --- TAB: SPREAD (synthetic tenors) --- */}
         <div className={activeTab === ActiveTab.SPREAD ? 'block' : 'hidden'}>
             <SpreadView />
+        </div>
+
+        {/* --- TAB: QIS systematic strategies --- */}
+        <div className={activeTab === ActiveTab.QIS ? 'block' : 'hidden'}>
+            <QisView />
         </div>
 
         {/* --- TAB 4: BOOSTER RESEARCH --- */}

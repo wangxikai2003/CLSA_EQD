@@ -27,6 +27,7 @@ export interface ExoticPriceRequest {
     barrier_shift_bps?: number;
     spread_smoothing_width?: number;
     return_profiles?: boolean;
+    return_ki_profiles?: boolean;
     barrier_shift?: number;
     digital_width?: number;
   };
@@ -61,6 +62,8 @@ export interface ExoticPriceResponse {
     reserve: number;
     theta_release?: { t: number; reserve_left: number }[];
   };
+  pre_ki_profile?: ProfileCurve;
+  post_ki_profile?: ProfileCurve;
 }
 
 export interface JwCalibRequest {
@@ -241,6 +244,60 @@ export function fetchSynthTenors(
     `/api/v1/market/synth-tenors${qs ? `?${qs}` : ''}`,
     signal
   );
+}
+
+export interface QisStrategyInfo {
+  id: string;
+  name: string;
+  status?: string;
+  blurb?: string;
+}
+
+export interface QisMetrics {
+  n_days: number;
+  ann_return: number | null;
+  ann_vol: number | null;
+  sharpe: number | null;
+  mdd: number | null;
+  mdd_vol: number | null;
+  pct_positive_months: number | null;
+  start?: string | null;
+  end?: string | null;
+}
+
+export interface QisBacktestResponse {
+  strategy_id: string;
+  strategy_name: string;
+  description: string;
+  legs: { id: string; weight: number; product: string; tenor: string }[];
+  params: {
+    initial_nav: number;
+    slippage_bp: number;
+    fee_pct: number;
+    cost_rate: number;
+    rebalance: string;
+    signal_lag: string;
+    price: string;
+  };
+  nav: { d: string; nav: number; sos: number }[];
+  metrics: Record<'1y' | '3y' | '5y' | 'max', QisMetrics>;
+  summary: {
+    start: string;
+    end: string;
+    n_days: number;
+    final_nav: number;
+    final_nav_multiple: number;
+    total_cost: number;
+  };
+}
+
+export function fetchQisStrategies(signal?: AbortSignal) {
+  return getJson<{ strategies: QisStrategyInfo[] }>('/api/v1/qis/strategies', signal);
+}
+
+export function fetchQisBacktest(strategyId: string, refresh = false, signal?: AbortSignal) {
+  const q = refresh ? '?refresh=true' : '';
+  return getJson<QisBacktestResponse>(`/api/v1/qis/backtest/${strategyId}${q}`, signal);
 }
 
 /** Debounce an async fn; last arg may receive AbortSignal when fn supports it. */
