@@ -3,12 +3,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-SERVICE="${SERVICE:-exotic-option-architect}"
+SERVICE="${SERVICE:-exotic-option-architect-peter-xikaiwang}"
 REGION="${REGION:-us-west1}"
 PROJECT="${PROJECT:-}"
 
 if [[ ! -f data/cffex_vol.sqlite ]]; then
-  echo "Missing data/cffex_vol.sqlite — copy from vol_trading/data first."
+  echo "Missing data/cffex_vol.sqlite"
+  echo "From repo root run:  bash scripts/sync_db_to_app.sh"
+  echo "Or:  python pipeline/build_vol_db.py && python pipeline/materialize_svi_matrices.py"
   exit 1
 fi
 
@@ -34,6 +36,15 @@ gcloud run deploy "$SERVICE" \
   --memory 1Gi \
   --cpu 1 \
   --timeout 300 \
+  --quiet
+
+# AI Studio mounts GCS over /app/dist — strip so Vite build from image is served
+echo "==> Removing AI Studio /app/dist volume mount (if present)"
+gcloud run services update "$SERVICE" \
+  --region "$REGION" \
+  --project "$PROJECT" \
+  --clear-volume-mounts \
+  --clear-volumes \
   --quiet
 
 echo "==> Service URL:"

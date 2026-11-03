@@ -1,11 +1,16 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ExoticProduct, ExoticType, VolSurfaceModel, BacktestSummary, HistoricalDataPoint, InterpolationMethod } from '../types';
-import { generateExoticAnalysis } from '../services/monteCarlo';
+import { generateExoticAnalysis, priceExoticBackend, USE_LOCAL_MC } from '../services/monteCarlo';
 import { generateMockHistory, runRollingBacktest } from '../services/backtestService';
 import { Play, TrendingUp, Activity, Settings, ChevronRight, Maximize2, History, Calendar, RotateCcw, RefreshCw } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, ReferenceArea } from 'recharts';
 import { GreeksChart } from './Charts';
+import { JwParams } from '../services/api';
+import JwParamPanel from './JwParamPanel';
+import ProgressBar from './ProgressBar';
+import { useExoticPricing } from '../hooks/useExoticPricing';
+import type { ExoticPriceRequest } from '../services/api_v1';
 
 interface Props {
   spot: number;
@@ -14,9 +19,16 @@ interface Props {
   volModel?: VolSurfaceModel; // New: Surface Model
   volMethod?: InterpolationMethod;
   onMethodChange?: (m: InterpolationMethod) => void;
+  jwBase?: JwParams | null;
+  jwDelta?: JwParams;
+  onJwDeltaChange?: (d: JwParams) => void;
+  barrierFill?: { ko?: number; ki?: number; barrier?: number; strike?: number } | null;
 }
 
-const ExoticPricer: React.FC<Props> = ({ spot, r, vol, volModel, volMethod, onMethodChange }) => {
+const ExoticPricer: React.FC<Props> = ({
+  spot, r, vol, volModel, volMethod, onMethodChange,
+  jwBase, jwDelta, onJwDeltaChange, barrierFill,
+}) => {
   const [productType, setProductType] = useState<ExoticType>(ExoticType.SNOWBALL);
   
   // Params
@@ -29,6 +41,15 @@ const ExoticPricer: React.FC<Props> = ({ spot, r, vol, volModel, volMethod, onMe
 
   // Sync manual vol with global prop initially
   useEffect(() => { setManualVol(vol); }, [vol]);
+
+  // Sync barriers from Market Intel T-quote strike pick
+  useEffect(() => {
+    if (!barrierFill) return;
+    if (barrierFill.ko != null) setKoLevel(barrierFill.ko);
+    if (barrierFill.ki != null) setKiLevel(barrierFill.ki);
+    if (barrierFill.barrier != null) setBarrierPct(barrierFill.barrier);
+    if (barrierFill.strike != null) setStrikePct(barrierFill.strike);
+  }, [barrierFill]);
 
   // Snowball specific
   const [kiLevel, setKiLevel] = useState(0.75); // 75%
@@ -44,6 +65,16 @@ const ExoticPricer: React.FC<Props> = ({ spot, r, vol, volModel, volMethod, onMe
   const [strikePct, setStrikePct] = useState(1.0);
   const [barrierPct, setBarrierPct] = useState(1.2);
   const [rebatePct, setRebatePct] = useState(0.02); // 2%
+
+  // Desk over-hedging & smoothing
+  const [deskOpen, setDeskOpen] = useState(false);
+  const [barrierShiftBps, setBarrierShiftBps] = useState(0);
+  const [smoothingPct, setSmoothingPct] = useState(2.0); // percent → width
+  const [showNominal, setShowNominal] = useState(true);
+  const [showDesk, setShowDesk] = useState(true);
+  const [reserveInfo, setReserveInfo] = useState<{ reserve: number; pv_shifted: number } | null>(null);
+  const priceAbortRef = useRef<AbortController | null>(null);
+  const { progress, cancel: cancelStream, price: priceStreamed, loading: streamLoading } = useExoticPricing();
   
   // View Control
   const [viewRange, setViewRange] = useState(0.20); // 20% range default
@@ -122,19 +153,104 @@ const ExoticPricer: React.FC<Props> = ({ spot, r, vol, volModel, volMethod, onMe
   }, [fullHistory]); // Run once on load
 
   const handleCalculate = () => {
+      // Abort any in-flight request (race-condition guard)
+      priceAbortRef.current?.abort();
+      cancelStream();
+      const ctrl = new AbortController();
+      priceAbortRef.current = ctrl;
       setCalculating(true);
+      const desk = {
+        barrier_shift_bps: barrierShiftBps,
+        spread_smoothing_width: smoothingPct / 100,
+        return_profiles: barrierShiftBps > 0 || smoothingPct > 0,
+        n_paths: barrierShiftBps > 0 ? 50000 : 15000,
+      };
 
-      setTimeout(() => {
-          // 1. Main Analysis Data
-          const data = generateExoticAnalysis(product, spot, viewRange);
-          setSimData(data);
-          
-          // 2. Find closest result to current spot for display
-          const center = data.reduce((prev, curr) => Math.abs(curr.spot - spot) < Math.abs(prev.spot - spot) ? curr : prev);
-          setCurrentResult(center);
-
-          setCalculating(false);
-      }, 50);
+      (async () => {
+          try {
+            let data = generateExoticAnalysis(product, spot, viewRange);
+            let center = data.reduce((prev, curr) => Math.abs(curr.spot - spot) < Math.abs(prev.spot - spot) ? curr : prev);
+            setReserveInfo(null);
+            if (!USE_LOCAL_MC) {
+              try {
+                let raw: import('../services/api_v1').ExoticPriceResponse | undefined;
+                let px: number;
+                if ((desk.n_paths ?? 0) >= 40000) {
+                  const isSnowball = product.type === ExoticType.SNOWBALL;
+                  const req: ExoticPriceRequest = {
+                    product_type: isSnowball ? 'snowball' : 'booster',
+                    product: isSnowball
+                      ? {
+                          tenor: product.maturity,
+                          ko_barrier: product.koBarrier ?? 1.03,
+                          ki_barrier: product.kiBarrier ?? 0.75,
+                          coupon: product.koCoupon ?? 0.2,
+                          bonus_coupon: product.dividendCoupon ?? 0,
+                          step_down: product.koStepDown ?? 0,
+                          obs_freq: (product.obsFreq || 'Monthly').toLowerCase(),
+                          strike: 1.0,
+                        }
+                      : {
+                          tenor: product.maturity,
+                          strike: product.strike ?? 1.0,
+                          participation: 1.0,
+                          structure: 'booster',
+                          barrier: product.barrier,
+                        },
+                    market: { spots: [spot], r: product.r, q: [0], flat_vols: [effectiveVol], corr: [[1]] },
+                    sim: { n_paths: desk.n_paths, n_steps: Math.max(12, Math.floor(product.maturity * 12)), seed: 42, bridge: true },
+                    greeks: {
+                      enabled: false,
+                      barrier_shift_bps: desk.barrier_shift_bps,
+                      spread_smoothing_width: desk.spread_smoothing_width,
+                      return_profiles: desk.return_profiles,
+                    },
+                  };
+                  raw = await priceStreamed(req, { stream: true });
+                  if (!raw) return; // cancelled
+                  px = raw.price * (product.notional || 1);
+                } else {
+                  const out = await priceExoticBackend(product, spot, effectiveVol, ctrl.signal, desk);
+                  px = out.price;
+                  raw = out.raw;
+                }
+                if (ctrl.signal.aborted) return;
+                center = { ...center, price: px };
+                if (raw?.raw_profile && raw?.shifted_profile) {
+                  const n = Math.min(raw.raw_profile.spot_mult.length, raw.shifted_profile.spot_mult.length);
+                  data = Array.from({ length: n }, (_, i) => {
+                    const m = raw!.raw_profile!.spot_mult[i];
+                    return {
+                      moneyness: m * 100,
+                      spot: spot * m,
+                      price: raw!.raw_profile!.pv[i] * notional,
+                      price_desk: raw!.shifted_profile!.pv[i] * notional,
+                      delta: raw!.raw_profile!.delta[i] * notional,
+                      delta_desk: raw!.shifted_profile!.delta[i] * notional,
+                      gamma: raw!.raw_profile!.gamma[i] * notional,
+                      gamma_desk: raw!.shifted_profile!.gamma[i] * notional,
+                      vega: 0,
+                    };
+                  });
+                  if (raw.reserve_metrics) {
+                    setReserveInfo({
+                      reserve: raw.reserve_metrics.reserve * notional,
+                      pv_shifted: raw.reserve_metrics.pv_shifted * notional,
+                    });
+                  }
+                }
+              } catch (e) {
+                if ((e as Error)?.name === 'AbortError') return;
+                console.warn('backend pricing fallback to local MC', e);
+              }
+            }
+            if (ctrl.signal.aborted) return;
+            setSimData(data);
+            setCurrentResult(center);
+          } finally {
+            if (!ctrl.signal.aborted) setCalculating(false);
+          }
+      })();
   };
 
   const runBacktest = () => {
@@ -221,10 +337,8 @@ const ExoticPricer: React.FC<Props> = ({ spot, r, vol, volModel, volMethod, onMe
                                     {onMethodChange && volMethod && (
                                         <div className="flex bg-white/50 p-0.5 rounded mt-2">
                                             {(['JW SVI', 'Cubic Spline', 'Local Volatility', 'Stochastic Volatility'] as InterpolationMethod[]).map(m => {
-                                                const activeClass = m === 'JW SVI'
-                                                    ? 'bg-[#0F766E] text-white shadow-sm'
-                                                    : m === 'Local Volatility' 
-                                                    ? 'bg-[#EAB308] text-white shadow-sm' 
+                                                const activeClass = m === 'JW SVI' || m === 'Local Volatility'
+                                                    ? 'bg-[#EAB308] text-white shadow-sm'
                                                     : m === 'Stochastic Volatility' 
                                                     ? 'bg-[#E20000] text-white shadow-sm' 
                                                     : 'bg-[#000066] text-white shadow-sm';
@@ -241,6 +355,11 @@ const ExoticPricer: React.FC<Props> = ({ spot, r, vol, volModel, volMethod, onMe
                                                 )
                                             })}
                                         </div>
+                                    )}
+                                    {volMethod === 'JW SVI' && jwDelta && onJwDeltaChange && (
+                                      <div className="mt-2">
+                                        <JwParamPanel base={jwBase} delta={jwDelta} onChange={onJwDeltaChange} compact />
+                                      </div>
                                     )}
                                 </>
                             )}
@@ -330,6 +449,61 @@ const ExoticPricer: React.FC<Props> = ({ spot, r, vol, volModel, volMethod, onMe
                             </div>
                         </div>
 
+                        <div className="mt-4 border border-slate-200 rounded-lg overflow-hidden">
+                            <button
+                                type="button"
+                                onClick={() => setDeskOpen(!deskOpen)}
+                                className="w-full flex items-center justify-between px-3 py-2 bg-slate-50 text-[11px] font-bold text-[#000066]"
+                            >
+                                <span>Desk Over-hedging & Smoothing</span>
+                                <ChevronRight size={14} className={deskOpen ? 'rotate-90 transition' : 'transition'} />
+                            </button>
+                            {deskOpen && (
+                                <div className="p-3 space-y-3 text-[10px]">
+                                    <div>
+                                        <div className="flex justify-between mb-1">
+                                            <span className="font-bold text-slate-500 uppercase">Barrier Shift (bps)</span>
+                                            <span className="font-mono">{barrierShiftBps}</span>
+                                        </div>
+                                        <input
+                                            type="range" min={0} max={200} step={5}
+                                            value={barrierShiftBps}
+                                            onChange={(e) => setBarrierShiftBps(Number(e.target.value))}
+                                            className="w-full accent-[#000066]"
+                                        />
+                                    </div>
+                                    <div>
+                                        <div className="flex justify-between mb-1">
+                                            <span className="font-bold text-slate-500 uppercase">Smoothing Spread (%)</span>
+                                            <span className="font-mono">{smoothingPct.toFixed(1)}</span>
+                                        </div>
+                                        <input
+                                            type="range" min={0.5} max={5} step={0.1}
+                                            value={smoothingPct}
+                                            onChange={(e) => setSmoothingPct(Number(e.target.value))}
+                                            className="w-full accent-[#EAB308]"
+                                        />
+                                    </div>
+                                    <div className="flex gap-3 text-slate-600">
+                                        <label className="flex items-center gap-1">
+                                            <input type="checkbox" checked={showNominal} onChange={(e) => setShowNominal(e.target.checked)} />
+                                            Contract Nominal
+                                        </label>
+                                        <label className="flex items-center gap-1">
+                                            <input type="checkbox" checked={showDesk} onChange={(e) => setShowDesk(e.target.checked)} />
+                                            Desk Shifted
+                                        </label>
+                                    </div>
+                                    {reserveInfo && (
+                                        <div className="bg-amber-50 border border-amber-100 rounded px-2 py-1 font-mono text-[10px]">
+                                            Reserve ${(reserveInfo.reserve).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                            <span className="text-slate-400"> · shifted PV ${(reserveInfo.pv_shifted).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
                         <button 
                             onClick={handleCalculate}
                             disabled={calculating}
@@ -354,6 +528,22 @@ const ExoticPricer: React.FC<Props> = ({ spot, r, vol, volModel, volMethod, onMe
 
                 {/* Center: Charts */}
                 <div className="lg:col-span-6 space-y-6">
+                    {(calculating || streamLoading) && progress && (
+                      <ProgressBar
+                        progress={progress.progress}
+                        currentPaths={progress.currentPaths}
+                        totalPaths={progress.totalPaths}
+                        runningPrice={progress.runningPrice}
+                        stdError={progress.stdError}
+                        stage={progress.stage}
+                        history={progress.history}
+                        onCancel={() => {
+                          cancelStream();
+                          priceAbortRef.current?.abort();
+                          setCalculating(false);
+                        }}
+                      />
+                    )}
                     <div className="h-[300px] w-full">
                         <h4 className="text-xs font-bold text-slate-400 mb-2 uppercase flex items-center gap-2">Payoff Profile</h4>
                         <ResponsiveContainer width="100%" height="90%">
@@ -386,7 +576,12 @@ const ExoticPricer: React.FC<Props> = ({ spot, r, vol, volModel, volMethod, onMe
                                     contentStyle={{fontSize: '12px'}}
                                 />
                                 <ReferenceLine x={100} stroke="#EAB308" strokeDasharray="3 3" />
-                                <Area type="monotone" dataKey="price" stroke="#000066" fill="#000066" fillOpacity={0.1} />
+                                {showNominal && (
+                                  <Area type="monotone" dataKey="price" stroke="#000066" fill="#000066" fillOpacity={0.1} name="Contract Nominal" />
+                                )}
+                                {showDesk && simData.some((d) => d.price_desk != null) && (
+                                  <Area type="monotone" dataKey="price_desk" stroke="#EAB308" fill="#EAB308" fillOpacity={0.08} name="Desk Shifted" />
+                                )}
                             </AreaChart>
                         </ResponsiveContainer>
                     </div>
@@ -394,11 +589,35 @@ const ExoticPricer: React.FC<Props> = ({ spot, r, vol, volModel, volMethod, onMe
                     <div className="grid grid-cols-2 gap-4 h-[200px]">
                         <div className="bg-white rounded border border-slate-100 p-2">
                             <h4 className="text-[10px] font-bold mb-1 text-center" style={{color: COLORS.CITIC_RED}}>Delta</h4>
-                            <GreeksChart data={simData} marketSpot={spot} dataKey="delta" color={COLORS.CITIC_RED} name="Delta" yScale={1.1} />
+                            <GreeksChart
+                              data={simData}
+                              marketSpot={spot}
+                              dataKey="delta"
+                              color={COLORS.CITIC_RED}
+                              name="Nominal"
+                              altDataKey="delta_desk"
+                              altColor="#EAB308"
+                              altName="Desk"
+                              showPrimary={showNominal}
+                              showAlt={showDesk}
+                              yScale={1.1}
+                            />
                         </div>
                         <div className="bg-white rounded border border-slate-100 p-2">
-                            <h4 className="text-[10px] font-bold mb-1 text-center" style={{color: COLORS.CLSA_BLUE}}>Vega</h4>
-                            <GreeksChart data={simData} marketSpot={spot} dataKey="vega" color={COLORS.CLSA_BLUE} name="Vega" yScale={1.1} />
+                            <h4 className="text-[10px] font-bold mb-1 text-center text-purple-700">Gamma (spike vs smooth)</h4>
+                            <GreeksChart
+                              data={simData}
+                              marketSpot={spot}
+                              dataKey="gamma"
+                              color="#7c3aed"
+                              name="Nominal"
+                              altDataKey="gamma_desk"
+                              altColor="#EAB308"
+                              altName="Desk Smooth"
+                              showPrimary={showNominal}
+                              showAlt={showDesk}
+                              yScale={1.1}
+                            />
                         </div>
                     </div>
                 </div>

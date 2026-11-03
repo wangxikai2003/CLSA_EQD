@@ -20,15 +20,31 @@ export interface SviSlice {
   atm_iv: number;
 }
 
+/** Precomputed JW-SVI IV grid: iv[ttm_i][strike_j] */
+export interface SviMatrix {
+  spot: number;
+  forward_ref: number;
+  moneyness: number[];
+  strikes: number[];
+  ttms: number[];
+  iv: (number | null)[][];
+  n_rows: number;
+  n_cols: number;
+}
+
 export interface SurfaceResponse {
   product: string;
   trade_date: string;
+  side?: SurfaceSide;
   spot: number;
+  r?: number | null;
+  rate_code?: string | null;
   n_slices: number;
   n_iv: number;
   slices: SviSlice[];
   points: { strike: number; ttm: number; iv: number }[];
   market_points: { strike: number; ttm: number; iv: number; cp: string; expiry: string; k: number }[];
+  matrix?: SviMatrix | null;
   model: string;
 }
 
@@ -53,9 +69,20 @@ async function getJson<T>(path: string): Promise<T> {
 }
 
 export const fetchProducts = () => getJson<ProductInfo[]>('/api/products');
-export const fetchDates = (product: ProductCode) => getJson<string[]>(`/api/dates/${product}`);
-export const fetchSurface = (product: ProductCode, date?: string) => {
-  const q = date ? `?date=${encodeURIComponent(date)}` : '';
-  return getJson<SurfaceResponse>(`/api/surface/${product}${q}`);
+export type SurfaceSide = 'otm' | 'call' | 'put';
+
+export const fetchDates = (product: ProductCode, side: SurfaceSide = 'otm') =>
+  getJson<string[]>(`/api/dates/${product}?side=${side}`);
+export const fetchSurface = (product: ProductCode, date?: string, side: SurfaceSide = 'otm') => {
+  const params = new URLSearchParams({ side });
+  if (date) params.set('date', date);
+  return getJson<SurfaceResponse>(`/api/surface/${product}?${params}`);
+};
+export const fetchMatrix = (product: ProductCode, date?: string, side: SurfaceSide = 'otm') => {
+  const params = new URLSearchParams({ side });
+  if (date) params.set('date', date);
+  return getJson<{ product: string; trade_date: string; side: string; model: string; matrix: SviMatrix }>(
+    `/api/matrix/${product}?${params}`
+  );
 };
 export const fetchHealth = () => getJson<{ ok: boolean; db: string; size_mb: number }>('/api/health');

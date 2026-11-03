@@ -1,5 +1,58 @@
 import { VolSurfacePoint, VolSurfaceModel, InterpolationMethod } from '../types';
-import { SviSlice } from './api';
+import { JwParams, SviSlice } from './api';
+
+export const ZERO_JW_DELTA: JwParams = { v: 0, psi: 0, p: 0, c: 0, vtild: 0 };
+
+/** Gatheral–Jacquier JW → raw SVI (per maturity t). */
+export function jwToRaw(
+  jw: JwParams,
+  t: number
+): { a: number; b: number; rho: number; m: number; sigma: number } {
+  const tt = Math.max(t, 1e-8);
+  const w = Math.max(jw.v * tt, 1e-12);
+  const wMin = Math.max(jw.vtild * tt, 0);
+  let b = (jw.p + jw.c) / 2;
+  if (b < 1e-8) b = 1e-8;
+  let rho = jw.p + jw.c > 1e-12 ? (jw.c - jw.p) / (jw.p + jw.c) : 0;
+  rho = Math.max(-0.999, Math.min(0.999, rho));
+
+  // ψ = dw/dk|_0 / (2 √(w t))  ⇒  dw/dk|_0 = 2 ψ √(w t)
+  const dw0 = 2 * jw.psi * Math.sqrt(w * tt);
+  // dw/dk|_0 = b (ρ − α), α = m / √(m²+σ²)
+  let alpha = rho - dw0 / b;
+  alpha = Math.max(-0.999, Math.min(0.999, alpha));
+
+  const oneRho2 = Math.max(1 - rho * rho, 0);
+  const oneA2 = Math.max(1 - alpha * alpha, 0);
+  const factor = 1 - rho * alpha - Math.sqrt(oneA2 * oneRho2);
+  let R: number;
+  if (Math.abs(factor) < 1e-10) {
+    R = 0.1;
+  } else {
+    R = Math.max((w - wMin) / (b * factor), 1e-4);
+  }
+  const m = alpha * R;
+  const sigma = Math.max(R * Math.sqrt(oneA2), 1e-4);
+  const a = wMin - b * sigma * Math.sqrt(oneRho2);
+  return { a, b, rho, m, sigma };
+}
+
+/** Apply additive JW deltas to every slice and refresh raw SVI. */
+export function applyJwDeltas(slices: SviSlice[], delta: JwParams): SviSlice[] {
+  return slices.map(s => {
+    const jw: JwParams = {
+      v: Math.max(1e-6, s.jw.v + delta.v),
+      psi: s.jw.psi + delta.psi,
+      p: Math.max(1e-8, s.jw.p + delta.p),
+      c: Math.max(1e-8, s.jw.c + delta.c),
+      vtild: Math.max(1e-6, s.jw.vtild + delta.vtild),
+    };
+    // keep ṽ ≤ v roughly (min variance ≤ ATM variance)
+    if (jw.vtild > jw.v) jw.vtild = jw.v;
+    const raw = jwToRaw(jw, s.ttm);
+    return { ...s, jw, raw };
+  });
+}
 
 // --- Helper: Monotone Cubic Spline Interpolation ---
 class CubicSpline {

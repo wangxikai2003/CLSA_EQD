@@ -138,9 +138,18 @@ interface GreeksChartProps extends ChartProps {
   dataKey: string;
   color: string;
   name: string;
+  /** Optional secondary series (desk shifted) on same chart */
+  altDataKey?: string;
+  altColor?: string;
+  altName?: string;
+  showPrimary?: boolean;
+  showAlt?: boolean;
 }
 
-export const GreeksChart: React.FC<GreeksChartProps> = ({ data, marketSpot, dataKey, color, name, yScale = 1.1, legs, legOpacity }) => {
+export const GreeksChart: React.FC<GreeksChartProps> = ({
+  data, marketSpot, dataKey, color, name, yScale = 1.1, legs, legOpacity,
+  altDataKey, altColor = '#EAB308', altName = 'Desk', showPrimary = true, showAlt = true,
+}) => {
   const yDomain = useMemo(() => getDomain(data, dataKey, yScale), [data, dataKey, yScale]);
 
   return (
@@ -171,7 +180,7 @@ export const GreeksChart: React.FC<GreeksChartProps> = ({ data, marketSpot, data
             contentStyle={{ backgroundColor: 'rgba(255, 255, 255, 0.8)', borderColor: '#e2e8f0', color: '#0f172a', padding: '2px 5px', fontSize: '10px' }}
             formatter={(value: number, nameProp: string) => {
                 if (nameProp.includes('_')) return [value.toFixed(4), 'Leg'];
-                return [value.toFixed(4), name];
+                return [value.toFixed(4), nameProp];
             }}
             labelFormatter={(label: number) => `K%: ${label.toFixed(0)}%`}
             itemStyle={{ padding: 0, margin: 0 }}
@@ -179,7 +188,12 @@ export const GreeksChart: React.FC<GreeksChartProps> = ({ data, marketSpot, data
           <ReferenceLine y={0} stroke="#64748b" strokeWidth={1} />
           <ReferenceLine x={100} stroke="#000066" strokeDasharray="3 3" />
           
-          <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2} dot={false} isAnimationActive={false} name="Total" />
+          {showPrimary && (
+            <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2} dot={false} isAnimationActive={false} name={name} />
+          )}
+          {showAlt && altDataKey && (
+            <Line type="monotone" dataKey={altDataKey} stroke={altColor} strokeWidth={2} strokeDasharray="4 2" dot={false} isAnimationActive={false} name={altName} />
+          )}
           
           {/* Decomposition */}
           {legs && legs.map((leg, idx) => (

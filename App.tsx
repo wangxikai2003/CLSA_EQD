@@ -5,17 +5,22 @@ import StrategyBuilder from './components/StrategyBuilder';
 import ExoticPricer from './components/ExoticPricer';
 import VolatilitySurfaceChart from './components/VolatilitySurface';
 import BoosterResearch from './components/BoosterResearch';
+import DashboardLayout from './components/dashboard/DashboardLayout';
+import SpreadView from './components/dashboard/SpreadView';
 import { PayoffChart, GreeksChart } from './components/Charts';
 import { generateAnalysisData, calculateStrategyGreeks, calculateProbabilities } from './services/pricingEngine';
-import { fitVolSurface, fitJwSviSurface, RAW_VOL_DATA } from './services/volatilityService';
-import { fetchSurface, fetchProducts, fetchDates, ProductCode, SurfaceResponse, ProductInfo } from './services/api';
-import { Activity, BarChart2, TrendingUp, Settings, Zap, ChevronDown, Anchor, Shield, TrendingDown, ZoomIn, Maximize2, MoveHorizontal, MoveVertical, Layers, Grid, BarChart3, Microscope, Split, RefreshCw, Calculator, Copy, Link2, Database, Globe, Server } from 'lucide-react';
+import { fitVolSurface, fitJwSviSurface, RAW_VOL_DATA, applyJwDeltas, ZERO_JW_DELTA } from './services/volatilityService';
+import { fetchSurface, fetchProducts, fetchDates, ProductCode, SurfaceResponse, ProductInfo, JwParams, SurfaceSide } from './services/api';
+import JwParamPanel from './components/JwParamPanel';
+import { Activity, BarChart2, TrendingUp, Settings, Zap, ChevronDown, Anchor, Shield, TrendingDown, ZoomIn, Maximize2, MoveHorizontal, MoveVertical, Layers, Grid, BarChart3, Microscope, Split, RefreshCw, Calculator, Copy, Link2, Database, Globe, Server, LineChart, SplitSquareHorizontal } from 'lucide-react';
 
 // Tabs Enum
 enum ActiveTab {
     VANILLA = 'Vanilla & Structures',
     EXOTIC = 'Exotics (Structured)',
     VOL_SURFACE = 'Volatility Surface',
+    MARKET = 'Market Intel',
+    SPREAD = 'Spread',
     RESEARCH = 'Booster Research'
 }
 
@@ -38,8 +43,10 @@ const App: React.FC = () => {
   // Volatility Model State
   const [volMethod, setVolMethod] = useState<InterpolationMethod>('JW SVI');
   const [volModel, setVolModel] = useState<VolSurfaceModel | undefined>(undefined);
+  const [jwDelta, setJwDelta] = useState<JwParams>({ ...ZERO_JW_DELTA });
   const [product, setProduct] = useState<ProductCode>('IO');
   const [tradeDate, setTradeDate] = useState<string>('');
+  const [surfaceSide, setSurfaceSide] = useState<SurfaceSide>('otm');
   const [availableDates, setAvailableDates] = useState<string[]>([]);
   const [productsInfo, setProductsInfo] = useState<ProductInfo[]>([]);
   const [surfaceMeta, setSurfaceMeta] = useState<SurfaceResponse | null>(null);
@@ -55,6 +62,8 @@ const App: React.FC = () => {
   
   // Navigation
   const [activeTab, setActiveTab] = useState<ActiveTab>(ActiveTab.VANILLA);
+  // Market Intel → Exotic barrier sync
+  const [barrierFill, setBarrierFill] = useState<{ ko?: number; ki?: number; barrier?: number; strike?: number } | null>(null);
 
   // Load product catalog once
   useEffect(() => {
@@ -75,30 +84,31 @@ const App: React.FC = () => {
   // Load dates when product changes
   useEffect(() => {
       if (apiStatus !== 'live') return;
-      fetchDates(product)
+      fetchDates(product, surfaceSide)
         .then(ds => {
           setAvailableDates(ds);
           const latest = ds[ds.length - 1] || '';
           setTradeDate(prev => (prev && ds.includes(prev) ? prev : latest));
         })
         .catch(err => setApiError(String(err)));
-  }, [product, apiStatus]);
+  }, [product, surfaceSide, apiStatus]);
 
-  // Load surface when product/date/method changes
+  // Reset JW deltas when product/date/side changes
+  useEffect(() => {
+      setJwDelta({ ...ZERO_JW_DELTA });
+  }, [product, tradeDate, surfaceSide]);
+
+  // Load surface when product/date/side changes
   useEffect(() => {
       if (apiStatus !== 'live' || !tradeDate) return;
       let cancelled = false;
       setSurfaceLoading(true);
-      fetchSurface(product, tradeDate)
+      fetchSurface(product, tradeDate, surfaceSide)
         .then(surf => {
           if (cancelled) return;
           setSurfaceMeta(surf);
           setSpotPrice(surf.spot);
-          if (volMethod === 'JW SVI') {
-            setVolModel(fitJwSviSurface(surf.slices, surf.spot));
-          } else {
-            setVolModel(fitVolSurface(surf.points, volMethod, surf.spot));
-          }
+          if (surf.r != null && Number.isFinite(surf.r)) setRiskFreeRate(surf.r);
           setApiError('');
         })
         .catch(err => {
@@ -109,7 +119,18 @@ const App: React.FC = () => {
           if (!cancelled) setSurfaceLoading(false);
         });
       return () => { cancelled = true; };
-  }, [product, tradeDate, volMethod, apiStatus]);
+  }, [product, tradeDate, surfaceSide, apiStatus]);
+
+  // Rebuild vol model from cached surface + method + JW deltas
+  useEffect(() => {
+      if (!surfaceMeta) return;
+      if (volMethod === 'JW SVI') {
+        const slices = applyJwDeltas(surfaceMeta.slices, jwDelta);
+        setVolModel(fitJwSviSurface(slices, surfaceMeta.spot));
+      } else {
+        setVolModel(fitVolSurface(surfaceMeta.points, volMethod, surfaceMeta.spot));
+      }
+  }, [surfaceMeta, volMethod, jwDelta]);
 
   // Analysis View State
   const [chartRangeX, setChartRangeX] = useState<number>(0.20); 
@@ -269,14 +290,14 @@ const App: React.FC = () => {
       GREEN_RISK: '#16a34a' 
   };
 
+  const jwBase = surfaceMeta?.slices?.[0]?.jw;
+
   // Helper to render the Surface Selection Buttons
   const renderVolMethodSelector = () => (
       <div className="flex bg-slate-200 p-0.5 rounded mt-2">
         {(['JW SVI', 'Cubic Spline', 'Local Volatility', 'Stochastic Volatility'] as InterpolationMethod[]).map(m => {
-            const activeClass = m === 'JW SVI'
-                ? 'bg-[#0F766E] text-white shadow'
-                : m === 'Local Volatility' 
-                ? 'bg-[#EAB308] text-white shadow' 
+            const activeClass = m === 'JW SVI' || m === 'Local Volatility'
+                ? 'bg-[#EAB308] text-white shadow'
                 : m === 'Stochastic Volatility' 
                 ? 'bg-[#E20000] text-white shadow' 
                 : 'bg-[#000066] text-white shadow';
@@ -295,6 +316,13 @@ const App: React.FC = () => {
       </div>
   );
 
+  const renderJwControls = (compact = true) =>
+    volMethod === 'JW SVI' ? (
+      <div className="mt-2">
+        <JwParamPanel base={jwBase} delta={jwDelta} onChange={setJwDelta} compact={compact} />
+      </div>
+    ) : null;
+
   return (
     <div className="min-h-screen font-sans bg-slate-100 selection:bg-[#FFF100] selection:text-[#000066]">
       <header className="bg-[#000066] border-b border-[#000066] sticky top-0 z-50 shadow-md">
@@ -312,13 +340,15 @@ const App: React.FC = () => {
              </div>
           </div>
           <div className="flex bg-[#000044] rounded p-1 gap-1">
-             {[ActiveTab.VANILLA, ActiveTab.EXOTIC, ActiveTab.VOL_SURFACE, ActiveTab.RESEARCH].map(tab => (
+             {[ActiveTab.VANILLA, ActiveTab.EXOTIC, ActiveTab.VOL_SURFACE, ActiveTab.MARKET, ActiveTab.SPREAD, ActiveTab.RESEARCH].map(tab => (
                  <button 
                     key={tab}
                     onClick={() => setActiveTab(tab)}
                     className={`px-4 py-1.5 text-xs font-bold rounded transition flex items-center gap-2 ${activeTab === tab ? 'bg-[#FFF100] text-[#000066]' : 'text-blue-200 hover:text-white'}`}
                  >
                     {tab === ActiveTab.RESEARCH && <Microscope size={14} />}
+                    {tab === ActiveTab.MARKET && <LineChart size={14} />}
+                    {tab === ActiveTab.SPREAD && <SplitSquareHorizontal size={14} />}
                     {tab}
                  </button>
              ))}
@@ -613,6 +643,7 @@ const App: React.FC = () => {
                                 <>
                                     {/* Surface Method Selector inside Tab 1 */}
                                     {renderVolMethodSelector()}
+                                    {renderJwControls(true)}
 
                                     <div className="mb-2 mt-3">
                                         <div className="flex justify-between text-xs mb-1">
@@ -827,6 +858,10 @@ const App: React.FC = () => {
                 volModel={volModel}
                 volMethod={volMethod}
                 onMethodChange={setVolMethod}
+                jwBase={jwBase}
+                jwDelta={jwDelta}
+                onJwDeltaChange={setJwDelta}
+                barrierFill={barrierFill}
              />
         </div>
 
@@ -839,7 +874,10 @@ const App: React.FC = () => {
                             model={volModel} 
                             spot={spotPrice} 
                             method={volMethod}
-                            // onMethodChange handled in parent now
+                            side={surfaceSide}
+                            product={product}
+                            tradeDate={tradeDate}
+                            marketPoints={surfaceMeta?.market_points}
                         />
                     ) : (
                         <div className="flex items-center justify-center h-full bg-white rounded shadow text-slate-400">Loading Model...</div>
@@ -855,8 +893,7 @@ const App: React.FC = () => {
                         <div className="flex flex-col gap-2">
                             {(['JW SVI', 'Cubic Spline', 'Local Volatility', 'Stochastic Volatility'] as InterpolationMethod[]).map(m => {
                                 let activeColor = 'bg-[#000066] text-white border-[#000066]';
-                                if (m === 'JW SVI') activeColor = 'bg-[#0F766E] text-white border-[#0F766E]';
-                                if (m === 'Local Volatility') activeColor = 'bg-[#EAB308] text-white border-[#EAB308]';
+                                if (m === 'JW SVI' || m === 'Local Volatility') activeColor = 'bg-[#EAB308] text-white border-[#EAB308]';
                                 if (m === 'Stochastic Volatility') activeColor = 'bg-[#E20000] text-white border-[#E20000]';
 
                                 return (
@@ -891,6 +928,30 @@ const App: React.FC = () => {
                               </div>
                             </div>
                             <div>
+                              <div className="text-[10px] font-bold text-slate-400 uppercase mb-1">Surface Side</div>
+                              <div className="grid grid-cols-3 gap-1">
+                                {([
+                                  ['otm', 'OTM', '虚值混合', 'bg-[#EAB308] text-white border-[#EAB308]'],
+                                  ['call', 'Call', '仅认购', 'bg-[#000066] text-white border-[#000066]'],
+                                  ['put', 'Put', '仅认沽', 'bg-[#E20000] text-white border-[#E20000]'],
+                                ] as [SurfaceSide, string, string, string][]).map(([id, label, hint, active]) => (
+                                  <button key={id} onClick={() => setSurfaceSide(id)}
+                                    title={hint}
+                                    className={`px-1.5 py-1.5 rounded border text-center transition ${
+                                      surfaceSide === id
+                                        ? active
+                                        : 'bg-slate-50 text-slate-500 border-slate-200 hover:border-slate-300'
+                                    }`}>
+                                    <div className="text-[11px] font-bold leading-none">{label}</div>
+                                    <div className={`text-[8px] mt-0.5 ${surfaceSide===id ? 'opacity-90' : 'text-slate-400'}`}>{hint}</div>
+                                  </button>
+                                ))}
+                              </div>
+                              <div className="mt-1.5 text-[9px] text-slate-400 leading-snug">
+                                切换后重新加载该侧 JW-SVI 切片与 IV 矩阵；图上散点为对应 Call/Put 市价 IV。
+                              </div>
+                            </div>
+                            <div>
                               <div className="text-[10px] font-bold text-slate-400 uppercase mb-1">Trade Date</div>
                               <select
                                 className="w-full text-xs border border-slate-200 rounded px-2 py-1.5 font-mono"
@@ -904,9 +965,27 @@ const App: React.FC = () => {
                             </div>
                             {surfaceMeta && (
                               <div className="text-[10px] text-slate-500 space-y-1">
+                                <div className="flex justify-between">
+                                  <span>Side</span>
+                                  <span className="font-mono font-bold uppercase">{surfaceMeta.side ?? surfaceSide}</span>
+                                </div>
                                 <div className="flex justify-between"><span>Slices</span><span className="font-mono font-bold">{surfaceMeta.n_slices}</span></div>
                                 <div className="flex justify-between"><span>IV quotes</span><span className="font-mono font-bold">{surfaceMeta.n_iv}</span></div>
                                 <div className="flex justify-between"><span>ATM IV (near)</span><span className="font-mono font-bold">{(100*(surfaceMeta.slices[0]?.atm_iv ?? 0)).toFixed(1)}%</span></div>
+                                {surfaceMeta.rate_code && (
+                                  <div className="flex justify-between">
+                                    <span>r ({surfaceMeta.rate_code})</span>
+                                    <span className="font-mono font-bold">{(100*(surfaceMeta.r ?? 0)).toFixed(3)}%</span>
+                                  </div>
+                                )}
+                                {surfaceMeta.matrix && (
+                                  <div className="flex justify-between">
+                                    <span>IV matrix</span>
+                                    <span className="font-mono font-bold">
+                                      {surfaceMeta.matrix.n_rows}×{surfaceMeta.matrix.n_cols}
+                                    </span>
+                                  </div>
+                                )}
                               </div>
                             )}
                             {surfaceLoading && <div className="text-[10px] text-slate-400">Loading surface…</div>}
@@ -953,12 +1032,14 @@ const App: React.FC = () => {
                             {volMethod === 'Stochastic Volatility' && "Models volatility as a random process with mean reversion (Kappa) and vol-of-vol (Xi) to capture heavy tails and smile dynamics."}
                         </p>
 
-                        {volMethod === 'JW SVI' && surfaceMeta && surfaceMeta.slices[0] && (
-                          <div className="mt-3 text-[10px] font-mono text-slate-600 bg-slate-50 border border-slate-100 rounded p-2 space-y-0.5">
-                            <div className="font-bold text-slate-500">Near expiry JW</div>
-                            <div>v={surfaceMeta.slices[0].jw.v.toFixed(4)} ψ={surfaceMeta.slices[0].jw.psi.toFixed(4)}</div>
-                            <div>p={surfaceMeta.slices[0].jw.p.toFixed(4)} c={surfaceMeta.slices[0].jw.c.toFixed(4)}</div>
-                            <div>ṽ={surfaceMeta.slices[0].jw.vtild.toFixed(4)} rmse={surfaceMeta.slices[0].rmse.toFixed(5)}</div>
+                        {volMethod === 'JW SVI' && (
+                          <div className="mt-3">
+                            <JwParamPanel base={jwBase} delta={jwDelta} onChange={setJwDelta} />
+                            {surfaceMeta?.slices[0] && (
+                              <div className="mt-2 text-[10px] font-mono text-slate-500">
+                                rmse={surfaceMeta.slices[0].rmse.toFixed(5)} (calibrated)
+                              </div>
+                            )}
                           </div>
                         )}
                      </div>
@@ -995,12 +1076,39 @@ const App: React.FC = () => {
             </div>
         </div>
         
+        {/* --- TAB: MARKET INTELLIGENCE --- */}
+        <div className={activeTab === ActiveTab.MARKET ? 'block' : 'hidden'}>
+            <DashboardLayout
+              product={product}
+              tradeDate={tradeDate}
+              onProductChange={setProduct}
+              onStrikePick={(p) => {
+                const pct = p.strikePct;
+                setBarrierFill({
+                  ko: pct,
+                  ki: Math.min(pct, 0.95),
+                  barrier: pct,
+                  strike: pct,
+                });
+                setActiveTab(ActiveTab.EXOTIC);
+              }}
+            />
+        </div>
+
+        {/* --- TAB: SPREAD (synthetic tenors) --- */}
+        <div className={activeTab === ActiveTab.SPREAD ? 'block' : 'hidden'}>
+            <SpreadView />
+        </div>
+
         {/* --- TAB 4: BOOSTER RESEARCH --- */}
         <div className={activeTab === ActiveTab.RESEARCH ? 'block' : 'hidden'}>
              <BoosterResearch 
                 volModel={volModel}
                 volMethod={volMethod}
                 onMethodChange={setVolMethod}
+                jwBase={jwBase}
+                jwDelta={jwDelta}
+                onJwDeltaChange={setJwDelta}
              />
         </div>
 

@@ -1,5 +1,69 @@
 
 import { ExoticProduct, ExoticType, BarrierProduct, BarrierType, OptionType, OptionLeg, PositionType } from '../types';
+import { priceExotic as priceExoticApi, ExoticPriceRequest } from './api_v1';
+
+/** Default: heavy MC on backend. Set VITE_USE_LOCAL_MC=true to keep browser MC. */
+export const USE_LOCAL_MC = ((import.meta as any).env?.VITE_USE_LOCAL_MC ?? 'false') === 'true';
+
+export interface DeskHedgeParams {
+  barrier_shift_bps?: number;
+  spread_smoothing_width?: number;
+  return_profiles?: boolean;
+  n_paths?: number;
+}
+
+/** Backend snowball/phoenix pricing bridge used by ExoticPricer. */
+export async function priceExoticBackend(
+  product: ExoticProduct,
+  spot: number,
+  vol: number,
+  signal?: AbortSignal,
+  desk?: DeskHedgeParams
+): Promise<{ price: number; raw?: import('./api_v1').ExoticPriceResponse }> {
+  const isSnowball = product.type === ExoticType.SNOWBALL;
+  const req: ExoticPriceRequest = {
+    product_type: isSnowball ? 'snowball' : 'booster',
+    product: isSnowball
+      ? {
+          tenor: product.maturity,
+          ko_barrier: product.koBarrier ?? 1.03,
+          ki_barrier: product.kiBarrier ?? 0.75,
+          coupon: product.koCoupon ?? 0.2,
+          bonus_coupon: product.dividendCoupon ?? 0,
+          step_down: product.koStepDown ?? 0,
+          obs_freq: (product.obsFreq || 'Monthly').toLowerCase(),
+          strike: 1.0,
+        }
+      : {
+          tenor: product.maturity,
+          strike: product.strike ?? 1.0,
+          participation: 1.0,
+          structure: 'booster',
+          barrier: product.barrier,
+        },
+    market: {
+      spots: [spot],
+      r: product.r,
+      q: [0],
+      flat_vols: [vol],
+      corr: [[1]],
+    },
+    sim: {
+      n_paths: desk?.n_paths ?? 15000,
+      n_steps: Math.max(12, Math.floor(product.maturity * 12)),
+      seed: 42,
+      bridge: true,
+    },
+    greeks: {
+      enabled: false,
+      barrier_shift_bps: desk?.barrier_shift_bps ?? 0,
+      spread_smoothing_width: desk?.spread_smoothing_width ?? 0,
+      return_profiles: desk?.return_profiles ?? ((desk?.barrier_shift_bps ?? 0) > 0 || (desk?.spread_smoothing_width ?? 0) > 0),
+    },
+  };
+  const res = await priceExoticApi(req, signal);
+  return { price: res.price * (product.notional || 1), raw: res };
+}
 
 // Standard Normal Generator (Box-Muller)
 const randn_bm = (): number => {

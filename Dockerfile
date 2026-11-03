@@ -7,6 +7,8 @@ COPY index.html index.tsx App.tsx types.ts tsconfig.json vite.config.ts metadata
 COPY components ./components
 COPY services ./services
 COPY utils ./utils
+COPY store ./store
+COPY hooks ./hooks
 RUN npm run build && test -f dist/index.html && ls -la dist
 
 FROM python:3.11-slim
@@ -15,6 +17,7 @@ COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 COPY backend /app/backend
 COPY data/cffex_vol.sqlite /app/data/cffex_vol.sqlite
+COPY data/rates_eod.parquet /app/data/rates_eod.parquet
 COPY --from=frontend /app/dist /app/dist
 ENV PORT=8080
 EXPOSE 8080

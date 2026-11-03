@@ -6,12 +6,17 @@ import { calculateBS, generateAnalysisData } from '../services/pricingEngine';
 import { simulateWorstOfPrice } from '../services/monteCarlo';
 import { PayoffChart, GreeksChart } from './Charts';
 import { Settings, RefreshCw, BarChart2, Layers, Edit3, Eye, Move3d, Compass, Grid3X3, Sun, AlignJustify, TrendingUp, Calculator, Sigma, Info, Activity, Maximize2, ZoomIn, MoveVertical, Shield, Clock, RotateCcw, Monitor, Split, EyeOff, Link2 } from 'lucide-react';
+import { JwParams } from '../services/api';
+import JwParamPanel from './JwParamPanel';
 
 interface Props {
   // Removed spot and r from props to decouple
   volModel?: VolSurfaceModel;
   volMethod?: InterpolationMethod;
   onMethodChange?: (m: InterpolationMethod) => void;
+  jwBase?: JwParams | null;
+  jwDelta?: JwParams;
+  onJwDeltaChange?: (d: JwParams) => void;
 }
 
 enum AnalysisMode {
@@ -44,7 +49,7 @@ function useThrottle<T>(value: T, limit: number): T {
   return throttledValue;
 }
 
-const BoosterResearch: React.FC<Props> = ({ volModel, volMethod, onMethodChange }) => {
+const BoosterResearch: React.FC<Props> = ({ volModel, volMethod, onMethodChange, jwBase, jwDelta, onJwDeltaChange }) => {
   // --- INTERNAL Market Params (Independent of Tab 1) ---
   const [spot, setSpot] = useState(6600);
   const [r, setR] = useState(0.05);
@@ -1216,10 +1221,8 @@ const BoosterResearch: React.FC<Props> = ({ volModel, volMethod, onMethodChange 
                                 {onMethodChange && volMethod && (
                                     <div className="flex bg-slate-200 p-0.5 rounded my-2">
                                         {(['JW SVI', 'Cubic Spline', 'Local Volatility', 'Stochastic Volatility'] as InterpolationMethod[]).map(m => {
-                                            const activeClass = m === 'JW SVI'
-                                                ? 'bg-[#0F766E] text-white shadow'
-                                                : m === 'Local Volatility' 
-                                                ? 'bg-[#EAB308] text-white shadow' 
+                                            const activeClass = m === 'JW SVI' || m === 'Local Volatility'
+                                                ? 'bg-[#EAB308] text-white shadow'
                                                 : m === 'Stochastic Volatility' 
                                                 ? 'bg-[#E20000] text-white shadow' 
                                                 : 'bg-[#000066] text-white shadow';
@@ -1236,6 +1239,11 @@ const BoosterResearch: React.FC<Props> = ({ volModel, volMethod, onMethodChange 
                                             )
                                         })}
                                     </div>
+                                )}
+                                {volMethod === 'JW SVI' && jwDelta && onJwDeltaChange && (
+                                  <div className="mb-2">
+                                    <JwParamPanel base={jwBase} delta={jwDelta} onChange={onJwDeltaChange} compact />
+                                  </div>
                                 )}
                                 <div>
                                     <div className="flex justify-between text-xs mb-1">
