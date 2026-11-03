@@ -7,6 +7,24 @@ SERVICE="${SERVICE:-exotic-option-architect-peter-xikaiwang}"
 REGION="${REGION:-us-west1}"
 PROJECT="${PROJECT:-}"
 
+# --- local machine: gcloud often installed but not on PATH ---
+_GCLOUD_CANDIDATES=(
+  "${HOME}/google-cloud-sdk-install/google-cloud-sdk/bin"
+  "${HOME}/google-cloud-sdk/bin"
+  "/opt/homebrew/Caskroom/google-cloud-sdk/latest/google-cloud-sdk/bin"
+  "/usr/local/Caskroom/google-cloud-sdk/latest/google-cloud-sdk/bin"
+)
+for _d in "${_GCLOUD_CANDIDATES[@]}"; do
+  if [[ -x "${_d}/gcloud" ]]; then
+    export PATH="${_d}:$PATH"
+    break
+  fi
+done
+# Prefer Anaconda Python for gcloud (bundled 3.14 can break on this Mac)
+if [[ -z "${CLOUDSDK_PYTHON:-}" && -x "${HOME}/anaconda3/bin/python3" ]]; then
+  export CLOUDSDK_PYTHON="${HOME}/anaconda3/bin/python3"
+fi
+
 if [[ ! -f data/cffex_vol.sqlite ]]; then
   echo "Missing data/cffex_vol.sqlite"
   echo "From repo root run:  bash scripts/sync_db_to_app.sh"
@@ -15,7 +33,10 @@ if [[ ! -f data/cffex_vol.sqlite ]]; then
 fi
 
 if ! command -v gcloud >/dev/null 2>&1; then
-  echo "gcloud not found. Install: brew install --cask google-cloud-sdk"
+  echo "gcloud not found on PATH."
+  echo "This machine usually has: ${HOME}/google-cloud-sdk-install/google-cloud-sdk/bin/gcloud"
+  echo "Or install: brew install --cask google-cloud-sdk"
+  echo "See also: ../quant_research/docs/CLOUD_RUN_DEPLOY_HANDOFF.md (sibling repo) or ask the vol_trading agent."
   exit 1
 fi
 

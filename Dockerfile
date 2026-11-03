@@ -18,6 +18,8 @@ RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 COPY backend /app/backend
 COPY data/cffex_vol.sqlite /app/data/cffex_vol.sqlite
 COPY data/rates_eod.parquet /app/data/rates_eod.parquet
+COPY data/index_spot.parquet /app/data/index_spot.parquet
+# commodity_vol.sqlite (~1.4G) is optional; mount at /app/data/commodity_vol.sqlite to enable
 COPY --from=frontend /app/dist /app/dist
 ENV PORT=8080
 EXPOSE 8080

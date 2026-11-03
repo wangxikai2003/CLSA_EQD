@@ -187,6 +187,8 @@ export function fetchTQuote(product: string, date?: string, expiry?: string, sig
 }
 
 export type SynthTenorKey = '3M' | '6M' | '9M' | '18M';
+export type SynthLegKind = SynthTenorKey | 'SPOT';
+export type SynthAssetClass = 'all' | 'equity' | 'commodity';
 
 export interface SynthTenorPoint {
   d: string;
@@ -195,20 +197,43 @@ export interface SynthTenorPoint {
   leg_dtm: number[];
   w0: number;
   extrapolated?: boolean;
+  kind?: 'synth' | 'spot';
+}
+
+export interface SynthProductMeta {
+  product: string;
+  fut: string;
+  name: string;
+  asset_class: 'equity' | 'commodity';
+  spot_code?: string | null;
+  has_spot: boolean;
 }
 
 export interface SynthTenorsResponse {
   tenors: SynthTenorKey[];
+  leg_kinds: SynthLegKind[];
   tenor_days: Record<string, number>;
-  products: { product: string; fut: string; name: string }[];
-  levels: Record<string, Partial<Record<SynthTenorKey, SynthTenorPoint[]>>>;
+  products: SynthProductMeta[];
+  levels: Record<string, Partial<Record<SynthLegKind, SynthTenorPoint[]>>>;
   coverage: Record<string, Record<string, number>>;
+  commodity_enabled: boolean;
+  spot_source: string;
   method: string;
 }
 
-export function fetchSynthTenors(refresh = false, signal?: AbortSignal) {
-  const q = refresh ? '?refresh=true' : '';
-  return getJson<SynthTenorsResponse>(`/api/v1/market/synth-tenors${q}`, signal);
+export function fetchSynthTenors(
+  refresh = false,
+  assetClass: SynthAssetClass = 'all',
+  signal?: AbortSignal
+) {
+  const q = new URLSearchParams();
+  if (refresh) q.set('refresh', 'true');
+  if (assetClass && assetClass !== 'all') q.set('asset_class', assetClass);
+  const qs = q.toString();
+  return getJson<SynthTenorsResponse>(
+    `/api/v1/market/synth-tenors${qs ? `?${qs}` : ''}`,
+    signal
+  );
 }
 
 /** Debounce an async fn; last arg may receive AbortSignal when fn supports it. */
