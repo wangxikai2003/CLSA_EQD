@@ -180,6 +180,7 @@ const SpreadView: React.FC = () => {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [assetFilter, setAssetFilter] = useState<'all' | 'equity' | 'commodity'>('all');
+  const [volAssetFilter, setVolAssetFilter] = useState<'all' | 'equity' | 'commodity'>('equity');
   const [spreadMode, setSpreadMode] = useState<'price' | 'vol'>('price');
 
   const [levelProducts, setLevelProducts] = useState<string[]>(['IM', 'IF']);
@@ -321,25 +322,28 @@ const SpreadView: React.FC = () => {
               </button>
             ))}
           </div>
-          {spreadMode === 'price' && (
-            <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
-              {([
-                ['all', 'All'],
-                ['equity', 'Equity'],
-                ['commodity', 'Commodity'],
-              ] as const).map(([id, lab]) => (
-                <button
-                  key={id}
-                  onClick={() => setAssetFilter(id)}
-                  className={`px-3 py-1.5 text-xs font-bold rounded-md ${
-                    assetFilter === id ? 'bg-white text-[#000066] shadow' : 'text-slate-500'
-                  }`}
-                >
-                  {lab}
-                </button>
-              ))}
-            </div>
-          )}
+          <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
+            {([
+              ['all', 'All'],
+              ['equity', 'Equity'],
+              ['commodity', 'Commodity'],
+            ] as const).map(([id, lab]) => (
+              <button
+                key={id}
+                onClick={() => {
+                  if (spreadMode === 'vol') setVolAssetFilter(id);
+                  else setAssetFilter(id);
+                }}
+                className={`px-3 py-1.5 text-xs font-bold rounded-md ${
+                  (spreadMode === 'vol' ? volAssetFilter : assetFilter) === id
+                    ? 'bg-white text-[#000066] shadow'
+                    : 'text-slate-500'
+                }`}
+              >
+                {lab}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -357,11 +361,11 @@ const SpreadView: React.FC = () => {
       {spreadMode === 'vol' && (
         <div className="space-y-4">
           <p className="text-[11px] text-slate-500">
-            Vol spread：Equity / Commodity 各自可看 RV（20/40/120D、6M=126D、1Y=252D）与 IV（同 tenor；ATM / OTM K/F=0.95 / ITM K/F=1.05）。
-            Spread1/2 与 SoS 口径同价格面板（左−右；SoS=S1−S2），单位为波动率（图上×100 显示为 %）。
+            Vol 子界面：All / Equity / Commodity。Levels 可同时勾选 <strong>RV + IV</strong> 与多个期限
+            （20/40/120D、6M、1Y）；IV 另选 ATM / OTM(0.95) / ITM(1.05)。
+            Spread1/2 与 SoS 同价格面板（左−右；SoS=S1−S2），图上为波动率 %。
           </p>
-          <VolSpreadPanel assetClass="equity" title="Equity Vol Spread" />
-          <VolSpreadPanel assetClass="commodity" title="Commodity Vol Spread" />
+          <VolSpreadPanel assetClass={volAssetFilter} />
         </div>
       )}
 

@@ -11,12 +11,14 @@ import {
   VolFamily,
 } from '../../services/api_v1';
 
-const COLORS = ['#000066', '#EAB308', '#E20000', '#16a34a', '#7c3aed', '#0891b2'];
+const COLORS = ['#000066', '#EAB308', '#E20000', '#16a34a', '#7c3aed', '#0891b2', '#ea580c', '#0d9488'];
 const TENORS: VolTenorKey[] = ['20D', '40D', '120D', '6M', '1Y'];
 const MNY: VolMoneyness[] = ['ATM', 'OTM', 'ITM'];
 
 const selectClass =
   'px-2 py-1.5 text-xs font-bold border border-slate-200 rounded-md bg-slate-50 text-[#000066] focus:outline-none focus:ring-2 focus:ring-[#000066]';
+
+export type VolAssetFilter = 'all' | 'equity' | 'commodity';
 
 type VolLeg = {
   product: string;
@@ -58,7 +60,9 @@ function histBins(values: number[], nBins = 24) {
     if (idx < 0) idx = 0;
     bins[idx].count += 1;
   }
-  bins.forEach((b) => { b.label = `${(b.x0 * 100).toFixed(1)}`; });
+  bins.forEach((b) => {
+    b.label = `${(b.x0 * 100).toFixed(1)}`;
+  });
   return bins;
 }
 
@@ -89,6 +93,11 @@ function alignDiff(a: Map<string, number>, b: Map<string, number>) {
     out.push({ d, v: va - vb });
   }
   return out;
+}
+
+function toggleKeepOne<T>(prev: T[], item: T): T[] {
+  if (prev.includes(item)) return prev.length === 1 ? prev : prev.filter((x) => x !== item);
+  return [...prev, item];
 }
 
 const PercentilePanel: React.FC<{ values: number[] }> = ({ values }) => {
@@ -160,18 +169,22 @@ const LegPick: React.FC<{
   </div>
 );
 
-const VolSpreadPanel: React.FC<{ assetClass: 'equity' | 'commodity'; title: string }> = ({
-  assetClass,
-  title,
-}) => {
+const TITLE: Record<VolAssetFilter, string> = {
+  all: 'All Vol Spread',
+  equity: 'Equity Vol Spread',
+  commodity: 'Commodity Vol Spread',
+};
+
+const VolSpreadPanel: React.FC<{ assetClass: VolAssetFilter }> = ({ assetClass }) => {
   const [data, setData] = useState<VolSpreadsResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const [levelProds, setLevelProds] = useState<string[]>([]);
-  const [levelFamily, setLevelFamily] = useState<VolFamily>('IV');
-  const [levelTenor, setLevelTenor] = useState<VolTenorKey>('20D');
-  const [levelMny, setLevelMny] = useState<VolMoneyness[]>(['ATM', 'OTM']);
+  // multi-select: RV and/or IV, and multiple tenors
+  const [levelFamilies, setLevelFamilies] = useState<VolFamily[]>(['RV', 'IV']);
+  const [levelTenors, setLevelTenors] = useState<VolTenorKey[]>(['20D', '40D']);
+  const [levelMny, setLevelMny] = useState<VolMoneyness[]>(['ATM']);
 
   const [s1L, setS1L] = useState<VolLeg>({ product: '', family: 'IV', tenor: '20D', moneyness: 'ATM' });
   const [s1R, setS1R] = useState<VolLeg>({ product: '', family: 'IV', tenor: '20D', moneyness: 'OTM' });
@@ -185,9 +198,16 @@ const VolSpreadPanel: React.FC<{ assetClass: 'equity' | 'commodity'; title: stri
         setData(d);
         setErr(null);
         const prods = d.products.map((p) => p.product);
-        setLevelProds(prods.slice(0, Math.min(2, prods.length)));
-        const a = prods[0] ?? '';
-        const b = prods[1] ?? a;
+        const prefer =
+          assetClass === 'all'
+            ? ['IM', 'IF', 'IH'].filter((p) => prods.includes(p)).slice(0, 2)
+            : prods.slice(0, Math.min(2, prods.length));
+        setLevelProds(prefer.length ? prefer : prods.slice(0, 2));
+        setLevelFamilies(['RV', 'IV']);
+        setLevelTenors(['20D']);
+        setLevelMny(['ATM']);
+        const a = prefer[0] ?? prods[0] ?? '';
+        const b = prefer[1] ?? a;
         setS1L({ product: a, family: 'IV', tenor: '20D', moneyness: 'ATM' });
         setS1R({ product: a, family: 'IV', tenor: '20D', moneyness: 'OTM' });
         setS2L({ product: b || a, family: 'RV', tenor: '20D', moneyness: 'ATM' });
@@ -198,6 +218,7 @@ const VolSpreadPanel: React.FC<{ assetClass: 'equity' | 'commodity'; title: stri
   }, [assetClass]);
 
   const products = data?.products.map((p) => p.product) ?? [];
+  const showIvMny = levelFamilies.includes('IV');
 
   const buildSpread = (L: VolLeg, R: VolLeg) =>
     downsample(alignDiff(getSeries(data, L), getSeries(data, R)), 450);
@@ -215,15 +236,19 @@ const VolSpreadPanel: React.FC<{ assetClass: 'equity' | 'commodity'; title: stri
     const dates = new Set<string>();
     const maps: Record<string, Map<string, number>> = {};
     for (const p of levelProds) {
-      if (levelFamily === 'RV') {
-        const key = `${p}_RV_${levelTenor}`;
-        maps[key] = getSeries(data, { product: p, family: 'RV', tenor: levelTenor, moneyness: 'ATM' });
-        for (const d of maps[key].keys()) dates.add(d);
-      } else {
-        for (const m of levelMny) {
-          const key = `${p}_IV_${levelTenor}_${m}`;
-          maps[key] = getSeries(data, { product: p, family: 'IV', tenor: levelTenor, moneyness: m });
-          for (const d of maps[key].keys()) dates.add(d);
+      for (const fam of levelFamilies) {
+        for (const ten of levelTenors) {
+          if (fam === 'RV') {
+            const key = `${p}_RV_${ten}`;
+            maps[key] = getSeries(data, { product: p, family: 'RV', tenor: ten, moneyness: 'ATM' });
+            for (const d of maps[key].keys()) dates.add(d);
+          } else {
+            for (const m of levelMny) {
+              const key = `${p}_IV_${ten}_${m}`;
+              maps[key] = getSeries(data, { product: p, family: 'IV', tenor: ten, moneyness: m });
+              for (const d of maps[key].keys()) dates.add(d);
+            }
+          }
         }
       }
     }
@@ -238,10 +263,13 @@ const VolSpreadPanel: React.FC<{ assetClass: 'equity' | 'commodity'; title: stri
       }),
       450
     );
-  }, [data, levelProds, levelFamily, levelTenor, levelMny]);
+  }, [data, levelProds, levelFamilies, levelTenors, levelMny]);
 
   const SpreadBlock: React.FC<{ title: string; series: { d: string; v: number }[]; name: string; stroke: string }> = ({
-    title, series, name, stroke,
+    title,
+    series,
+    name,
+    stroke,
   }) => {
     const chart = series.map((p) => ({ d: p.d, v: p.v * 100 }));
     return (
@@ -266,69 +294,96 @@ const VolSpreadPanel: React.FC<{ assetClass: 'equity' | 'commodity'; title: stri
     );
   };
 
-  const toggleProd = (p: string) => {
-    setLevelProds((prev) =>
-      prev.includes(p) ? (prev.length === 1 ? prev : prev.filter((x) => x !== p)) : [...prev, p]
-    );
-  };
-  const toggleMny = (m: VolMoneyness) => {
-    setLevelMny((prev) =>
-      prev.includes(m) ? (prev.length === 1 ? prev : prev.filter((x) => x !== m)) : [...prev, m]
-    );
-  };
-
   return (
     <div className="space-y-3 border border-slate-200 rounded-lg p-4 bg-white">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="font-bold text-[#000066] text-sm">{title}</h3>
+        <h3 className="font-bold text-[#000066] text-sm">{TITLE[assetClass]}</h3>
         <span className="text-[10px] text-slate-400 font-mono">{data?.unit}</span>
       </div>
       {loading && <div className="text-xs text-slate-500">Loading vol series…</div>}
       {err && <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded p-2">{err}</div>}
       {!loading && !err && products.length === 0 && (
         <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded px-3 py-2">
-          无 {assetClass} vol 序列（需 data/vol_spread_levels.parquet）。
+          无 vol 序列（需 data/vol_spread_levels.parquet）。
         </div>
       )}
 
       {data && products.length > 0 && (
         <>
           <div className="bg-slate-50/80 border border-slate-100 rounded-lg p-3 space-y-2">
+            <div className="text-[11px] font-bold text-[#000066]">① Levels（可多选 RV+IV、多期限）</div>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[10px] font-bold text-slate-400 uppercase">Levels</span>
+              <span className="text-[10px] font-bold text-slate-400 uppercase">Product</span>
               {products.map((p) => (
-                <button key={p} type="button" onClick={() => toggleProd(p)}
-                  className={`px-2 py-1 text-[10px] font-bold rounded border ${levelProds.includes(p) ? 'bg-[#000066] text-white border-[#000066]' : 'bg-white text-slate-500 border-slate-200'}`}>
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setLevelProds((prev) => toggleKeepOne(prev, p))}
+                  className={`px-2 py-1 text-[10px] font-bold rounded border ${
+                    levelProds.includes(p)
+                      ? 'bg-[#000066] text-white border-[#000066]'
+                      : 'bg-white text-slate-500 border-slate-200'
+                  }`}
+                >
                   {p}
+                  {data.products.find((x) => x.product === p)?.asset_class === 'commodity' ? ' ·C' : ''}
                 </button>
               ))}
-              <span className="mx-1 text-slate-300">|</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[10px] font-bold text-slate-400 uppercase">Family</span>
               {(['RV', 'IV'] as VolFamily[]).map((f) => (
-                <button key={f} type="button" onClick={() => setLevelFamily(f)}
-                  className={`px-2 py-1 text-[10px] font-bold rounded border ${levelFamily === f ? 'bg-[#FFF100] text-[#000066] border-[#EAB308]' : 'bg-white text-slate-500 border-slate-200'}`}>
+                <button
+                  key={f}
+                  type="button"
+                  onClick={() => setLevelFamilies((prev) => toggleKeepOne(prev, f))}
+                  className={`px-2 py-1 text-[10px] font-bold rounded border ${
+                    levelFamilies.includes(f)
+                      ? 'bg-[#FFF100] text-[#000066] border-[#EAB308]'
+                      : 'bg-white text-slate-500 border-slate-200'
+                  }`}
+                >
                   {f}
                 </button>
               ))}
               <span className="mx-1 text-slate-300">|</span>
+              <span className="text-[10px] font-bold text-slate-400 uppercase">Tenor</span>
               {TENORS.map((t) => (
-                <button key={t} type="button" onClick={() => setLevelTenor(t)}
-                  className={`px-2 py-1 text-[10px] font-bold rounded border ${levelTenor === t ? 'bg-[#000066] text-white border-[#000066]' : 'bg-white text-slate-500 border-slate-200'}`}>
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setLevelTenors((prev) => toggleKeepOne(prev, t))}
+                  className={`px-2 py-1 text-[10px] font-bold rounded border ${
+                    levelTenors.includes(t)
+                      ? 'bg-[#000066] text-white border-[#000066]'
+                      : 'bg-white text-slate-500 border-slate-200'
+                  }`}
+                >
                   {t}
                 </button>
               ))}
-              {levelFamily === 'IV' && (
+              {showIvMny && (
                 <>
                   <span className="mx-1 text-slate-300">|</span>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">IV mny</span>
                   {MNY.map((m) => (
-                    <button key={m} type="button" onClick={() => toggleMny(m)}
-                      className={`px-2 py-1 text-[10px] font-bold rounded border ${levelMny.includes(m) ? 'bg-[#E20000]/10 text-[#E20000] border-[#E20000]/40' : 'bg-white text-slate-500 border-slate-200'}`}>
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setLevelMny((prev) => toggleKeepOne(prev, m))}
+                      className={`px-2 py-1 text-[10px] font-bold rounded border ${
+                        levelMny.includes(m)
+                          ? 'bg-[#E20000]/10 text-[#E20000] border-[#E20000]/40'
+                          : 'bg-white text-slate-500 border-slate-200'
+                      }`}
+                    >
                       {m}
                     </button>
                   ))}
                 </>
               )}
             </div>
-            <div className="h-[260px]">
+            <div className="h-[280px]">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={levelChart}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
@@ -336,10 +391,20 @@ const VolSpreadPanel: React.FC<{ assetClass: 'equity' | 'commodity'; title: stri
                   <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} unit="%" />
                   <Tooltip contentStyle={{ fontSize: 11 }} />
                   <Legend wrapperStyle={{ fontSize: 10 }} />
-                  {Object.keys(levelChart[0] ?? {}).filter((k) => k !== 'd').map((k, i) => (
-                    <Line key={k} type="monotone" dataKey={k} name={k.replace(/_/g, ' ')}
-                      stroke={COLORS[i % COLORS.length]} dot={false} strokeWidth={1.5} connectNulls />
-                  ))}
+                  {Object.keys(levelChart[0] ?? {})
+                    .filter((k) => k !== 'd')
+                    .map((k, i) => (
+                      <Line
+                        key={k}
+                        type="monotone"
+                        dataKey={k}
+                        name={k.replace(/_/g, ' ')}
+                        stroke={COLORS[i % COLORS.length]}
+                        dot={false}
+                        strokeWidth={1.5}
+                        connectNulls
+                      />
+                    ))}
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -350,13 +415,17 @@ const VolSpreadPanel: React.FC<{ assetClass: 'equity' | 'commodity'; title: stri
               <div className="text-[11px] font-bold text-[#000066]">Spread1</div>
               <LegPick label="Left" products={products} leg={s1L} onChange={setS1L} />
               <LegPick label="Right" products={products} leg={s1R} onChange={setS1R} />
-              <div className="text-[10px] font-mono text-slate-500">{legKey(s1L)} − {legKey(s1R)}</div>
+              <div className="text-[10px] font-mono text-slate-500">
+                {legKey(s1L)} − {legKey(s1R)}
+              </div>
             </div>
             <div className="space-y-2 border border-slate-100 rounded-lg p-3 bg-slate-50/50">
               <div className="text-[11px] font-bold text-[#000066]">Spread2</div>
               <LegPick label="Left" products={products} leg={s2L} onChange={setS2L} />
               <LegPick label="Right" products={products} leg={s2R} onChange={setS2R} />
-              <div className="text-[10px] font-mono text-slate-500">{legKey(s2L)} − {legKey(s2R)}</div>
+              <div className="text-[10px] font-mono text-slate-500">
+                {legKey(s2L)} − {legKey(s2R)}
+              </div>
             </div>
           </div>
 
