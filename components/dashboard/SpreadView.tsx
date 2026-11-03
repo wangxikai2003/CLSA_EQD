@@ -5,6 +5,7 @@ import {
 } from 'recharts';
 import { fetchSynthTenors, SynthTenorsResponse } from '../../services/api_v1';
 import { SplitSquareHorizontal } from 'lucide-react';
+import VolSpreadPanel from './VolSpreadPanel';
 
 const COLORS = ['#000066', '#EAB308', '#E20000', '#16a34a', '#7c3aed', '#0891b2'];
 const FUT_TENORS = ['3M', '6M', '9M', '18M'] as const;
@@ -179,6 +180,7 @@ const SpreadView: React.FC = () => {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [assetFilter, setAssetFilter] = useState<'all' | 'equity' | 'commodity'>('all');
+  const [spreadMode, setSpreadMode] = useState<'price' | 'vol'>('price');
 
   const [levelProducts, setLevelProducts] = useState<string[]>(['IM', 'IF']);
   const [levelKinds, setLevelKinds] = useState<LegKind[]>(['SPOT', '3M', '6M']);
@@ -302,28 +304,48 @@ const SpreadView: React.FC = () => {
             品种代码为 <strong>Wind 期货根</strong>（IH/IF/IM，非 HO/IO/MO）+ Bloomberg generic（如 IMc1 Index）。
           </p>
         </div>
-        <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
-          {([
-            ['all', 'All'],
-            ['equity', 'Equity'],
-            ['commodity', 'Commodity'],
-          ] as const).map(([id, lab]) => (
-            <button
-              key={id}
-              onClick={() => setAssetFilter(id)}
-              className={`px-3 py-1.5 text-xs font-bold rounded-md ${
-                assetFilter === id ? 'bg-white text-[#000066] shadow' : 'text-slate-500'
-              }`}
-            >
-              {lab}
-            </button>
-          ))}
+        <div className="flex flex-col items-end gap-2">
+          <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
+            {([
+              ['price', 'Price'],
+              ['vol', 'Vol'],
+            ] as const).map(([id, lab]) => (
+              <button
+                key={id}
+                onClick={() => setSpreadMode(id)}
+                className={`px-3 py-1.5 text-xs font-bold rounded-md ${
+                  spreadMode === id ? 'bg-white text-[#000066] shadow' : 'text-slate-500'
+                }`}
+              >
+                {lab}
+              </button>
+            ))}
+          </div>
+          {spreadMode === 'price' && (
+            <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
+              {([
+                ['all', 'All'],
+                ['equity', 'Equity'],
+                ['commodity', 'Commodity'],
+              ] as const).map(([id, lab]) => (
+                <button
+                  key={id}
+                  onClick={() => setAssetFilter(id)}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-md ${
+                    assetFilter === id ? 'bg-white text-[#000066] shadow' : 'text-slate-500'
+                  }`}
+                >
+                  {lab}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
       {loading && <div className="text-xs text-slate-500">Loading…</div>}
       {err && <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded p-2">{err}</div>}
-      {data && !data.commodity_enabled && assetFilter !== 'equity' && (
+      {spreadMode === 'price' && data && !data.commodity_enabled && assetFilter !== 'equity' && (
         <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded px-3 py-2">
           商品期货库未启用（需 data/commodity_fut.sqlite）。商品现货尚未落地。
         </div>
@@ -332,6 +354,19 @@ const SpreadView: React.FC = () => {
         <div className="text-[10px] text-slate-400 font-mono">{data.code_convention}</div>
       )}
 
+      {spreadMode === 'vol' && (
+        <div className="space-y-4">
+          <p className="text-[11px] text-slate-500">
+            Vol spread：Equity / Commodity 各自可看 RV（20/40/120D、6M=126D、1Y=252D）与 IV（同 tenor；ATM / OTM K/F=0.95 / ITM K/F=1.05）。
+            Spread1/2 与 SoS 口径同价格面板（左−右；SoS=S1−S2），单位为波动率（图上×100 显示为 %）。
+          </p>
+          <VolSpreadPanel assetClass="equity" title="Equity Vol Spread" />
+          <VolSpreadPanel assetClass="commodity" title="Commodity Vol Spread" />
+        </div>
+      )}
+
+      {spreadMode === 'price' && (
+      <>
       {/* Levels */}
       <div className="bg-white rounded-lg border border-slate-200 p-4">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -421,6 +456,8 @@ const SpreadView: React.FC = () => {
         name={`(${spreadLabel(s1L, s1R)}) − (${spreadLabel(s2L, s2R)})`}
         stroke="#E20000"
       />
+      </>
+      )}
     </div>
   );
 };

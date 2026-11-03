@@ -246,6 +246,38 @@ export function fetchSynthTenors(
   );
 }
 
+export type VolTenorKey = '20D' | '40D' | '120D' | '6M' | '1Y';
+export type VolMoneyness = 'ATM' | 'OTM' | 'ITM';
+export type VolFamily = 'RV' | 'IV';
+
+export interface VolSpreadsResponse {
+  tenors: VolTenorKey[];
+  moneyness: VolMoneyness[];
+  families: VolFamily[];
+  products: { product: string; db_key: string; asset_class: 'equity' | 'commodity' }[];
+  levels: Record<
+    string,
+    {
+      RV: Partial<Record<VolTenorKey, { d: string; v: number }[]>>;
+      IV: Partial<Record<VolTenorKey, Partial<Record<VolMoneyness, { d: string; v: number }[]>>>>;
+    }
+  >;
+  coverage: Record<string, unknown>;
+  unit: string;
+  method: string;
+  source: string;
+}
+
+export function fetchVolSpreads(
+  assetClass: 'equity' | 'commodity' | 'all' = 'equity',
+  refresh = false,
+  signal?: AbortSignal
+) {
+  const q = new URLSearchParams({ asset_class: assetClass });
+  if (refresh) q.set('refresh', 'true');
+  return getJson<VolSpreadsResponse>(`/api/v1/market/vol-spreads?${q}`, signal);
+}
+
 export interface QisStrategyInfo {
   id: string;
   name: string;

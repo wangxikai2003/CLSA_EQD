@@ -46,6 +46,7 @@ try:
     from api.v1 import stream as stream_routes
     from api.v1 import qis_backtest as qis_routes
     from api.v1 import synth_tenors as synth_tenor_routes
+    from api.v1 import vol_spreads as vol_spread_routes
 
     app.add_middleware(TimingMiddleware)
     app.include_router(pricing_routes.router)
@@ -53,6 +54,7 @@ try:
     app.include_router(stream_routes.router)
     app.include_router(market_routes.router)
     app.include_router(synth_tenor_routes.router, prefix="/api/v1/market")
+    app.include_router(vol_spread_routes.router, prefix="/api/v1/market")
     app.include_router(qis_routes.router, prefix="/api/v1/qis")
 except Exception as _v1_err:  # pragma: no cover
     import logging
