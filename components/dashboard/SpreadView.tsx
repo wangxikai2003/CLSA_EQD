@@ -179,6 +179,7 @@ const SpreadView: React.FC = () => {
   const [data, setData] = useState<SynthTenorsResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadStatus, setLoadStatus] = useState('加载合成期限…');
   const [assetFilter, setAssetFilter] = useState<'all' | 'equity' | 'commodity'>('all');
   const [volAssetFilter, setVolAssetFilter] = useState<'all' | 'equity' | 'commodity'>('equity');
   const [spreadMode, setSpreadMode] = useState<'price' | 'vol'>('price');
@@ -193,9 +194,20 @@ const SpreadView: React.FC = () => {
   const [s2R, setS2R] = useState<LegSel>({ product: 'IM', kind: '3M' });
 
   useEffect(() => {
+    const ac = new AbortController();
     setLoading(true);
-    fetchSynthTenors(false, assetFilter)
+    setErr(null);
+    setLoadStatus('加载合成期限…');
+    fetchSynthTenors(false, assetFilter, {
+      signal: ac.signal,
+      onRetry: ({ attempt, maxAttempts, delayMs }) => {
+        setLoadStatus(
+          `服务冷启动/繁忙，继续等待（${attempt}/${maxAttempts}），约 ${Math.ceil(delayMs / 1000)}s 后重试…`
+        );
+      },
+    })
       .then((d) => {
+        if (ac.signal.aborted) return;
         setData(d);
         setErr(null);
         const prods = d.products.map((p) => p.product);
@@ -211,8 +223,14 @@ const SpreadView: React.FC = () => {
         setS2L({ product: first, kind: hasSpot ? 'SPOT' : '3M' });
         setS2R({ product: first, kind: hasSpot ? '3M' : '6M' });
       })
-      .catch((e) => setErr(String(e)))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if ((e as Error)?.name === 'AbortError' || ac.signal.aborted) return;
+        setErr('数据仍在准备中，请稍后点刷新或切换 All/Equity/Commodity 再试。');
+      })
+      .finally(() => {
+        if (!ac.signal.aborted) setLoading(false);
+      });
+    return () => ac.abort();
   }, [assetFilter]);
 
   const products = data?.products ?? [];
@@ -347,8 +365,15 @@ const SpreadView: React.FC = () => {
         </div>
       </div>
 
-      {loading && <div className="text-xs text-slate-500">Loading…</div>}
-      {err && <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded p-2">{err}</div>}
+      {loading && (
+        <div className="text-xs text-slate-500 flex items-center gap-2">
+          <span className="inline-block h-2 w-2 rounded-full bg-[#EAB308] animate-pulse" />
+          {loadStatus}
+        </div>
+      )}
+      {err && !loading && (
+        <div className="text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded p-2">{err}</div>
+      )}
       {spreadMode === 'price' && data && !data.commodity_enabled && assetFilter !== 'equity' && (
         <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-100 rounded px-3 py-2">
           商品期货库未启用（需 data/commodity_fut.sqlite）。商品现货尚未落地。

@@ -125,10 +125,111 @@ async function postJson<T>(path: string, body: unknown, signal?: AbortSignal): P
   }
 }
 
+export type RetryStatus = {
+  attempt: number;
+  maxAttempts: number;
+  delayMs: number;
+  reason: string;
+};
+
+export type FetchRetryOpts = {
+  signal?: AbortSignal;
+  onRetry?: (status: RetryStatus) => void;
+  /** Default 10 — cover Cloud Run cold-start / first heavy build. */
+  maxAttempts?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+};
+
+function _asRetryOpts(opts?: AbortSignal | FetchRetryOpts): FetchRetryOpts {
+  if (!opts) return {};
+  if (typeof AbortSignal !== 'undefined' && opts instanceof AbortSignal) return { signal: opts };
+  return opts as FetchRetryOpts;
+}
+
+function _isTransientStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
+function _sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      const err = new Error('Aborted');
+      err.name = 'AbortError';
+      reject(err);
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      const err = new Error('Aborted');
+      err.name = 'AbortError';
+      reject(err);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function _isAbort(e: unknown, signal?: AbortSignal): boolean {
+  return (e as Error)?.name === 'AbortError' || !!signal?.aborted || String(e).includes('abort');
+}
+
+function _isNetworkError(e: unknown): boolean {
+  if (e instanceof TypeError) return true;
+  const s = String(e);
+  return s.includes('Failed to fetch') || s.includes('NetworkError') || s.includes('Load failed');
+}
+
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { signal });
   if (!res.ok) throw new Error(`${res.status} ${path}: ${await res.text()}`);
   return res.json() as Promise<T>;
+}
+
+/** GET with patience for cold starts / gateway 503s — keeps retrying instead of failing once. */
+async function getJsonWithRetry<T>(path: string, opts?: FetchRetryOpts): Promise<T> {
+  const maxAttempts = opts?.maxAttempts ?? 10;
+  const baseDelayMs = opts?.baseDelayMs ?? 1500;
+  const maxDelayMs = opts?.maxDelayMs ?? 15000;
+  const signal = opts?.signal;
+  let lastErr: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (signal?.aborted) {
+      const err = new Error('Aborted');
+      err.name = 'AbortError';
+      throw err;
+    }
+    try {
+      const res = await fetch(`${API_BASE}${path}`, { signal });
+      if (res.ok) return (await res.json()) as T;
+      const text = (await res.text()).trim();
+      const msg = `${res.status} ${path}: ${text || res.statusText || 'Service Unavailable'}`;
+      lastErr = new Error(msg);
+      if (!_isTransientStatus(res.status) || attempt >= maxAttempts) throw lastErr;
+      const delayMs = Math.min(maxDelayMs, Math.round(baseDelayMs * Math.pow(1.7, attempt - 1)));
+      opts?.onRetry?.({ attempt, maxAttempts, delayMs, reason: msg });
+      await _sleep(delayMs, signal);
+    } catch (e) {
+      if (_isAbort(e, signal)) {
+        const err = new Error('Aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
+      if (e instanceof Error && e === lastErr && attempt >= maxAttempts) throw e;
+      if (e instanceof Error && /^\d{3}\s/.test(e.message) && !_isTransientStatus(parseInt(e.message, 10))) {
+        throw e;
+      }
+      lastErr = e instanceof Error ? e : new Error(String(e));
+      const code = parseInt(lastErr.message, 10);
+      const transient = _isNetworkError(e) || (Number.isFinite(code) && _isTransientStatus(code));
+      if (!transient || attempt >= maxAttempts) throw lastErr;
+      const delayMs = Math.min(maxDelayMs, Math.round(baseDelayMs * Math.pow(1.7, attempt - 1)));
+      opts?.onRetry?.({ attempt, maxAttempts, delayMs, reason: lastErr.message });
+      await _sleep(delayMs, signal);
+    }
+  }
+  throw lastErr ?? new Error(`${path}: exhausted retries`);
 }
 
 /** Module-level AbortController so rapid re-prices cancel in-flight POSTs. */
@@ -234,15 +335,16 @@ export interface SynthTenorsResponse {
 export function fetchSynthTenors(
   refresh = false,
   assetClass: SynthAssetClass = 'all',
-  signal?: AbortSignal
+  opts?: AbortSignal | FetchRetryOpts
 ) {
+  const o = _asRetryOpts(opts);
   const q = new URLSearchParams();
   if (refresh) q.set('refresh', 'true');
   if (assetClass && assetClass !== 'all') q.set('asset_class', assetClass);
   const qs = q.toString();
-  return getJson<SynthTenorsResponse>(
+  return getJsonWithRetry<SynthTenorsResponse>(
     `/api/v1/market/synth-tenors${qs ? `?${qs}` : ''}`,
-    signal
+    o
   );
 }
 
@@ -271,11 +373,12 @@ export interface VolSpreadsResponse {
 export function fetchVolSpreads(
   assetClass: 'equity' | 'commodity' | 'all' = 'equity',
   refresh = false,
-  signal?: AbortSignal
+  opts?: AbortSignal | FetchRetryOpts
 ) {
+  const o = _asRetryOpts(opts);
   const q = new URLSearchParams({ asset_class: assetClass });
   if (refresh) q.set('refresh', 'true');
-  return getJson<VolSpreadsResponse>(`/api/v1/market/vol-spreads?${q}`, signal);
+  return getJsonWithRetry<VolSpreadsResponse>(`/api/v1/market/vol-spreads?${q}`, o);
 }
 
 export interface QisStrategyInfo {
@@ -323,13 +426,23 @@ export interface QisBacktestResponse {
   };
 }
 
-export function fetchQisStrategies(signal?: AbortSignal) {
-  return getJson<{ strategies: QisStrategyInfo[] }>('/api/v1/qis/strategies', signal);
+export function fetchQisStrategies(opts?: AbortSignal | FetchRetryOpts) {
+  return getJsonWithRetry<{ strategies: QisStrategyInfo[] }>(
+    '/api/v1/qis/strategies',
+    _asRetryOpts(opts)
+  );
 }
 
-export function fetchQisBacktest(strategyId: string, refresh = false, signal?: AbortSignal) {
+export function fetchQisBacktest(
+  strategyId: string,
+  refresh = false,
+  opts?: AbortSignal | FetchRetryOpts
+) {
   const q = refresh ? '?refresh=true' : '';
-  return getJson<QisBacktestResponse>(`/api/v1/qis/backtest/${strategyId}${q}`, signal);
+  return getJsonWithRetry<QisBacktestResponse>(
+    `/api/v1/qis/backtest/${strategyId}${q}`,
+    _asRetryOpts(opts)
+  );
 }
 
 /** Debounce an async fn; last arg may receive AbortSignal when fn supports it. */

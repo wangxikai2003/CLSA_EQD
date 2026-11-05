@@ -27,29 +27,53 @@ const QisView: React.FC = () => {
   const [strategyId, setStrategyId] = useState('cross_calendar_carry');
   const [data, setData] = useState<QisBacktestResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadStatus, setLoadStatus] = useState('Running backtest…');
   const [err, setErr] = useState<string | null>(null);
 
-  const load = (refresh = false) => {
+  const load = (refresh = false, signal?: AbortSignal) => {
     setLoading(true);
-    fetchQisBacktest(strategyId, refresh)
+    setErr(null);
+    setLoadStatus(refresh ? '刷新回测…' : 'Running backtest…');
+    fetchQisBacktest(strategyId, refresh, {
+      signal,
+      onRetry: ({ attempt, maxAttempts, delayMs }) => {
+        setLoadStatus(
+          `服务冷启动/繁忙，继续等待（${attempt}/${maxAttempts}），约 ${Math.ceil(delayMs / 1000)}s 后重试…`
+        );
+      },
+    })
       .then((d) => {
+        if (signal?.aborted) return;
         setData(d);
         setErr(null);
       })
-      .catch((e) => setErr(String(e)))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if ((e as Error)?.name === 'AbortError' || signal?.aborted) return;
+        setErr('回测仍在准备中，请稍后点 Refresh 再试。');
+      })
+      .finally(() => {
+        if (!signal?.aborted) setLoading(false);
+      });
   };
 
   useEffect(() => {
-    fetchQisStrategies()
-      .then((d) => setStrategies(d.strategies ?? []))
-      .catch(() =>
-        setStrategies([{ id: 'cross_calendar_carry', name: 'Cross Calendar Carry', status: 'live' }])
-      );
+    const ac = new AbortController();
+    fetchQisStrategies({ signal: ac.signal })
+      .then((d) => {
+        if (!ac.signal.aborted) setStrategies(d.strategies ?? []);
+      })
+      .catch(() => {
+        if (!ac.signal.aborted) {
+          setStrategies([{ id: 'cross_calendar_carry', name: 'Cross Calendar Carry', status: 'live' }]);
+        }
+      });
+    return () => ac.abort();
   }, []);
 
   useEffect(() => {
-    load(false);
+    const ac = new AbortController();
+    load(false, ac.signal);
+    return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strategyId]);
 
@@ -91,8 +115,15 @@ const QisView: React.FC = () => {
         </div>
       </div>
 
-      {loading && <div className="text-xs text-slate-500">Running backtest…</div>}
-      {err && <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded p-2">{err}</div>}
+      {loading && (
+        <div className="text-xs text-slate-500 flex items-center gap-2">
+          <span className="inline-block h-2 w-2 rounded-full bg-[#EAB308] animate-pulse" />
+          {loadStatus}
+        </div>
+      )}
+      {err && !loading && (
+        <div className="text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded p-2">{err}</div>
+      )}
 
       {data && (
         <>

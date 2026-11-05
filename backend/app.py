@@ -62,6 +62,38 @@ except Exception as _v1_err:  # pragma: no cover
     logging.getLogger("clsa").warning("api v1 routers not loaded: %s", _v1_err)
 
 
+@app.on_event("startup")
+def _warmup_synth_tenors_cache() -> None:
+    """Pre-build synth-tenors in a daemon thread so cold Spread tab avoids gateway 503."""
+    import logging
+    import threading
+
+    log = logging.getLogger("clsa")
+
+    def _run() -> None:
+        try:
+            from api.v1 import synth_tenors as st
+
+            payload = st.build_payload()
+            payload["coverage"] = {
+                p: {t: len(v) for t, v in tens.items()} for p, tens in payload["levels"].items()
+            }
+            db = st._equity_db()
+            spot = next((p for p in st._SPOT_CANDIDATES if p.exists()), None)
+            cdb = st._commodity_db()
+            st._cache["key"] = (
+                db.stat().st_mtime,
+                spot.stat().st_mtime if spot else None,
+                cdb.stat().st_mtime if cdb else None,
+            )
+            st._cache["payload"] = payload
+            log.info("synth-tenors cache warmed (%d products)", len(payload.get("products", [])))
+        except Exception as e:  # pragma: no cover
+            log.warning("synth-tenors warmup skipped: %s", e)
+
+    threading.Thread(target=_run, name="warmup-synth-tenors", daemon=True).start()
+
+
 def connect() -> sqlite3.Connection:
     if not DB_PATH.exists():
         raise HTTPException(503, f"Database not found: {DB_PATH}")
