@@ -400,6 +400,35 @@ export interface QisMetrics {
   end?: string | null;
 }
 
+export interface QisPnLDecomposition {
+  dates: string[];
+  vega_pnl: number[];
+  theta_pnl: number[];
+  gamma_pnl: number[];
+  basis_pnl: number[];
+  net_delta_pnl: number[];
+  residual_pnl: number[];
+}
+
+export interface QisSignalSeries {
+  dates: string[];
+  spread: number[];
+  zscore: (number | null)[];
+  position: number[];
+  enter_band: number;
+  exit_band: number;
+}
+
+export interface QisPnLContribution {
+  total_pnl: number;
+  vega_pct: number | null;
+  theta_pct: number | null;
+  gamma_pct: number | null;
+  basis_pct: number | null;
+  net_delta_pct: number | null;
+  residual_pct: number | null;
+}
+
 export interface QisBacktestResponse {
   strategy_id: string;
   strategy_name: string;
@@ -413,6 +442,8 @@ export interface QisBacktestResponse {
     rebalance: string;
     signal_lag: string;
     price: string;
+    sizing?: string;
+    [k: string]: unknown;
   };
   nav: { d: string; nav: number; sos: number }[];
   metrics: Record<'1y' | '3y' | '5y' | 'max', QisMetrics>;
@@ -423,7 +454,11 @@ export interface QisBacktestResponse {
     final_nav: number;
     final_nav_multiple: number;
     total_cost: number;
+    total_pnl?: number;
   };
+  pnl_decomposition?: QisPnLDecomposition;
+  signal?: QisSignalSeries;
+  pnl_contribution?: QisPnLContribution;
 }
 
 export function fetchQisStrategies(opts?: AbortSignal | FetchRetryOpts) {

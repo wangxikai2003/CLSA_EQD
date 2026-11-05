@@ -310,7 +310,13 @@ def list_strategies():
                 "name": "Cross Calendar Carry",
                 "status": "live",
                 "blurb": "IM 3M−6M minus IH 3M−6M calendar carry",
-            }
+            },
+            {
+                "id": "equity_3_6_calendar_vol_300",
+                "name": "Equity 3-6 Calendar Volatility Long Short Strategy — 300",
+                "status": "live",
+                "blurb": "CSI300 3M−6M ATM CT-IV spread Z-score; IO straddles + IF hedge",
+            },
         ]
     }
 
@@ -320,15 +326,37 @@ def backtest(
     strategy_id: str,
     refresh: bool = Query(False),
 ):
-    if strategy_id != "cross_calendar_carry":
-        raise HTTPException(404, f"Unknown strategy: {strategy_id}")
-
     db = st._equity_db()
-    key = (strategy_id, db.stat().st_mtime, _INITIAL_NAV, _SLIPPAGE, _FEE)
-    if not refresh and _cache["payload"] is not None and _cache["key"] == key:
-        return _cache["payload"]
 
-    payload = run_cross_calendar_carry()
-    _cache["key"] = key
-    _cache["payload"] = payload
-    return payload
+    if strategy_id == "cross_calendar_carry":
+        key = (strategy_id, db.stat().st_mtime, _INITIAL_NAV, _SLIPPAGE, _FEE)
+        if not refresh and _cache["payload"] is not None and _cache["key"] == key:
+            return _cache["payload"]
+        payload = run_cross_calendar_carry()
+        _cache["key"] = key
+        _cache["payload"] = payload
+        return payload
+
+    if strategy_id == "equity_3_6_calendar_vol_300":
+        from engine.calendar_vol_strategy import run_equity_3_6_calendar_vol_300
+
+        spot = next((p for p in st._SPOT_CANDIDATES if p.exists()), None)
+        key = (
+            strategy_id,
+            db.stat().st_mtime,
+            spot.stat().st_mtime if spot else None,
+            _INITIAL_NAV,
+        )
+        cached = _cache.get("cal_vol")
+        if (
+            not refresh
+            and isinstance(cached, dict)
+            and cached.get("key") == key
+            and cached.get("payload") is not None
+        ):
+            return cached["payload"]
+        payload = run_equity_3_6_calendar_vol_300(_INITIAL_NAV)
+        _cache["cal_vol"] = {"key": key, "payload": payload}
+        return payload
+
+    raise HTTPException(404, f"Unknown strategy: {strategy_id}")

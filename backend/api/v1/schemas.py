@@ -72,3 +72,46 @@ class JwCalibResponse(BaseModel):
     arbitrage: Dict[str, Any]
     max_residual: float = 0.0
     arbitrage_check: Dict[str, Any] = {}
+
+
+# ---- QIS ----
+QISStrategyId = Literal["cross_calendar_carry", "equity_3_6_calendar_vol_300"]
+
+
+class PnLDecomposition(BaseModel):
+    dates: List[str]
+    vega_pnl: List[float]
+    theta_pnl: List[float]
+    gamma_pnl: List[float]
+    basis_pnl: List[float]
+    net_delta_pnl: List[float]
+    residual_pnl: List[float]
+
+
+class QISSignalSeries(BaseModel):
+    dates: List[str]
+    spread: List[float]
+    zscore: List[Optional[float]]
+    position: List[int]
+    enter_band: float = 1.5
+    exit_band: float = 0.2
+
+
+class QISBacktestRequest(BaseModel):
+    strategy_type: QISStrategyId = "cross_calendar_carry"
+    initial_nav: float = 100_000_000.0
+    refresh: bool = False
+
+
+class QISBacktestResponse(BaseModel):
+    strategy_id: str
+    strategy_name: str
+    description: str
+    legs: List[Dict[str, Any]] = Field(default_factory=list)
+    params: Dict[str, Any] = Field(default_factory=dict)
+    nav: List[Dict[str, Any]] = Field(default_factory=list)
+    metrics: Dict[str, Any] = Field(default_factory=dict)
+    summary: Dict[str, Any] = Field(default_factory=dict)
+    pnl_decomposition: Optional[PnLDecomposition] = None
+    signal: Optional[QISSignalSeries] = None
+    pnl_contribution: Optional[Dict[str, Any]] = None
