@@ -362,7 +362,7 @@ const SpreadView: React.FC = () => {
         <div className="space-y-4">
           <p className="text-[11px] text-slate-500">
             Vol 子界面：All / Equity / Commodity。Levels 可同时勾选 <strong>RV + IV</strong> 与多个期限
-            （20/40/120D、6M、1Y）；IV 另选 ATM / OTM(0.95) / ITM(1.05)。
+            （1M=21D、3M=63D、6M=126D、12M=252D）；IV 另选 ATM / OTM(0.95) / ITM(1.05)。
             Spread1/2 与 SoS 同价格面板（左−右；SoS=S1−S2），图上为波动率 %。
           </p>
           <VolSpreadPanel assetClass={volAssetFilter} />

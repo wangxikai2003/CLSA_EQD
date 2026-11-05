@@ -246,7 +246,7 @@ export function fetchSynthTenors(
   );
 }
 
-export type VolTenorKey = '20D' | '40D' | '120D' | '6M' | '1Y';
+export type VolTenorKey = '1M' | '3M' | '6M' | '12M';
 export type VolMoneyness = 'ATM' | 'OTM' | 'ITM';
 export type VolFamily = 'RV' | 'IV';
 

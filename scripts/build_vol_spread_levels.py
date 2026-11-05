@@ -18,13 +18,12 @@ ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
 OUT = ROOT / "data" / "vol_spread_levels.parquet"
 
-# trading-day windows (半年≈126, 一年=252)
+# Month labels → trading-day windows (≈21 trading days per month)
 RV_WINDOWS = [
-    ("20D", 20),
-    ("40D", 40),
-    ("120D", 120),
+    ("1M", 21),
+    ("3M", 63),
     ("6M", 126),
-    ("1Y", 252),
+    ("12M", 252),
 ]
 # IV target TTM in years ≈ trading days / 252
 IV_TENORS = [(lab, d / 252.0) for lab, d in RV_WINDOWS]
@@ -223,13 +222,13 @@ def main():
         sys.exit(f"missing {eq_db}")
     records = []
     print("=== equity ===")
-    con = sqlite3.connect(f"file:{eq_db}?mode=ro", uri=True)
+    con = sqlite3.connect(str(eq_db))
     records.extend(process_universe(con, EQUITY))
     con.close()
 
     if cm_db.exists() and cm_db.stat().st_size > 0:
         print("=== commodity ===")
-        con = sqlite3.connect(f"file:{cm_db}?mode=ro", uri=True)
+        con = sqlite3.connect(str(cm_db))
         records.extend(process_universe(con, COMMODITY))
         con.close()
     else:

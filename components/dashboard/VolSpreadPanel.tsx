@@ -12,7 +12,7 @@ import {
 } from '../../services/api_v1';
 
 const COLORS = ['#000066', '#EAB308', '#E20000', '#16a34a', '#7c3aed', '#0891b2', '#ea580c', '#0d9488'];
-const TENORS: VolTenorKey[] = ['20D', '40D', '120D', '6M', '1Y'];
+const TENORS: VolTenorKey[] = ['1M', '3M', '6M', '12M'];
 const MNY: VolMoneyness[] = ['ATM', 'OTM', 'ITM'];
 
 const selectClass =
@@ -183,13 +183,13 @@ const VolSpreadPanel: React.FC<{ assetClass: VolAssetFilter }> = ({ assetClass }
   const [levelProds, setLevelProds] = useState<string[]>([]);
   // multi-select: RV and/or IV, and multiple tenors
   const [levelFamilies, setLevelFamilies] = useState<VolFamily[]>(['RV', 'IV']);
-  const [levelTenors, setLevelTenors] = useState<VolTenorKey[]>(['20D', '40D']);
+  const [levelTenors, setLevelTenors] = useState<VolTenorKey[]>(['1M', '3M']);
   const [levelMny, setLevelMny] = useState<VolMoneyness[]>(['ATM']);
 
-  const [s1L, setS1L] = useState<VolLeg>({ product: '', family: 'IV', tenor: '20D', moneyness: 'ATM' });
-  const [s1R, setS1R] = useState<VolLeg>({ product: '', family: 'IV', tenor: '20D', moneyness: 'OTM' });
-  const [s2L, setS2L] = useState<VolLeg>({ product: '', family: 'RV', tenor: '20D', moneyness: 'ATM' });
-  const [s2R, setS2R] = useState<VolLeg>({ product: '', family: 'IV', tenor: '20D', moneyness: 'ATM' });
+  const [s1L, setS1L] = useState<VolLeg>({ product: '', family: 'IV', tenor: '1M', moneyness: 'ATM' });
+  const [s1R, setS1R] = useState<VolLeg>({ product: '', family: 'IV', tenor: '1M', moneyness: 'OTM' });
+  const [s2L, setS2L] = useState<VolLeg>({ product: '', family: 'RV', tenor: '1M', moneyness: 'ATM' });
+  const [s2R, setS2R] = useState<VolLeg>({ product: '', family: 'IV', tenor: '1M', moneyness: 'ATM' });
 
   useEffect(() => {
     setLoading(true);
@@ -204,14 +204,14 @@ const VolSpreadPanel: React.FC<{ assetClass: VolAssetFilter }> = ({ assetClass }
             : prods.slice(0, Math.min(2, prods.length));
         setLevelProds(prefer.length ? prefer : prods.slice(0, 2));
         setLevelFamilies(['RV', 'IV']);
-        setLevelTenors(['20D']);
+        setLevelTenors(['1M']);
         setLevelMny(['ATM']);
         const a = prefer[0] ?? prods[0] ?? '';
         const b = prefer[1] ?? a;
-        setS1L({ product: a, family: 'IV', tenor: '20D', moneyness: 'ATM' });
-        setS1R({ product: a, family: 'IV', tenor: '20D', moneyness: 'OTM' });
-        setS2L({ product: b || a, family: 'RV', tenor: '20D', moneyness: 'ATM' });
-        setS2R({ product: b || a, family: 'IV', tenor: '20D', moneyness: 'ATM' });
+        setS1L({ product: a, family: 'IV', tenor: '1M', moneyness: 'ATM' });
+        setS1R({ product: a, family: 'IV', tenor: '1M', moneyness: 'OTM' });
+        setS2L({ product: b || a, family: 'RV', tenor: '1M', moneyness: 'ATM' });
+        setS2R({ product: b || a, family: 'IV', tenor: '1M', moneyness: 'ATM' });
       })
       .catch((e) => setErr(String(e)))
       .finally(() => setLoading(false));

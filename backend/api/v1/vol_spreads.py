@@ -15,7 +15,7 @@ _PARQUET_CANDIDATES = [
     Path("/app/data/vol_spread_levels.parquet"),
 ]
 
-_TENORS = ["20D", "40D", "120D", "6M", "1Y"]
+_TENORS = ["1M", "3M", "6M", "12M"]
 _MNY = ["ATM", "OTM", "ITM"]
 
 _cache: Dict[str, Any] = {"mtime": None, "df": None}
@@ -110,7 +110,7 @@ def vol_spreads(
         "unit": "decimal vol (e.g. 0.20 = 20%)",
         "method": (
             "RV: front-month futures log-return rolling std × √252 "
-            "(20/40/120D, 6M=126D, 1Y=252D). "
+            "(1M=21D, 3M=63D, 6M=126D, 12M=252D). "
             "IV: SVI otm-side constant-maturity interp to TTM=D/252; "
             "ATM k=0, OTM K/F=0.95 (put wing), ITM K/F=1.05 (call wing). "
             "Ids = Wind futures roots (IH/IF/IM); IV from option surfaces HO/IO/MO."
