@@ -136,7 +136,9 @@ const QisView: React.FC = () => {
             Systematic Trading Strategies
           </h2>
           <p className="text-[11px] text-slate-500 max-w-3xl mt-1">
-            QIS 回测框架。支持期货价差 carry 与期权日历波动率策略；从下拉切换策略查看 NAV 与（若有）PnL 分解。
+            QIS 回测框架：期货 carry + Equity 3-6 Calendar Vol（50 / 300 / 1000）。
+            日历波动策略结果预计算写入 <code className="font-mono">qis_results.sqlite</code>，打开即读缓存；
+            Refresh 可强制重算。Z 默认 252 交易日（仅用历史窗口，无前瞻）。
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -182,6 +184,8 @@ const QisView: React.FC = () => {
               <div className="text-[10px] font-mono text-slate-500">
                 {data.summary.start} → {data.summary.end} · final ×{data.summary.final_nav_multiple.toFixed(3)} ·
                 NAV {data.summary.final_nav.toLocaleString('en-CN', { maximumFractionDigits: 0 })}
+                {data.summary.first_open ? ` · first open ${data.summary.first_open}` : ''}
+                {typeof data.params.z_window === 'number' ? ` · Z=${data.params.z_window}d` : ''}
               </div>
             </div>
             <p className="text-[11px] text-slate-600 leading-relaxed">{data.description}</p>

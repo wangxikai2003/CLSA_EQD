@@ -1,9 +1,10 @@
-"""Equity 3-6 Calendar Volatility Long Short Strategy — 300 (CSI300 / IO / IF)."""
+"""Equity 3-6 Calendar Volatility Long Short — CSI50 / CSI300 / CSI1000."""
 from __future__ import annotations
 
 import math
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -29,13 +30,45 @@ T_3M = 90.0 / 365.0
 T_6M = 180.0 / 365.0
 Z_ENTER = 1.5
 Z_EXIT = 0.2
-ROLL_WIN = 252
+DEFAULT_Z_WINDOW = 252  # 1Y trading days; research override via z_window=
 MAX_HOLD_REVERSE = 20
-M_IO = 100.0
-M_IF = 300.0
-VEGA_BUDGET_FRAC = 0.01  # dollar vega = 1% NAV per vol point
-STRATEGY_ID = "equity_3_6_calendar_vol_300"
-STRATEGY_NAME = "Equity 3-6 Calendar Volatility Long Short Strategy — 300"
+VEGA_BUDGET_FRAC = 0.01
+
+# option product (DB) → index / futures multipliers
+UNIVERSES: Dict[str, Dict[str, Any]] = {
+    "50": {
+        "strategy_id": "equity_3_6_calendar_vol_50",
+        "strategy_name": "Equity 3-6 Calendar Volatility Long Short Strategy — 50",
+        "product": "HO",
+        "fut_root": "IH",
+        "spot_code": "000016.SH",
+        "index_name": "SSE 50",
+        "m_opt": 100.0,
+        "m_fut": 300.0,
+    },
+    "300": {
+        "strategy_id": "equity_3_6_calendar_vol_300",
+        "strategy_name": "Equity 3-6 Calendar Volatility Long Short Strategy — 300",
+        "product": "IO",
+        "fut_root": "IF",
+        "spot_code": "000300.SH",
+        "index_name": "CSI 300",
+        "m_opt": 100.0,
+        "m_fut": 300.0,
+    },
+    "1000": {
+        "strategy_id": "equity_3_6_calendar_vol_1000",
+        "strategy_name": "Equity 3-6 Calendar Volatility Long Short Strategy — 1000",
+        "product": "MO",
+        "fut_root": "IM",
+        "spot_code": "000852.SH",
+        "index_name": "CSI 1000",
+        "m_opt": 100.0,
+        "m_fut": 200.0,
+    },
+}
+
+STRATEGY_BY_ID = {u["strategy_id"]: key for key, u in UNIVERSES.items()}
 
 
 def _equity_db() -> Path:
@@ -59,7 +92,6 @@ def total_var_interp_iv(ttms: np.ndarray, watms: np.ndarray, t_tgt: float) -> fl
     order = np.argsort(ttms)
     ttms = ttms[order]
     watms = watms[order]
-    # w_atm is already total variance; fall back handled by caller
     if t_tgt <= ttms[0]:
         w = float(watms[0])
         t_use = float(ttms[0])
@@ -78,17 +110,17 @@ def total_var_interp_iv(ttms: np.ndarray, watms: np.ndarray, t_tgt: float) -> fl
     return math.sqrt(max(w, 0.0) / t_use)
 
 
-def rolling_zscore(spread: pd.Series, window: int = ROLL_WIN) -> pd.Series:
-    """Z_t = (Spread_t - μ_t) / σ_t with μ,σ from Spread[t-window .. t-1] only."""
+def rolling_zscore(spread: pd.Series, window: int = DEFAULT_Z_WINDOW) -> pd.Series:
+    """Z_t=(Spread_t-μ)/σ with μ,σ from Spread[t-window..t-1] only (no future leak)."""
+    window = int(window)
+    if window < 2:
+        raise ValueError("z_window must be >= 2")
     s = spread.astype(float)
-    # shifted history so stats exclude today
-    hist = s.shift(1)
+    hist = s.shift(1)  # exclude today from stats
     mu = hist.rolling(window, min_periods=window).mean()
-    # sample std with ddof=1 over window → denominator sqrt(window-1) in prompt uses 1/251 * sum sq
     var = hist.rolling(window, min_periods=window).var(ddof=1)
     sig = np.sqrt(var)
-    z = (s - mu) / sig.replace(0.0, np.nan)
-    return z
+    return (s - mu) / sig.replace(0.0, np.nan)
 
 
 @dataclass
@@ -97,7 +129,7 @@ class OptPos:
     expiry: str
     strike: float
     cp: str
-    n: float  # signed contracts
+    n: float
     ttm: float
     forward: float
     iv: float
@@ -112,7 +144,7 @@ class OptPos:
 
 @dataclass
 class DayState:
-    position: int = 0  # +1 normal, -1 reverse, 0 flat
+    position: int = 0
     hold_days: int = 0
     opts: List[OptPos] = field(default_factory=list)
     n_if: float = 0.0
@@ -121,13 +153,20 @@ class DayState:
 class CalendarVolBacktestEngine:
     def __init__(
         self,
+        universe: str = "300",
         initial_nav: float = 100_000_000.0,
-        product: str = "IO",
-        spot_code: str = "000300.SH",
+        z_window: int = DEFAULT_Z_WINDOW,
     ):
+        if universe not in UNIVERSES:
+            raise ValueError(f"unknown universe {universe}; choose {list(UNIVERSES)}")
+        self.universe = universe
+        self.cfg = UNIVERSES[universe]
         self.initial_nav = float(initial_nav)
-        self.product = product
-        self.spot_code = spot_code
+        self.z_window = int(z_window)
+        self.product = self.cfg["product"]
+        self.spot_code = self.cfg["spot_code"]
+        self.m_opt = float(self.cfg["m_opt"])
+        self.m_fut = float(self.cfg["m_fut"])
         self._vega_checks: List[float] = []
 
     def _load(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
@@ -193,7 +232,6 @@ class CalendarVolBacktestEngine:
         for td, g in svi.groupby("trade_date"):
             ttms = g["ttm"].to_numpy(float)
             watm = g["w_atm"].to_numpy(float)
-            # if w_atm missing, use jw_v * ttm
             if np.any(~np.isfinite(watm)):
                 jw = g["jw_v"].to_numpy(float)
                 watm = np.where(np.isfinite(watm), watm, np.maximum(jw, 0.0) * ttms)
@@ -210,7 +248,6 @@ class CalendarVolBacktestEngine:
         t_target: float,
         n_leg: float,
     ) -> Tuple[List[OptPos], float, float]:
-        """Time-interpolated dual ATM straddles. Returns positions, unit_vega, unit_delta."""
         if day_opts.empty or not math.isfinite(n_leg) or abs(n_leg) < 1e-16:
             return [], 0.0, 0.0
 
@@ -238,7 +275,7 @@ class CalendarVolBacktestEngine:
             w_near = 1.0 - w_far
 
         positions: List[OptPos] = []
-        unit_vega = 0.0  # per 1.0 vol, for |N|=1
+        unit_vega = 0.0
         unit_delta = 0.0
 
         for idx, w in ((near_i, w_near), (far_i, w_far)):
@@ -248,7 +285,6 @@ class CalendarVolBacktestEngine:
             slice_ = day_opts[day_opts["expiry"].astype(str) == exp]
             if slice_.empty:
                 continue
-            # ATM strike ≈ spot
             strikes = sorted(slice_["strike"].unique())
             K = min(strikes, key=lambda k: abs(float(k) - spot))
             for cp in ("C", "P"):
@@ -294,37 +330,28 @@ class CalendarVolBacktestEngine:
         direction: int,
         nav: float,
     ) -> Tuple[List[OptPos], float, float]:
-        """direction +1 = normal (short 3M long 6M); -1 = reverse."""
-        # unit legs with N=1
-        leg6, nu6, _ = self.build_synthetic_leg(day_opts, spot, T_6M, 1.0)
-        leg3, nu3, _ = self.build_synthetic_leg(day_opts, spot, T_3M, 1.0)
-        if nu3 <= 1e-12 or nu6 <= 1e-12 or not leg3 or not leg6:
+        _, nu6, _ = self.build_synthetic_leg(day_opts, spot, T_6M, 1.0)
+        _, nu3, _ = self.build_synthetic_leg(day_opts, spot, T_3M, 1.0)
+        if nu3 <= 1e-12 or nu6 <= 1e-12:
             return [], 0.0, 0.0
 
-        # target CNY vega on 6M leg = VEGA_BUDGET_FRAC * NAV per vol point
-        # CNY per vol point ≈ |N| * vega_point_sum * M_IO
-        # unit leg vega_point = nu / 100
         unit_vp6 = nu6 / 100.0
         target_cny_vp = VEGA_BUDGET_FRAC * nav
-        n6_abs = target_cny_vp / (unit_vp6 * M_IO)
-        n6 = direction * n6_abs  # normal: +6M; reverse: -6M
+        n6_abs = target_cny_vp / (unit_vp6 * self.m_opt)
+        n6 = direction * n6_abs
         n3 = -n6 * (nu6 / nu3)
 
-        # rebuild with sized N
         pos6, _, _ = self.build_synthetic_leg(day_opts, spot, T_6M, n6)
         pos3, _, _ = self.build_synthetic_leg(day_opts, spot, T_3M, n3)
         all_pos = pos3 + pos6
-
-        # vega neutrality check
-        port_vega = sum(p.n * p.vega for p in all_pos)
-        self._vega_checks.append(abs(port_vega))
+        if not all_pos:
+            return [], 0.0, 0.0
+        self._vega_checks.append(abs(sum(p.n * p.vega for p in all_pos)))
         return all_pos, n3, n6
 
     def _lookup_mtm(self, pos: OptPos, day_opts: pd.DataFrame) -> Optional[Tuple[float, float]]:
-        """Return (mid, iv) for same wind_code on day; None if missing."""
         hit = day_opts[day_opts["wind_code"] == pos.wind_code]
         if hit.empty:
-            # fallback strike/cp/expiry
             hit = day_opts[
                 (day_opts["expiry"].astype(str) == pos.expiry)
                 & (day_opts["strike"] == pos.strike)
@@ -338,20 +365,23 @@ class CalendarVolBacktestEngine:
     def run(self) -> Dict[str, Any]:
         svi, opt, spot, front = self._load()
         ct = self._daily_ct_iv(svi)
-        z = rolling_zscore(ct["spread"], ROLL_WIN)
+        z = rolling_zscore(ct["spread"], self.z_window)
         ct = ct.join(z.rename("z"), how="left")
 
-        # align calendars
         dates = sorted(set(ct.index) & set(spot.index) & set(front.index) & set(opt["trade_date"]))
-        if len(dates) < ROLL_WIN + 50:
-            raise RuntimeError(f"Insufficient aligned history: {len(dates)} days")
+        if len(dates) < self.z_window + 30:
+            raise RuntimeError(
+                f"Insufficient aligned history for {self.universe}: {len(dates)} days "
+                f"(need >{self.z_window + 30})"
+            )
 
         opt_by_day = {td: g for td, g in opt.groupby("trade_date")}
-
         nav = self.initial_nav
         state = DayState()
         rows: List[Dict[str, Any]] = []
         cum_vega = cum_theta = cum_gamma = cum_basis = cum_delta = cum_resid = 0.0
+        first_open_i: Optional[int] = None
+        hedge_scale = self.m_opt / self.m_fut  # IF/IH: 1/3; IM: 1/2
 
         for i, d in enumerate(dates):
             S = float(spot.loc[d])
@@ -361,7 +391,6 @@ class CalendarVolBacktestEngine:
             zv = ct.loc[d, "z"]
             zv = float(zv) if pd.notna(zv) else float("nan")
 
-            # --- overnight PnL from prior positions ---
             net_delta = basis = gamma = theta = vega_pnl = 0.0
             actual = 0.0
             if i > 0 and state.opts:
@@ -377,26 +406,22 @@ class CalendarVolBacktestEngine:
                 opt_gamma_pts = sum(p.n * p.gamma for p in state.opts)
                 opt_theta_pts = sum(p.n * p.theta for p in state.opts)
 
-                # Net delta PnL (options + IF vs spot) ≈ 0 when hedged
-                net_delta = (M_IO * opt_delta_pts + M_IF * state.n_if) * dS
-                basis = M_IF * state.n_if * (B - B_prev)
-                gamma = 0.5 * M_IO * opt_gamma_pts * (dS ** 2)
-                theta = M_IO * opt_theta_pts * dt_years
+                net_delta = (self.m_opt * opt_delta_pts + self.m_fut * state.n_if) * dS
+                basis = self.m_fut * state.n_if * (B - B_prev)
+                gamma = 0.5 * self.m_opt * opt_gamma_pts * (dS ** 2)
+                theta = self.m_opt * opt_theta_pts * dt_years
 
-                # MTM options + IF
                 for p in state.opts:
                     mtm = self._lookup_mtm(p, day_opts)
                     if mtm is None:
-                        # mark with Black recomputed using yesterday IV / new ttm proxy
                         g = black76_greeks(F, p.strike, max(p.ttm - dt_years, 1e-6), p.iv, p.r, p.cp)
                         mid_now, iv_now = g["price"], p.iv
                     else:
                         mid_now, iv_now = mtm
-                    actual += M_IO * p.n * (mid_now - p.mid)
-                    # vega attr on contract IV change (prompt: ν_point * ΔIV * 100)
-                    vega_pnl += M_IO * p.n * p.vega_point * (iv_now - p.iv) * 100.0
+                    actual += self.m_opt * p.n * (mid_now - p.mid)
+                    vega_pnl += self.m_opt * p.n * p.vega_point * (iv_now - p.iv) * 100.0
 
-                actual += M_IF * state.n_if * (F - F_prev)
+                actual += self.m_fut * state.n_if * (F - F_prev)
                 residual = actual - (net_delta + basis + gamma + theta + vega_pnl)
                 nav = nav + actual
             else:
@@ -410,7 +435,6 @@ class CalendarVolBacktestEngine:
             cum_delta += net_delta
             cum_resid += residual
 
-            # --- signal / rebalance at close ---
             new_pos = state.position
             hold = state.hold_days
             if math.isfinite(zv):
@@ -437,16 +461,15 @@ class CalendarVolBacktestEngine:
                 opts, n3, n6 = self._size_legs(day_opts, S, new_pos, nav)
                 if opts:
                     opt_delta_pts = sum(p.n * p.delta for p in opts)
-                    n_if = -opt_delta_pts / 3.0  # = - (M_IO/M_IF) * sum n Δ
+                    n_if = -hedge_scale * opt_delta_pts
                 else:
                     new_pos = 0
                     hold = 0
 
-            state = DayState(position=new_pos, hold_days=hold, opts=opts, n_if=n_if)
+            if first_open_i is None and new_pos != 0:
+                first_open_i = i
 
-            peak = max((r["nav"] for r in rows), default=self.initial_nav)
-            peak = max(peak, nav)
-            dd = nav / peak - 1.0 if peak > 0 else 0.0
+            state = DayState(position=new_pos, hold_days=hold, opts=opts, n_if=n_if)
 
             rows.append(
                 {
@@ -472,17 +495,14 @@ class CalendarVolBacktestEngine:
                     "cum_basis": cum_basis,
                     "cum_delta": cum_delta,
                     "cum_resid": cum_resid,
-                    "drawdown": dd,
                     "iv_3m": float(ct.loc[d, "iv_3m"]),
                     "iv_6m": float(ct.loc[d, "iv_6m"]),
                 }
             )
 
-        return self._pack_payload(rows)
+        return self._pack_payload(rows, first_open_i)
 
     def _window_metrics(self, nav: pd.Series, daily_ret: pd.Series) -> Dict[str, Any]:
-        from datetime import timedelta
-
         if len(nav) < 2:
             return {
                 "n_days": int(len(nav)),
@@ -495,7 +515,7 @@ class CalendarVolBacktestEngine:
             }
         r = daily_ret.dropna()
         n = len(r)
-        if n == 0 or nav.iloc[0] <= 0:
+        if n == 0 or float(nav.iloc[0]) <= 0:
             return {
                 "n_days": 0,
                 "ann_return": None,
@@ -540,8 +560,6 @@ class CalendarVolBacktestEngine:
     def _slice_from_end(
         self, nav: pd.Series, ret: pd.Series, years: Optional[float]
     ) -> Tuple[pd.Series, pd.Series]:
-        from datetime import timedelta
-
         if years is None:
             base = float(nav.iloc[0])
             return (nav / base if base else nav), ret
@@ -555,10 +573,48 @@ class CalendarVolBacktestEngine:
         base = float(nav.iloc[i0])
         return (nav.iloc[i0:] / base if base else nav.iloc[i0:]), ret.iloc[i0:]
 
-    def _pack_payload(self, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-        nav_s = pd.Series({r["d"]: r["nav"] for r in rows})
-        ret_s = pd.Series({r["d"]: r["ret"] for r in rows})
-        ret_s.iloc[0] = float("nan")
+    def _pack_payload(
+        self, rows: List[Dict[str, Any]], first_open_i: Optional[int]
+    ) -> Dict[str, Any]:
+        # Performance starts the first calendar day *after* first open (first overnight PnL).
+        if first_open_i is None or first_open_i + 1 >= len(rows):
+            raise RuntimeError(f"No trade opened for universe {self.universe}")
+
+        start_i = first_open_i + 1
+        open_row = rows[first_open_i]
+        base_nav = float(open_row["nav"])
+        # rebase cumulative attribution to open-day close (before first overnight)
+        base_cum = {
+            "cum_vega": float(open_row["cum_vega"]),
+            "cum_theta": float(open_row["cum_theta"]),
+            "cum_gamma": float(open_row["cum_gamma"]),
+            "cum_basis": float(open_row["cum_basis"]),
+            "cum_delta": float(open_row["cum_delta"]),
+            "cum_resid": float(open_row["cum_resid"]),
+        }
+
+        perf: List[Dict[str, Any]] = []
+        peak = base_nav
+        for r in rows[start_i:]:
+            nav = float(r["nav"])
+            peak = max(peak, nav)
+            perf.append(
+                {
+                    **r,
+                    "nav": nav,
+                    "cum_vega": float(r["cum_vega"]) - base_cum["cum_vega"],
+                    "cum_theta": float(r["cum_theta"]) - base_cum["cum_theta"],
+                    "cum_gamma": float(r["cum_gamma"]) - base_cum["cum_gamma"],
+                    "cum_basis": float(r["cum_basis"]) - base_cum["cum_basis"],
+                    "cum_delta": float(r["cum_delta"]) - base_cum["cum_delta"],
+                    "cum_resid": float(r["cum_resid"]) - base_cum["cum_resid"],
+                    "drawdown": nav / peak - 1.0 if peak > 0 else 0.0,
+                }
+            )
+
+        nav_s = pd.Series({r["d"]: r["nav"] for r in perf})
+        ret_s = pd.Series({r["d"]: r["ret"] for r in perf})
+        # first performance day ret is the first overnight return — keep it
 
         metrics = {}
         for name, yrs in (("1y", 1.0), ("3y", 3.0), ("5y", 5.0), ("max", None)):
@@ -567,34 +623,33 @@ class CalendarVolBacktestEngine:
             metrics[name]["start"] = str(nav_w.index[0]) if len(nav_w) else None
             metrics[name]["end"] = str(nav_w.index[-1]) if len(nav_w) else None
 
-        step = max(1, len(rows) // 800)
+        step = max(1, len(perf) // 800)
         nav_chart = [
             {
-                "d": rows[i]["d"],
-                "nav": round(rows[i]["nav"] / self.initial_nav, 6),
-                "sos": round(rows[i]["spread"] * 100.0, 4),  # spread in vol pts for chart reuse
+                "d": perf[i]["d"],
+                "nav": round(perf[i]["nav"] / base_nav, 6),
+                "sos": round(perf[i]["spread"] * 100.0, 4),
             }
-            for i in range(0, len(rows), step)
+            for i in range(0, len(perf), step)
         ]
-        if nav_chart and nav_chart[-1]["d"] != rows[-1]["d"]:
+        if nav_chart and nav_chart[-1]["d"] != perf[-1]["d"]:
             nav_chart.append(
                 {
-                    "d": rows[-1]["d"],
-                    "nav": round(rows[-1]["nav"] / self.initial_nav, 6),
-                    "sos": round(rows[-1]["spread"] * 100.0, 4),
+                    "d": perf[-1]["d"],
+                    "nav": round(perf[-1]["nav"] / base_nav, 6),
+                    "sos": round(perf[-1]["spread"] * 100.0, 4),
                 }
             )
 
-        # downsample decomposition
-        dec_idx = list(range(0, len(rows), step))
-        if dec_idx[-1] != len(rows) - 1:
-            dec_idx.append(len(rows) - 1)
+        dec_idx = list(range(0, len(perf), step))
+        if dec_idx[-1] != len(perf) - 1:
+            dec_idx.append(len(perf) - 1)
 
         def _col(key: str) -> List[float]:
-            return [round(float(rows[i][key]), 4) for i in dec_idx]
+            return [round(float(perf[i][key]), 4) for i in dec_idx]
 
         pnl_decomposition = {
-            "dates": [rows[i]["d"] for i in dec_idx],
+            "dates": [perf[i]["d"] for i in dec_idx],
             "vega_pnl": _col("cum_vega"),
             "theta_pnl": _col("cum_theta"),
             "gamma_pnl": _col("cum_gamma"),
@@ -603,24 +658,30 @@ class CalendarVolBacktestEngine:
             "residual_pnl": _col("cum_resid"),
         }
 
+        # signal chart: include warm-up history for Z context, but mark performance start
+        sig_step = max(1, len(rows) // 800)
+        sig_idx = list(range(0, len(rows), sig_step))
+        if sig_idx[-1] != len(rows) - 1:
+            sig_idx.append(len(rows) - 1)
         signal = {
-            "dates": [rows[i]["d"] for i in dec_idx],
-            "spread": [round(rows[i]["spread"], 6) for i in dec_idx],
-            "zscore": [None if rows[i]["z"] is None else round(float(rows[i]["z"]), 4) for i in dec_idx],
-            "position": [rows[i]["position"] for i in dec_idx],
+            "dates": [rows[i]["d"] for i in sig_idx],
+            "spread": [round(rows[i]["spread"], 6) for i in sig_idx],
+            "zscore": [None if rows[i]["z"] is None else round(float(rows[i]["z"]), 4) for i in sig_idx],
+            "position": [rows[i]["position"] for i in sig_idx],
             "enter_band": Z_ENTER,
             "exit_band": Z_EXIT,
+            "perf_start": perf[0]["d"],
+            "first_open": open_row["d"],
         }
 
-        # contribution summary (total PnL shares)
-        total_pnl = rows[-1]["nav"] - self.initial_nav
+        total_pnl = perf[-1]["nav"] - base_nav
         parts = {
-            "vega": rows[-1]["cum_vega"],
-            "theta": rows[-1]["cum_theta"],
-            "gamma": rows[-1]["cum_gamma"],
-            "basis": rows[-1]["cum_basis"],
-            "net_delta": rows[-1]["cum_delta"],
-            "residual": rows[-1]["cum_resid"],
+            "vega": perf[-1]["cum_vega"],
+            "theta": perf[-1]["cum_theta"],
+            "gamma": perf[-1]["cum_gamma"],
+            "basis": perf[-1]["cum_basis"],
+            "net_delta": perf[-1]["cum_delta"],
+            "residual": perf[-1]["cum_resid"],
         }
 
         def _share(x: float) -> Optional[float]:
@@ -629,20 +690,23 @@ class CalendarVolBacktestEngine:
             return round(100.0 * x / total_pnl, 2)
 
         max_vega_resid = max(self._vega_checks) if self._vega_checks else 0.0
+        cfg = self.cfg
+        opt_p, fut_p = cfg["product"], cfg["fut_root"]
 
         return {
-            "strategy_id": STRATEGY_ID,
-            "strategy_name": STRATEGY_NAME,
+            "strategy_id": cfg["strategy_id"],
+            "strategy_name": cfg["strategy_name"],
             "description": (
-                "CSI300 (000300.SH) 3M−6M ATM constant-tenor IV spread mean-reversion. "
-                "Signal: Z-score of Spread=IV_3M−IV_6M (TTM 90/365 & 180/365, total-var interp on SVI). "
-                "Execution: dual-expiry ATM straddles (IO), vega-neutral, daily IF delta hedge. "
-                "Enter |Z|>1.5; exit |Z|≤0.2; reverse max hold 20d. Costs: none (v1)."
+                f"{cfg['index_name']} ({cfg['spot_code']}) 3M−6M ATM CT-IV spread mean-reversion. "
+                f"Z-score uses prior {self.z_window}d window only (no look-ahead). "
+                f"Dual ATM straddles ({opt_p}) + daily {fut_p} delta hedge. "
+                "Enter |Z|>1.5; exit |Z|≤0.2; reverse max hold 20d. "
+                "NAV/metrics start the day after first open. Costs: none (v1)."
             ),
             "legs": [
-                {"id": "IO_3M_straddle", "weight": -1.0, "product": "IO", "tenor": "3M"},
-                {"id": "IO_6M_straddle", "weight": 1.0, "product": "IO", "tenor": "6M"},
-                {"id": "IF_hedge", "weight": 0.0, "product": "IF", "tenor": "front"},
+                {"id": f"{opt_p}_3M_straddle", "weight": -1.0, "product": opt_p, "tenor": "3M"},
+                {"id": f"{opt_p}_6M_straddle", "weight": 1.0, "product": opt_p, "tenor": "6M"},
+                {"id": f"{fut_p}_hedge", "weight": 0.0, "product": fut_p, "tenor": "front"},
             ],
             "params": {
                 "initial_nav": self.initial_nav,
@@ -651,24 +715,31 @@ class CalendarVolBacktestEngine:
                 "cost_rate": 0.0,
                 "rebalance": "daily close",
                 "signal_lag": "Z at t close → position from t close (PnL t→t+1)",
-                "price": "option mid / IF close; CT ATM IV via SVI total-var ACT/365",
+                "price": f"option mid / {fut_p} close; CT ATM IV via SVI total-var ACT/365",
                 "sizing": f"dollar vega={VEGA_BUDGET_FRAC*100:.0f}% NAV per vol-pt on 6M; N_3M=-N_6M*ν6/ν3",
                 "ttm_targets": {"3M": T_3M, "6M": T_6M},
+                "z_window": self.z_window,
                 "z_enter": Z_ENTER,
                 "z_exit": Z_EXIT,
                 "max_hold_reverse": MAX_HOLD_REVERSE,
                 "max_abs_port_vega": round(max_vega_resid, 8),
+                "universe": self.universe,
+                "m_opt": self.m_opt,
+                "m_fut": self.m_fut,
+                "first_open": open_row["d"],
+                "perf_start": perf[0]["d"],
             },
             "nav": nav_chart,
             "metrics": metrics,
             "summary": {
-                "start": rows[0]["d"],
-                "end": rows[-1]["d"],
-                "n_days": len(rows),
-                "final_nav": round(rows[-1]["nav"], 2),
-                "final_nav_multiple": round(rows[-1]["nav"] / self.initial_nav, 6),
+                "start": perf[0]["d"],
+                "end": perf[-1]["d"],
+                "n_days": len(perf),
+                "final_nav": round(perf[-1]["nav"], 2),
+                "final_nav_multiple": round(perf[-1]["nav"] / base_nav, 6),
                 "total_cost": 0.0,
                 "total_pnl": round(total_pnl, 2),
+                "first_open": open_row["d"],
             },
             "pnl_decomposition": pnl_decomposition,
             "signal": signal,
@@ -684,5 +755,27 @@ class CalendarVolBacktestEngine:
         }
 
 
-def run_equity_3_6_calendar_vol_300(initial_nav: float = 100_000_000.0) -> Dict[str, Any]:
-    return CalendarVolBacktestEngine(initial_nav=initial_nav).run()
+def run_calendar_vol(
+    universe: str = "300",
+    initial_nav: float = 100_000_000.0,
+    z_window: int = DEFAULT_Z_WINDOW,
+) -> Dict[str, Any]:
+    return CalendarVolBacktestEngine(
+        universe=universe, initial_nav=initial_nav, z_window=z_window
+    ).run()
+
+
+def run_equity_3_6_calendar_vol_300(
+    initial_nav: float = 100_000_000.0, z_window: int = DEFAULT_Z_WINDOW
+) -> Dict[str, Any]:
+    return run_calendar_vol("300", initial_nav=initial_nav, z_window=z_window)
+
+
+def run_by_strategy_id(
+    strategy_id: str,
+    initial_nav: float = 100_000_000.0,
+    z_window: int = DEFAULT_Z_WINDOW,
+) -> Dict[str, Any]:
+    if strategy_id not in STRATEGY_BY_ID:
+        raise KeyError(strategy_id)
+    return run_calendar_vol(STRATEGY_BY_ID[strategy_id], initial_nav=initial_nav, z_window=z_window)

@@ -1,7 +1,6 @@
 """Acceptance checks for Equity 3-6 Calendar Vol strategy."""
 from __future__ import annotations
 
-import math
 import sys
 from pathlib import Path
 
@@ -17,19 +16,18 @@ from engine.black76 import black76_greeks
 from engine.calendar_vol_strategy import (
     CalendarVolBacktestEngine,
     T_3M,
-    T_6M,
+    UNIVERSES,
     rolling_zscore,
+    run_calendar_vol,
     total_var_interp_iv,
 )
 
 
 def test_total_var_interp_midpoint():
     ttms = np.array([0.2, 0.4])
-    # constant IV 20% → w = iv^2 * t
     iv = 0.2
     watms = iv * iv * ttms
-    mid = 0.3
-    out = total_var_interp_iv(ttms, watms, mid)
+    out = total_var_interp_iv(ttms, watms, 0.3)
     assert abs(out - iv) < 1e-10
 
 
@@ -37,7 +35,6 @@ def test_rolling_zscore_no_lookahead():
     rng = np.random.default_rng(0)
     s = pd.Series(rng.normal(0, 0.01, size=400))
     z = rolling_zscore(s, window=252)
-    # mutate future spread — Z at t must be unchanged
     t = 300
     z_before = float(z.iloc[t])
     s2 = s.copy()
@@ -46,9 +43,17 @@ def test_rolling_zscore_no_lookahead():
     assert abs(float(z2.iloc[t]) - z_before) < 1e-12
 
 
+def test_z_window_parameter_changes_series():
+    rng = np.random.default_rng(1)
+    s = pd.Series(rng.normal(0, 0.01, size=400))
+    z252 = rolling_zscore(s, 252)
+    z126 = rolling_zscore(s, 126)
+    # after both windows warm, values generally differ
+    assert abs(float(z252.iloc[300]) - float(z126.iloc[300])) > 1e-8
+
+
 def test_leg_weights_sum_to_one():
-    eng = CalendarVolBacktestEngine()
-    # synthetic day with two expiries
+    eng = CalendarVolBacktestEngine(universe="300")
     rows = []
     for exp, ttm, K in (("2025-03-21", 0.2, 4000.0), ("2025-09-19", 0.5, 4000.0)):
         for cp in ("C", "P"):
@@ -68,13 +73,9 @@ def test_leg_weights_sum_to_one():
                 }
             )
     day = pd.DataFrame(rows)
-    # force bracket around T_3M≈0.246
-    pos, nu, _ = eng.build_synthetic_leg(day, 4000.0, T_3M, 1.0)
+    pos, _, _ = eng.build_synthetic_leg(day, 4000.0, T_3M, 1.0)
     assert len(pos) == 4
-    # near weight + far weight encoded in |n| for unit N=1 → sum |n|/2 per expiry pair = 1 for calls+puts
-    w_near = abs(pos[0].n)  # call near
-    w_far = abs(pos[2].n)  # call far
-    assert abs(w_near + w_far - 1.0) < 1e-9
+    assert abs(abs(pos[0].n) + abs(pos[2].n) - 1.0) < 1e-9
 
 
 def test_black76_call_put_vega_equal():
@@ -83,15 +84,20 @@ def test_black76_call_put_vega_equal():
     assert abs(c["vega"] - p["vega"]) < 1e-10
 
 
-@pytest.mark.slow
-def test_full_backtest_invariants():
-    eng = CalendarVolBacktestEngine(initial_nav=100_000_000.0)
-    # run internal rows by monkeypatching pack — call run and check payload
-    payload = eng.run()
-    assert payload["strategy_id"] == "equity_3_6_calendar_vol_300"
+@pytest.mark.parametrize("universe", list(UNIVERSES.keys()))
+def test_full_backtest_invariants(universe):
+    payload = run_calendar_vol(universe, initial_nav=100_000_000.0, z_window=252)
+    assert payload["strategy_id"] == UNIVERSES[universe]["strategy_id"]
+    assert payload["params"]["z_window"] == 252
+    assert payload["summary"]["start"] == payload["params"]["perf_start"]
+    assert payload["summary"]["first_open"] < payload["summary"]["start"] or (
+        payload["summary"]["first_open"] <= payload["summary"]["start"]
+    )
+    # first open is strictly before perf start (day after open)
+    assert payload["params"]["first_open"] < payload["params"]["perf_start"]
+
     assert payload["params"]["max_abs_port_vega"] < 1e-4 or payload["params"]["max_abs_port_vega"] == 0.0
 
-    # rebuild daily rows lightly: identity on last cumulative components
     c = payload["pnl_contribution"]
     total = c["total_pnl"]
     parts = [
@@ -105,21 +111,16 @@ def test_full_backtest_invariants():
     if abs(total) > 1:
         assert abs(sum(parts) - 100.0) < 1.0
 
-    # net delta contribution should be tiny vs total
     nd = abs(c.get("net_delta_pct") or 0)
-    assert nd < 1.0  # <1% of total PnL
+    assert nd < 1.0
 
     de = payload["pnl_decomposition"]
-    n = len(de["dates"])
-    for i in range(n):
-        s = (
-            de["vega_pnl"][i]
-            + de["theta_pnl"][i]
-            + de["gamma_pnl"][i]
-            + de["basis_pnl"][i]
-            + de["net_delta_pnl"][i]
-            + de["residual_pnl"][i]
-        )
-        # cumulative sum equals NAV-initial approximately at end
-        if i == n - 1:
-            assert abs(s - (payload["summary"]["final_nav"] - payload["params"]["initial_nav"])) < 1.0
+    s = (
+        de["vega_pnl"][-1]
+        + de["theta_pnl"][-1]
+        + de["gamma_pnl"][-1]
+        + de["basis_pnl"][-1]
+        + de["net_delta_pnl"][-1]
+        + de["residual_pnl"][-1]
+    )
+    assert abs(s - total) < 1.0

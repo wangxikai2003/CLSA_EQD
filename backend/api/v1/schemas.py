@@ -75,7 +75,12 @@ class JwCalibResponse(BaseModel):
 
 
 # ---- QIS ----
-QISStrategyId = Literal["cross_calendar_carry", "equity_3_6_calendar_vol_300"]
+QISStrategyId = Literal[
+    "cross_calendar_carry",
+    "equity_3_6_calendar_vol_50",
+    "equity_3_6_calendar_vol_300",
+    "equity_3_6_calendar_vol_1000",
+]
 
 
 class PnLDecomposition(BaseModel):

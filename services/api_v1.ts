@@ -455,6 +455,7 @@ export interface QisBacktestResponse {
     final_nav_multiple: number;
     total_cost: number;
     total_pnl?: number;
+    first_open?: string;
   };
   pnl_decomposition?: QisPnLDecomposition;
   signal?: QisSignalSeries;
@@ -471,11 +472,15 @@ export function fetchQisStrategies(opts?: AbortSignal | FetchRetryOpts) {
 export function fetchQisBacktest(
   strategyId: string,
   refresh = false,
-  opts?: AbortSignal | FetchRetryOpts
+  opts?: AbortSignal | FetchRetryOpts,
+  zWindow = 252,
 ) {
-  const q = refresh ? '?refresh=true' : '';
+  const q = new URLSearchParams();
+  if (refresh) q.set('refresh', 'true');
+  q.set('z_window', String(zWindow));
+  const qs = q.toString();
   return getJsonWithRetry<QisBacktestResponse>(
-    `/api/v1/qis/backtest/${strategyId}${q}`,
+    `/api/v1/qis/backtest/${strategyId}?${qs}`,
     _asRetryOpts(opts)
   );
 }

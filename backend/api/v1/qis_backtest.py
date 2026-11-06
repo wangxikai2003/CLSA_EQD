@@ -303,6 +303,22 @@ def run_cross_calendar_carry(
 
 @router.get("/strategies")
 def list_strategies():
+    from engine.calendar_vol_strategy import UNIVERSES
+
+    cal = [
+        {
+            "id": u["strategy_id"],
+            "name": u["strategy_name"],
+            "status": "live",
+            "blurb": (
+                f"{u['index_name']} 3M−6M ATM CT-IV Z-score; "
+                f"{u['product']} straddles + {u['fut_root']} hedge"
+            ),
+            "family": "calendar_vol",
+            "universe": key,
+        }
+        for key, u in UNIVERSES.items()
+    ]
     return {
         "strategies": [
             {
@@ -310,13 +326,9 @@ def list_strategies():
                 "name": "Cross Calendar Carry",
                 "status": "live",
                 "blurb": "IM 3M−6M minus IH 3M−6M calendar carry",
+                "family": "futures_carry",
             },
-            {
-                "id": "equity_3_6_calendar_vol_300",
-                "name": "Equity 3-6 Calendar Volatility Long Short Strategy — 300",
-                "status": "live",
-                "blurb": "CSI300 3M−6M ATM CT-IV spread Z-score; IO straddles + IF hedge",
-            },
+            *cal,
         ]
     }
 
@@ -325,6 +337,12 @@ def list_strategies():
 def backtest(
     strategy_id: str,
     refresh: bool = Query(False),
+    z_window: int = Query(
+        252,
+        ge=20,
+        le=756,
+        description="Z-score rolling window in trading days (default 252=1Y; prior data only)",
+    ),
 ):
     db = st._equity_db()
 
@@ -337,26 +355,34 @@ def backtest(
         _cache["payload"] = payload
         return payload
 
-    if strategy_id == "equity_3_6_calendar_vol_300":
-        from engine.calendar_vol_strategy import run_equity_3_6_calendar_vol_300
+    from engine.calendar_vol_strategy import STRATEGY_BY_ID, run_by_strategy_id
+    from api.v1 import qis_results_store as qrs
 
+    if strategy_id in STRATEGY_BY_ID:
         spot = next((p for p in st._SPOT_CANDIDATES if p.exists()), None)
-        key = (
-            strategy_id,
-            db.stat().st_mtime,
-            spot.stat().st_mtime if spot else None,
-            _INITIAL_NAV,
-        )
-        cached = _cache.get("cal_vol")
-        if (
-            not refresh
-            and isinstance(cached, dict)
-            and cached.get("key") == key
-            and cached.get("payload") is not None
-        ):
-            return cached["payload"]
-        payload = run_equity_3_6_calendar_vol_300(_INITIAL_NAV)
-        _cache["cal_vol"] = {"key": key, "payload": payload}
+        src = qrs.source_key(db, spot)
+        if not refresh:
+            hit = qrs.get_cached(strategy_id, z_window, _INITIAL_NAV, src)
+            if hit is not None:
+                return hit
+        # in-process short cache
+        mem_key = (strategy_id, z_window, src, _INITIAL_NAV)
+        mem = _cache.get("cal_vol_map") or {}
+        if not refresh and mem_key in mem:
+            return mem[mem_key]
+
+        payload = run_by_strategy_id(strategy_id, _INITIAL_NAV, z_window=z_window)
+        qrs.put_cached(strategy_id, z_window, _INITIAL_NAV, src, payload)
+        mem[mem_key] = payload
+        _cache["cal_vol_map"] = mem
+        payload = {**payload, "_cache": {"hit": False, "source_key": src, "persisted": True}}
         return payload
 
     raise HTTPException(404, f"Unknown strategy: {strategy_id}")
+
+
+@router.get("/cache")
+def cache_status():
+    from api.v1 import qis_results_store as qrs
+
+    return {"db": str(qrs.results_db_path(create_parent=False)), "entries": qrs.list_cached()}

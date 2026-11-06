@@ -12,5 +12,6 @@ data/*.sqlite
 data/*.sqlite-*
 !data/cffex_vol.sqlite
 !data/commodity_fut.sqlite
+!data/qis_results.sqlite
 *.log
 .npm/
