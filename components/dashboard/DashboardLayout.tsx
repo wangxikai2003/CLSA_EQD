@@ -18,7 +18,7 @@ const DashboardLayout: React.FC<Props> = ({ product, tradeDate, onProductChange,
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-bold text-[#000066]">Market Intelligence Dashboard</h2>
+          <h2 className="text-lg font-bold text-[#000066]">Market Data</h2>
           <p className="text-[11px] text-slate-500">Yield · JW-SVI Skew/Surface · Vol Cone · T-Quote</p>
         </div>
         <div className="flex items-center gap-2">

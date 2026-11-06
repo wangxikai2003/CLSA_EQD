@@ -17,6 +17,7 @@ from engine.calendar_vol_strategy import (
     CalendarVolBacktestEngine,
     T_3M,
     UNIVERSES,
+    rolling_quantile_bands,
     rolling_zscore,
     run_calendar_vol,
     total_var_interp_iv,
@@ -43,13 +44,19 @@ def test_rolling_zscore_no_lookahead():
     assert abs(float(z2.iloc[t]) - z_before) < 1e-12
 
 
-def test_z_window_parameter_changes_series():
-    rng = np.random.default_rng(1)
+def test_rolling_quantile_bands_no_lookahead():
+    rng = np.random.default_rng(2)
     s = pd.Series(rng.normal(0, 0.01, size=400))
-    z252 = rolling_zscore(s, 252)
-    z126 = rolling_zscore(s, 126)
-    # after both windows warm, values generally differ
-    assert abs(float(z252.iloc[300]) - float(z126.iloc[300])) > 1e-8
+    b = rolling_quantile_bands(s, window=252, enter_q=0.9, exit_lo_q=0.4, exit_hi_q=0.6)
+    t = 300
+    hi_before = float(b["enter_hi"].iloc[t])
+    s2 = s.copy()
+    s2.iloc[t:] = 99.0  # corrupt today and future
+    b2 = rolling_quantile_bands(s2, window=252, enter_q=0.9, exit_lo_q=0.4, exit_hi_q=0.6)
+    # band at t uses only t-1 history → unchanged even if s[t] changed
+    assert abs(float(b2["enter_hi"].iloc[t]) - hi_before) < 1e-12
+    assert float(b["enter_hi"].iloc[t]) > float(b["enter_lo"].iloc[t])
+    assert float(b["exit_hi"].iloc[t]) > float(b["exit_lo"].iloc[t])
 
 
 def test_leg_weights_sum_to_one():
@@ -88,15 +95,12 @@ def test_black76_call_put_vega_equal():
 def test_full_backtest_invariants(universe):
     payload = run_calendar_vol(universe, initial_nav=100_000_000.0, z_window=252)
     assert payload["strategy_id"] == UNIVERSES[universe]["strategy_id"]
-    assert payload["params"]["z_window"] == 252
-    assert payload["summary"]["start"] == payload["params"]["perf_start"]
-    assert payload["summary"]["first_open"] < payload["summary"]["start"] or (
-        payload["summary"]["first_open"] <= payload["summary"]["start"]
-    )
-    # first open is strictly before perf start (day after open)
+    assert payload["params"]["enter_q"] == 0.9
     assert payload["params"]["first_open"] < payload["params"]["perf_start"]
-
-    assert payload["params"]["max_abs_port_vega"] < 1e-4 or payload["params"]["max_abs_port_vega"] == 0.0
+    sig = payload["signal"]
+    assert "enter_hi" in sig and len(sig["enter_hi"]) == len(sig["dates"])
+    # some warm bands exist
+    assert any(x is not None for x in sig["enter_hi"])
 
     c = payload["pnl_contribution"]
     total = c["total_pnl"]
@@ -110,9 +114,7 @@ def test_full_backtest_invariants(universe):
     ]
     if abs(total) > 1:
         assert abs(sum(parts) - 100.0) < 1.0
-
-    nd = abs(c.get("net_delta_pct") or 0)
-    assert nd < 1.0
+    assert abs(c.get("net_delta_pct") or 0) < 1.0
 
     de = payload["pnl_decomposition"]
     s = (

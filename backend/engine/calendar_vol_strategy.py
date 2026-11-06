@@ -28,9 +28,11 @@ _SPOT_CANDIDATES = [
 
 T_3M = 90.0 / 365.0
 T_6M = 180.0 / 365.0
-Z_ENTER = 1.5
-Z_EXIT = 0.2
-DEFAULT_Z_WINDOW = 252  # 1Y trading days; research override via z_window=
+DEFAULT_Z_WINDOW = 252  # rolling window for quantiles / Z (trading days)
+# Rolling quantile bands on Spread (prior window only — no look-ahead)
+ENTER_Q = 0.90  # enter outside 10/90
+EXIT_LO_Q = 0.40
+EXIT_HI_Q = 0.60
 MAX_HOLD_REVERSE = 20
 VEGA_BUDGET_FRAC = 0.01
 
@@ -123,6 +125,38 @@ def rolling_zscore(spread: pd.Series, window: int = DEFAULT_Z_WINDOW) -> pd.Seri
     return (s - mu) / sig.replace(0.0, np.nan)
 
 
+def rolling_quantile_bands(
+    spread: pd.Series,
+    window: int = DEFAULT_Z_WINDOW,
+    enter_q: float = ENTER_Q,
+    exit_lo_q: float = EXIT_LO_Q,
+    exit_hi_q: float = EXIT_HI_Q,
+) -> pd.DataFrame:
+    """Time-varying enter/exit bands from prior-window quantiles of Spread.
+
+    All bands at t use only Spread[t-window .. t-1] (shift(1) → no future leak).
+    """
+    window = int(window)
+    if window < 2:
+        raise ValueError("z_window must be >= 2")
+    if not (0.5 < enter_q < 1.0):
+        raise ValueError("enter_q must be in (0.5, 1)")
+    if not (0.0 < exit_lo_q < exit_hi_q < 1.0):
+        raise ValueError("need 0 < exit_lo_q < exit_hi_q < 1")
+    s = spread.astype(float)
+    hist = s.shift(1)
+    roll = hist.rolling(window, min_periods=window)
+    return pd.DataFrame(
+        {
+            "enter_hi": roll.quantile(enter_q),
+            "enter_lo": roll.quantile(1.0 - enter_q),
+            "exit_hi": roll.quantile(exit_hi_q),
+            "exit_lo": roll.quantile(exit_lo_q),
+        },
+        index=s.index,
+    )
+
+
 @dataclass
 class OptPos:
     wind_code: str
@@ -156,6 +190,9 @@ class CalendarVolBacktestEngine:
         universe: str = "300",
         initial_nav: float = 100_000_000.0,
         z_window: int = DEFAULT_Z_WINDOW,
+        enter_q: float = ENTER_Q,
+        exit_lo_q: float = EXIT_LO_Q,
+        exit_hi_q: float = EXIT_HI_Q,
     ):
         if universe not in UNIVERSES:
             raise ValueError(f"unknown universe {universe}; choose {list(UNIVERSES)}")
@@ -163,6 +200,9 @@ class CalendarVolBacktestEngine:
         self.cfg = UNIVERSES[universe]
         self.initial_nav = float(initial_nav)
         self.z_window = int(z_window)
+        self.enter_q = float(enter_q)
+        self.exit_lo_q = float(exit_lo_q)
+        self.exit_hi_q = float(exit_hi_q)
         self.product = self.cfg["product"]
         self.spot_code = self.cfg["spot_code"]
         self.m_opt = float(self.cfg["m_opt"])
@@ -366,7 +406,14 @@ class CalendarVolBacktestEngine:
         svi, opt, spot, front = self._load()
         ct = self._daily_ct_iv(svi)
         z = rolling_zscore(ct["spread"], self.z_window)
-        ct = ct.join(z.rename("z"), how="left")
+        bands = rolling_quantile_bands(
+            ct["spread"],
+            self.z_window,
+            enter_q=self.enter_q,
+            exit_lo_q=self.exit_lo_q,
+            exit_hi_q=self.exit_hi_q,
+        )
+        ct = ct.join(z.rename("z"), how="left").join(bands, how="left")
 
         dates = sorted(set(ct.index) & set(spot.index) & set(front.index) & set(opt["trade_date"]))
         if len(dates) < self.z_window + 30:
@@ -390,6 +437,14 @@ class CalendarVolBacktestEngine:
             spread = float(ct.loc[d, "spread"])
             zv = ct.loc[d, "z"]
             zv = float(zv) if pd.notna(zv) else float("nan")
+            eh = ct.loc[d, "enter_hi"]
+            el = ct.loc[d, "enter_lo"]
+            xh = ct.loc[d, "exit_hi"]
+            xl = ct.loc[d, "exit_lo"]
+            eh_f = float(eh) if pd.notna(eh) else float("nan")
+            el_f = float(el) if pd.notna(el) else float("nan")
+            xh_f = float(xh) if pd.notna(xh) else float("nan")
+            xl_f = float(xl) if pd.notna(xl) else float("nan")
 
             net_delta = basis = gamma = theta = vega_pnl = 0.0
             actual = 0.0
@@ -437,17 +492,18 @@ class CalendarVolBacktestEngine:
 
             new_pos = state.position
             hold = state.hold_days
-            if math.isfinite(zv):
+            bands_ok = all(math.isfinite(x) for x in (eh_f, el_f, xh_f, xl_f))
+            if bands_ok:
                 if state.position == 0:
-                    if zv > Z_ENTER:
-                        new_pos = 1
+                    if spread > eh_f:
+                        new_pos = 1  # Normal: short 3M / long 6M (spread rich)
                         hold = 0
-                    elif zv < -Z_ENTER:
-                        new_pos = -1
+                    elif spread < el_f:
+                        new_pos = -1  # Reverse
                         hold = 0
                 else:
                     hold += 1
-                    if abs(zv) <= Z_EXIT:
+                    if xl_f <= spread <= xh_f:
                         new_pos = 0
                         hold = 0
                     elif state.position == -1 and hold >= MAX_HOLD_REVERSE:
@@ -478,6 +534,10 @@ class CalendarVolBacktestEngine:
                     "ret": (actual / (nav - actual)) if i > 0 and (nav - actual) != 0 else 0.0,
                     "spread": spread,
                     "z": zv if math.isfinite(zv) else None,
+                    "enter_hi": eh_f if math.isfinite(eh_f) else None,
+                    "enter_lo": el_f if math.isfinite(el_f) else None,
+                    "exit_hi": xh_f if math.isfinite(xh_f) else None,
+                    "exit_lo": xl_f if math.isfinite(xl_f) else None,
                     "position": new_pos,
                     "n3": n3,
                     "n6": n6,
@@ -663,13 +723,28 @@ class CalendarVolBacktestEngine:
         sig_idx = list(range(0, len(rows), sig_step))
         if sig_idx[-1] != len(rows) - 1:
             sig_idx.append(len(rows) - 1)
+        def _opt(v: Any) -> Optional[float]:
+            if v is None:
+                return None
+            try:
+                x = float(v)
+            except (TypeError, ValueError):
+                return None
+            return None if not math.isfinite(x) else round(x, 6)
+
         signal = {
             "dates": [rows[i]["d"] for i in sig_idx],
             "spread": [round(rows[i]["spread"], 6) for i in sig_idx],
             "zscore": [None if rows[i]["z"] is None else round(float(rows[i]["z"]), 4) for i in sig_idx],
+            "enter_hi": [_opt(rows[i]["enter_hi"]) for i in sig_idx],
+            "enter_lo": [_opt(rows[i]["enter_lo"]) for i in sig_idx],
+            "exit_hi": [_opt(rows[i]["exit_hi"]) for i in sig_idx],
+            "exit_lo": [_opt(rows[i]["exit_lo"]) for i in sig_idx],
             "position": [rows[i]["position"] for i in sig_idx],
-            "enter_band": Z_ENTER,
-            "exit_band": Z_EXIT,
+            "enter_q": self.enter_q,
+            "exit_lo_q": self.exit_lo_q,
+            "exit_hi_q": self.exit_hi_q,
+            "window": self.z_window,
             "perf_start": perf[0]["d"],
             "first_open": open_row["d"],
         }
@@ -698,10 +773,11 @@ class CalendarVolBacktestEngine:
             "strategy_name": cfg["strategy_name"],
             "description": (
                 f"{cfg['index_name']} ({cfg['spot_code']}) 3M−6M ATM CT-IV spread mean-reversion. "
-                f"Z-score uses prior {self.z_window}d window only (no look-ahead). "
+                f"Signal: rolling quantiles of Spread on prior {self.z_window}d "
+                f"(enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
+                f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}; no look-ahead). "
                 f"Dual ATM straddles ({opt_p}) + daily {fut_p} delta hedge. "
-                "Enter |Z|>1.5; exit |Z|≤0.2; reverse max hold 20d. "
-                "NAV/metrics start the day after first open. Costs: none (v1)."
+                "Reverse max hold 20d. NAV/metrics start the day after first open. Costs: none (v1)."
             ),
             "legs": [
                 {"id": f"{opt_p}_3M_straddle", "weight": -1.0, "product": opt_p, "tenor": "3M"},
@@ -719,8 +795,9 @@ class CalendarVolBacktestEngine:
                 "sizing": f"dollar vega={VEGA_BUDGET_FRAC*100:.0f}% NAV per vol-pt on 6M; N_3M=-N_6M*ν6/ν3",
                 "ttm_targets": {"3M": T_3M, "6M": T_6M},
                 "z_window": self.z_window,
-                "z_enter": Z_ENTER,
-                "z_exit": Z_EXIT,
+                "enter_q": self.enter_q,
+                "exit_lo_q": self.exit_lo_q,
+                "exit_hi_q": self.exit_hi_q,
                 "max_hold_reverse": MAX_HOLD_REVERSE,
                 "max_abs_port_vega": round(max_vega_resid, 8),
                 "universe": self.universe,

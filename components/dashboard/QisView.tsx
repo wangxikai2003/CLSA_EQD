@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  ReferenceLine,
 } from 'recharts';
 import { Layers, RefreshCw } from 'lucide-react';
 import { fetchQisBacktest, fetchQisStrategies, QisBacktestResponse, QisStrategyInfo } from '../../services/api_v1';
@@ -22,6 +21,14 @@ const DECOMP_COLORS = {
   residual: '#94A3B8',
 };
 
+const CAL_VOL_UNIVERSES = [
+  { key: '50', id: 'equity_3_6_calendar_vol_50', label: '50' },
+  { key: '300', id: 'equity_3_6_calendar_vol_300', label: '300' },
+  { key: '1000', id: 'equity_3_6_calendar_vol_1000', label: '1000' },
+] as const;
+
+type FamilyKey = 'cross_calendar_carry' | 'calendar_vol';
+
 function fmtPct(x: number | null | undefined, digits = 2) {
   if (x == null || Number.isNaN(x)) return '—';
   return `${(x * 100).toFixed(digits)}%`;
@@ -39,11 +46,17 @@ function fmtMoney(x: number | null | undefined) {
 
 const QisView: React.FC = () => {
   const [strategies, setStrategies] = useState<QisStrategyInfo[]>([]);
-  const [strategyId, setStrategyId] = useState('cross_calendar_carry');
+  const [family, setFamily] = useState<FamilyKey>('calendar_vol');
+  const [universe, setUniverse] = useState<'50' | '300' | '1000'>('300');
   const [data, setData] = useState<QisBacktestResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadStatus, setLoadStatus] = useState('Running backtest…');
   const [err, setErr] = useState<string | null>(null);
+
+  const strategyId = useMemo(() => {
+    if (family === 'cross_calendar_carry') return 'cross_calendar_carry';
+    return CAL_VOL_UNIVERSES.find((u) => u.key === universe)?.id ?? 'equity_3_6_calendar_vol_300';
+  }, [family, universe]);
 
   const load = (refresh = false, signal?: AbortSignal) => {
     setLoading(true);
@@ -80,12 +93,13 @@ const QisView: React.FC = () => {
       .catch(() => {
         if (!ac.signal.aborted) {
           setStrategies([
-            { id: 'cross_calendar_carry', name: 'Cross Calendar Carry', status: 'live' },
-            {
-              id: 'equity_3_6_calendar_vol_300',
-              name: 'Equity 3-6 Calendar Volatility Long Short Strategy — 300',
-              status: 'live',
-            },
+            { id: 'cross_calendar_carry', name: 'Cross Calendar Carry', family: 'futures_carry' },
+            ...CAL_VOL_UNIVERSES.map((u) => ({
+              id: u.id,
+              name: `Equity 3-6 Calendar Vol — ${u.label}`,
+              family: 'calendar_vol',
+              universe: u.key,
+            })),
           ]);
         }
       });
@@ -113,19 +127,29 @@ const QisView: React.FC = () => {
     }));
   }, [data]);
 
-  const zChart = useMemo(() => {
+  const signalChart = useMemo(() => {
     const s = data?.signal;
     if (!s?.dates?.length) return [];
+    const hasBands = Array.isArray(s.enter_hi) && s.enter_hi.length === s.dates.length;
     return s.dates.map((dt, i) => ({
       d: dt,
-      z: s.zscore[i],
-      spread_bp: (s.spread[i] ?? 0) * 10000,
+      spread_pts: (s.spread[i] ?? 0) * 100,
+      enter_hi: hasBands && s.enter_hi![i] != null ? (s.enter_hi![i] as number) * 100 : null,
+      enter_lo: hasBands && s.enter_lo![i] != null ? (s.enter_lo![i] as number) * 100 : null,
+      exit_hi: hasBands && s.exit_hi![i] != null ? (s.exit_hi![i] as number) * 100 : null,
+      exit_lo: hasBands && s.exit_lo![i] != null ? (s.exit_lo![i] as number) * 100 : null,
       position: s.position[i],
     }));
   }, [data]);
 
-  const sosLabel =
-    data?.strategy_id === 'equity_3_6_calendar_vol_300' ? 'IV spread (vol pts)' : 'SoS (pts)';
+  const isCalVol = strategyId.startsWith('equity_3_6_calendar_vol_');
+  const sosLabel = isCalVol ? 'IV spread (vol pts)' : 'SoS (pts)';
+
+  const enterPct = data?.signal?.enter_q != null ? `${((1 - data.signal.enter_q) * 100).toFixed(0)}/${(data.signal.enter_q * 100).toFixed(0)}` : '10/90';
+  const exitPct =
+    data?.signal?.exit_lo_q != null && data?.signal?.exit_hi_q != null
+      ? `${(data.signal.exit_lo_q * 100).toFixed(0)}–${(data.signal.exit_hi_q * 100).toFixed(0)}`
+      : '40–60';
 
   return (
     <div className="space-y-4">
@@ -136,26 +160,37 @@ const QisView: React.FC = () => {
             Systematic Trading Strategies
           </h2>
           <p className="text-[11px] text-slate-500 max-w-3xl mt-1">
-            QIS 回测框架：期货 carry + Equity 3-6 Calendar Vol（50 / 300 / 1000）。
-            日历波动策略结果预计算写入 <code className="font-mono">qis_results.sqlite</code>，打开即读缓存；
-            Refresh 可强制重算。Z 默认 252 交易日（仅用历史窗口，无前瞻）。
+            QIS：期货 carry + Equity 3-6 Calendar Vol。一级选策略族，二级选 50 / 300 / 1000。
+            结果缓存在 <code className="font-mono">qis_results.sqlite</code>；入场/出场为滚动分位数带（仅用历史窗口）。
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <select
-            className="px-3 py-1.5 text-xs font-bold border border-slate-200 rounded-md bg-slate-50 text-[#000066] max-w-[320px]"
-            value={strategyId}
-            onChange={(e) => setStrategyId(e.target.value)}
+            className="px-3 py-1.5 text-xs font-bold border border-slate-200 rounded-md bg-slate-50 text-[#000066]"
+            value={family}
+            onChange={(e) => setFamily(e.target.value as FamilyKey)}
           >
-            {(strategies.length
-              ? strategies
-              : [{ id: 'cross_calendar_carry', name: 'Cross Calendar Carry' }]
-            ).map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
+            <option value="cross_calendar_carry">Cross Calendar Carry</option>
+            <option value="calendar_vol">Equity 3-6 Calendar Vol</option>
           </select>
+          {family === 'calendar_vol' && (
+            <div className="flex rounded-md border border-slate-200 overflow-hidden">
+              {CAL_VOL_UNIVERSES.map((u) => (
+                <button
+                  key={u.key}
+                  type="button"
+                  onClick={() => setUniverse(u.key)}
+                  className={`px-3 py-1.5 text-xs font-bold ${
+                    universe === u.key
+                      ? 'bg-[#000066] text-white'
+                      : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  {u.label}
+                </button>
+              ))}
+            </div>
+          )}
           <button
             type="button"
             onClick={() => load(true)}
@@ -185,7 +220,7 @@ const QisView: React.FC = () => {
                 {data.summary.start} → {data.summary.end} · final ×{data.summary.final_nav_multiple.toFixed(3)} ·
                 NAV {data.summary.final_nav.toLocaleString('en-CN', { maximumFractionDigits: 0 })}
                 {data.summary.first_open ? ` · first open ${data.summary.first_open}` : ''}
-                {typeof data.params.z_window === 'number' ? ` · Z=${data.params.z_window}d` : ''}
+                {typeof data.params.z_window === 'number' ? ` · window=${data.params.z_window}d` : ''}
               </div>
             </div>
             <p className="text-[11px] text-slate-600 leading-relaxed">{data.description}</p>
@@ -307,10 +342,7 @@ const QisView: React.FC = () => {
                       <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                       <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
                       <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
-                      <Tooltip
-                        contentStyle={{ fontSize: 11 }}
-                        formatter={(v: number) => fmtMoney(v)}
-                      />
+                      <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => fmtMoney(v)} />
                       <Legend wrapperStyle={{ fontSize: 10 }} />
                       <Line type="monotone" dataKey="vega" name="Vega" stroke={DECOMP_COLORS.vega} dot={false} strokeWidth={1.5} />
                       <Line type="monotone" dataKey="theta" name="Theta" stroke={DECOMP_COLORS.theta} dot={false} strokeWidth={1.5} />
@@ -353,7 +385,9 @@ const QisView: React.FC = () => {
                         <td className="py-2 pr-3 tabular-nums" style={{ color: DECOMP_COLORS.basis }}>
                           {data.pnl_contribution.basis_pct == null ? '—' : `${data.pnl_contribution.basis_pct.toFixed(1)}%`}
                         </td>
-                        <td className="py-2 pr-3 tabular-nums">{data.pnl_contribution.net_delta_pct == null ? '—' : `${data.pnl_contribution.net_delta_pct.toFixed(1)}%`}</td>
+                        <td className="py-2 pr-3 tabular-nums">
+                          {data.pnl_contribution.net_delta_pct == null ? '—' : `${data.pnl_contribution.net_delta_pct.toFixed(1)}%`}
+                        </td>
                         <td className="py-2 tabular-nums text-slate-500">
                           {data.pnl_contribution.residual_pct == null ? '—' : `${data.pnl_contribution.residual_pct.toFixed(1)}%`}
                         </td>
@@ -363,28 +397,31 @@ const QisView: React.FC = () => {
                 </div>
               )}
 
-              {data.signal && zChart.length > 0 && (
+              {data.signal && signalChart.length > 0 && (
                 <div className="bg-white rounded-lg border border-slate-200 p-4">
-                  <h3 className="font-bold text-[#000066] text-sm mb-3">3M−6M Spread Z-Score Signal</h3>
-                  <div className="h-[280px]">
+                  <h3 className="font-bold text-[#000066] text-sm mb-3">
+                    3M−6M Spread & Rolling Quantile Bands
+                  </h3>
+                  <div className="h-[300px]">
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={zChart}>
+                      <LineChart data={signalChart}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                         <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
-                        <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
+                        <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} unit="pt" />
                         <Tooltip contentStyle={{ fontSize: 11 }} />
                         <Legend wrapperStyle={{ fontSize: 10 }} />
-                        <ReferenceLine y={data.signal.enter_band} stroke="#DC2626" strokeDasharray="4 4" />
-                        <ReferenceLine y={-data.signal.enter_band} stroke="#DC2626" strokeDasharray="4 4" />
-                        <ReferenceLine y={data.signal.exit_band} stroke="#16A34A" strokeDasharray="2 4" />
-                        <ReferenceLine y={-data.signal.exit_band} stroke="#16A34A" strokeDasharray="2 4" />
-                        <ReferenceLine y={0} stroke="#cbd5e1" />
-                        <Line type="monotone" dataKey="z" name="Z-score" stroke="#000066" dot={false} strokeWidth={1.5} connectNulls />
+                        <Line type="monotone" dataKey="spread_pts" name="Spread (vol pts)" stroke="#000066" dot={false} strokeWidth={1.5} />
+                        <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke="#DC2626" dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                        <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke="#DC2626" dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                        <Line type="monotone" dataKey="exit_hi" name={`Exit hi`} stroke="#16A34A" dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                        <Line type="monotone" dataKey="exit_lo" name={`Exit lo`} stroke="#16A34A" dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
                   <p className="text-[9px] text-slate-400 mt-1">
-                    红虚线 ±{data.signal.enter_band} 入场；绿虚线 ±{data.signal.exit_band} 出场。Reverse 最长持仓 20 交易日。
+                    红虚线：滚动入场分位（Spread &gt; hi → Normal；&lt; lo → Reverse）；绿虚线：出场带（落入 {exitPct}% 区间平仓）。
+                    分位仅用过去 {data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。
+                    {strategies.length ? '' : ''}
                   </p>
                 </div>
               )}

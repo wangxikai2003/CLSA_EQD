@@ -17,13 +17,13 @@ import { Activity, BarChart2, TrendingUp, Settings, Zap, ChevronDown, Anchor, Sh
 
 // Tabs Enum
 enum ActiveTab {
-    VANILLA = 'Vanilla & Structures',
-    EXOTIC = 'Exotics (Structured)',
+    VANILLA = 'Vanilla',
+    EXOTIC = 'Exotics',
+    RESEARCH = 'Booster - Barrier Shift',
     VOL_SURFACE = 'Volatility Surface',
-    MARKET = 'Market Intel',
+    MARKET = 'Market Data',
     SPREAD = 'Spread',
     QIS = 'QIS',
-    RESEARCH = 'Booster Research'
 }
 
 const PRODUCT_LABEL: Record<ProductCode, string> = {
@@ -342,7 +342,7 @@ const App: React.FC = () => {
              </div>
           </div>
           <div className="flex bg-[#000044] rounded p-1 gap-1">
-             {[ActiveTab.VANILLA, ActiveTab.EXOTIC, ActiveTab.VOL_SURFACE, ActiveTab.MARKET, ActiveTab.SPREAD, ActiveTab.QIS, ActiveTab.RESEARCH].map(tab => (
+             {[ActiveTab.VANILLA, ActiveTab.EXOTIC, ActiveTab.RESEARCH, ActiveTab.VOL_SURFACE, ActiveTab.MARKET, ActiveTab.SPREAD, ActiveTab.QIS].map(tab => (
                  <button 
                     key={tab}
                     onClick={() => setActiveTab(tab)}
