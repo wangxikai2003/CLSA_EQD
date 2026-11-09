@@ -1,6 +1,7 @@
 """QIS systematic strategy backtests (cross calendar carry first)."""
 from __future__ import annotations
 
+import io
 import math
 import sqlite3
 from datetime import timedelta
@@ -8,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from api.v1 import synth_tenors as st
 
@@ -42,7 +44,8 @@ def _build_cross_cal_panel() -> pd.DataFrame:
     """Equity-only synth panel for IH/IM 3M & 6M (skip commodity for speed)."""
     conn = sqlite3.connect(st._equity_db())
     eq = pd.read_sql(
-        "SELECT product, trade_date, wind_code, contract_ym, settle FROM futures_eod",
+        "SELECT product, trade_date, wind_code, contract_ym, close FROM futures_eod "
+        "WHERE close IS NOT NULL AND close > 0",
         conn,
     )
     conn.close()
@@ -161,7 +164,7 @@ def run_cross_calendar_carry(
     (+IM3, −IM6, −IH3, +IH6), sized so gross notional a·ΣS = NAV.
     Then overnight PnL = a · ΔSoS (matches Spread-tab point carry).
 
-    Timing: lot size signalled from t−1 NAV/prices; executed / resized at t settle.
+    Timing: lot size signalled from t−1 NAV/prices; executed / resized at t close.
     Costs: (|Δq|·S)·(slippage+fee) on rebalance notional.
     """
     px = _build_cross_cal_panel()
@@ -193,13 +196,13 @@ def run_cross_calendar_carry(
         s_prev = px.iloc[i - 1]
         s_now = px.iloc[i]
 
-        # 1) Mark overnight point lots to today's settle → PnL = a_prev · ΔSoS
+        # 1) Mark overnight point lots to today's close → PnL = a_prev · ΔSoS
         pnl = 0.0
         for k in legs:
             pnl += q[k] * (float(s_now[k]) - float(s_prev[k]))
         nav_pre = nav + pnl
 
-        # 2) Execute t−1 signal at t settle: resize to target lot from nav_pre & t prices
+        # 2) Execute t−1 signal at t close: resize to target lot from nav_pre & t prices
         #    (constant long-carry signs; a recomputed daily = weight signal)
         a_tgt = _point_lot_size(nav_pre, s_now, legs)
         turnover = 0.0
@@ -267,7 +270,7 @@ def run_cross_calendar_carry(
         "description": (
             "Long IM 3M−6M calendar vs short IH 3M−6M calendar "
             "(SoS = (IM3−IM6)−(IH3−IH6)). Always long to harvest observed positive carry. "
-            "Signal weights on t−1; execute at t settlement."
+            "Signal weights on t−1; execute at t close."
         ),
         "legs": [
             {
@@ -284,8 +287,8 @@ def run_cross_calendar_carry(
             "fee_pct": fee * 100.0,
             "cost_rate": cost_rate,
             "rebalance": "daily",
-            "signal_lag": "t-1 lot signal → t settle execution",
-            "price": "synthetic constant-maturity settle (Wind S_DQ_SETTLE lerp)",
+            "signal_lag": "t-1 lot signal → t close execution",
+            "price": "synthetic constant-maturity close (Wind S_DQ_CLOSE lerp; no settle)",
             "sizing": "equal point lots a=NAV/ΣS_legs so overnight PnL=a·ΔSoS; gross notional=NAV",
         },
         "nav": nav_chart,
@@ -311,7 +314,7 @@ def list_strategies():
             "name": u["strategy_name"],
             "status": "live",
             "blurb": (
-                f"{u['index_name']} 3M−6M ATM CT-IV Z-score; "
+                f"{u['index_name']} 3M−6M ATM CT-IV; t−1 signal / t close; "
                 f"{u['product']} straddles + {u['fut_root']} hedge"
             ),
             "family": "calendar_vol",
@@ -386,3 +389,63 @@ def cache_status():
     from api.v1 import qis_results_store as qrs
 
     return {"db": str(qrs.results_db_path(create_parent=False)), "entries": qrs.list_cached()}
+
+
+@router.get("/backtest/{strategy_id}/holdings.xlsx")
+def download_holdings(
+    strategy_id: str,
+    z_window: int = Query(252, ge=20, le=756),
+    persist: bool = Query(
+        True,
+        description="Also write Excel under data/exports/ on the server/local disk",
+    ),
+):
+    """Concrete holdings ledger (date/contract/dir/qty/price) for calendar-vol QIS."""
+    from engine.calendar_vol_strategy import (
+        STRATEGY_BY_ID,
+        CalendarVolBacktestEngine,
+        default_holdings_export_path,
+    )
+
+    if strategy_id not in STRATEGY_BY_ID:
+        raise HTTPException(
+            404,
+            f"Holdings export only for calendar-vol strategies; got {strategy_id}",
+        )
+    universe = STRATEGY_BY_ID[strategy_id]
+    eng = CalendarVolBacktestEngine(
+        universe=universe, initial_nav=_INITIAL_NAV, z_window=z_window
+    )
+    eng.run()
+    if persist:
+        disk = eng.write_holdings_excel(default_holdings_export_path(universe))
+    else:
+        disk = None
+
+    buf = io.BytesIO()
+    df = eng.holdings_dataframe()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xl:
+        df.to_excel(xl, sheet_name="holdings", index=False)
+        meta = pd.DataFrame(
+            [
+                {"key": "strategy_id", "value": strategy_id},
+                {"key": "universe", "value": universe},
+                {"key": "signal_lag", "value": "t-1 signal → t close execution"},
+                {"key": "price", "value": "option/futures close (no settle)"},
+                {"key": "n_rows", "value": len(df)},
+                {"key": "persisted_path", "value": str(disk) if disk else ""},
+            ]
+        )
+        meta.to_excel(xl, sheet_name="meta", index=False)
+    buf.seek(0)
+    filename = f"{strategy_id}_holdings.xlsx"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+    }
+    if disk is not None:
+        headers["X-Holdings-Path"] = str(disk)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
