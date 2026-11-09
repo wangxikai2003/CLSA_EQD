@@ -97,10 +97,16 @@ def test_full_backtest_invariants(universe):
     assert payload["strategy_id"] == UNIVERSES[universe]["strategy_id"]
     assert payload["params"]["enter_q"] == 0.9
     assert payload["params"]["first_open"] < payload["params"]["perf_start"]
+    assert "t-1" in payload["params"]["signal_lag"]
+    assert "close" in payload["params"]["price"].lower()
+    assert "settle" in payload["params"]["price"].lower()  # "no settle fallback"
     sig = payload["signal"]
     assert "enter_hi" in sig and len(sig["enter_hi"]) == len(sig["dates"])
+    assert "signal_next" in sig and len(sig["signal_next"]) == len(sig["dates"])
     # some warm bands exist
     assert any(x is not None for x in sig["enter_hi"])
+    # t−1 signal → t execution: position[t] == signal_next[t−1] on the downsampled series
+    # (exact check on full engine rows via a short re-run below)
 
     c = payload["pnl_contribution"]
     total = c["total_pnl"]
@@ -126,3 +132,32 @@ def test_full_backtest_invariants(universe):
         + de["residual_pnl"][-1]
     )
     assert abs(s - total) < 1.0
+
+
+def test_signal_lag_t_minus_1_execution():
+    """Signal emitted on day t-1 must equal position executed on day t."""
+    eng = CalendarVolBacktestEngine(universe="300", z_window=252)
+    # Monkey-patch pack to capture raw rows via a thin wrapper
+    rows_box: list = []
+    orig_pack = eng._pack_payload
+
+    def _capture(rows, first_open_i):
+        rows_box.append(rows)
+        return orig_pack(rows, first_open_i)
+
+    eng._pack_payload = _capture  # type: ignore[method-assign]
+    eng.run()
+    rows = rows_box[0]
+    assert rows[0]["position"] == 0  # day-0 observe only
+    for i in range(1, len(rows)):
+        assert rows[i]["position"] == rows[i - 1]["signal_next"]
+
+
+def test_holdings_excel_export(tmp_path):
+    from engine.calendar_vol_strategy import export_holdings_for_universe
+
+    path = export_holdings_for_universe("300", path=tmp_path / "holdings_300.xlsx")
+    assert path.exists() and path.stat().st_size > 1000
+    df = pd.read_excel(path, sheet_name="holdings")
+    assert {"trade_date", "wind_code", "direction", "qty", "price"}.issubset(df.columns)
+    assert len(df) > 0

@@ -2,8 +2,14 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
-import { Layers, RefreshCw } from 'lucide-react';
-import { fetchQisBacktest, fetchQisStrategies, QisBacktestResponse, QisStrategyInfo } from '../../services/api_v1';
+import { Download, Layers, RefreshCw } from 'lucide-react';
+import {
+  fetchQisBacktest,
+  fetchQisStrategies,
+  qisHoldingsExcelUrl,
+  QisBacktestResponse,
+  QisStrategyInfo,
+} from '../../services/api_v1';
 
 const WINDOW_LABELS: { key: keyof QisBacktestResponse['metrics']; label: string }[] = [
   { key: '1y', label: '1 Year' },
@@ -198,6 +204,15 @@ const QisView: React.FC = () => {
           >
             <RefreshCw size={12} /> Refresh
           </button>
+          {isCalVol && (
+            <a
+              href={qisHoldingsExcelUrl(strategyId)}
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-md border border-slate-200 bg-white text-[#000066] hover:bg-slate-50"
+              title="Download concrete holdings Excel (t−1 signal / t close)"
+            >
+              <Download size={12} /> Holdings.xlsx
+            </a>
+          )}
         </div>
       </div>
 

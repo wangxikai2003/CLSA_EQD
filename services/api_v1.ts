@@ -498,6 +498,14 @@ export function fetchQisBacktest(
   );
 }
 
+/** Calendar-vol concrete holdings Excel (date/contract/dir/qty/price). */
+export function qisHoldingsExcelUrl(strategyId: string, zWindow = 252) {
+  const q = new URLSearchParams();
+  q.set('z_window', String(zWindow));
+  q.set('persist', 'true');
+  return `/api/v1/qis/backtest/${encodeURIComponent(strategyId)}/holdings.xlsx?${q}`;
+}
+
 /** Debounce an async fn; last arg may receive AbortSignal when fn supports it. */
 export function debounceAsync<T extends unknown[], R>(
   fn: (...args: [...T, AbortSignal?]) => Promise<R>,
