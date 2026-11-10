@@ -13,6 +13,7 @@ from api.v1 import qis_results_store as qrs  # noqa: E402
 from api.v1 import synth_tenors as st  # noqa: E402
 from engine.calendar_vol_strategy import (  # noqa: E402
     DEFAULT_Z_WINDOW,
+    SIDE_MODES,
     TENOR_PAIRS,
     UNIVERSES,
     run_calendar_vol,
@@ -31,18 +32,32 @@ def main() -> None:
     print(f"source_key={src} z_window={z_window}")
     for key, u in UNIVERSES.items():
         for tp in TENOR_PAIRS:
-            print(f"=== {key} {u['strategy_id']} tenor={tp} ===", flush=True)
-            payload = run_calendar_vol(
-                key, initial_nav=INITIAL_NAV, z_window=z_window, tenor_pair=tp
-            )
-            path = qrs.put_cached(
-                u["strategy_id"], z_window, INITIAL_NAV, src, payload, tenor_pair=tp
-            )
-            print(
-                f"  start={payload['summary']['start']} end={payload['summary']['end']} "
-                f"mult={payload['summary']['final_nav_multiple']} → {path}",
-                flush=True,
-            )
+            for sm in SIDE_MODES:
+                print(
+                    f"=== {key} {u['strategy_id']} tenor={tp} side={sm} ===",
+                    flush=True,
+                )
+                payload = run_calendar_vol(
+                    key,
+                    initial_nav=INITIAL_NAV,
+                    z_window=z_window,
+                    tenor_pair=tp,
+                    side_mode=sm,
+                )
+                path = qrs.put_cached(
+                    u["strategy_id"],
+                    z_window,
+                    INITIAL_NAV,
+                    src,
+                    payload,
+                    tenor_pair=tp,
+                    side_mode=sm,
+                )
+                print(
+                    f"  start={payload['summary']['start']} end={payload['summary']['end']} "
+                    f"mult={payload['summary']['final_nav_multiple']} → {path}",
+                    flush=True,
+                )
     print("entries:", qrs.list_cached())
 
 

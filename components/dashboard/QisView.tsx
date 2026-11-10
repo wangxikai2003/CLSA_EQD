@@ -8,6 +8,7 @@ import {
   fetchQisStrategies,
   qisHoldingsExcelUrl,
   QisBacktestResponse,
+  QisSideMode,
   QisStrategyInfo,
   QisTenorPair,
   QisTradeMarker,
@@ -16,6 +17,12 @@ import {
 const CAL_VOL_TENORS: { key: QisTenorPair; label: string }[] = [
   { key: '3M-6M', label: '3M–6M' },
   { key: '1M-3M', label: '1M–3M' },
+];
+
+const CAL_VOL_SIDES: { key: QisSideMode; label: string }[] = [
+  { key: 'both', label: 'Long+Short' },
+  { key: 'long_only', label: 'Only Long+Close' },
+  { key: 'short_only', label: 'Only Short+Close' },
 ];
 
 const WINDOW_LABELS: { key: keyof QisBacktestResponse['metrics']; label: string }[] = [
@@ -132,6 +139,7 @@ const QisView: React.FC = () => {
   const [family, setFamily] = useState<FamilyKey>('calendar_vol');
   const [universe, setUniverse] = useState<'50' | '300' | '1000'>('300');
   const [tenorPair, setTenorPair] = useState<QisTenorPair>('3M-6M');
+  const [sideMode, setSideMode] = useState<QisSideMode>('both');
   const [data, setData] = useState<QisBacktestResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadStatus, setLoadStatus] = useState('Running backtest…');
@@ -159,6 +167,7 @@ const QisView: React.FC = () => {
       },
       252,
       family === 'calendar_vol' ? tenorPair : '3M-6M',
+      family === 'calendar_vol' ? sideMode : 'both',
     )
       .then((d) => {
         if (signal?.aborted) return;
@@ -201,7 +210,7 @@ const QisView: React.FC = () => {
     load(false, ac.signal);
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [strategyId, tenorPair]);
+  }, [strategyId, tenorPair, sideMode]);
 
   const decompChart = useMemo(() => {
     const d = data?.pnl_decomposition;
@@ -270,7 +279,10 @@ const QisView: React.FC = () => {
   const isCalVol = strategyId.startsWith('equity_3_6_calendar_vol_');
   const activeTenor =
     (typeof data?.params?.tenor_pair === 'string' ? data.params.tenor_pair : tenorPair) as QisTenorPair;
+  const activeSide =
+    (typeof data?.params?.side_mode === 'string' ? data.params.side_mode : sideMode) as QisSideMode;
   const tenorLabel = CAL_VOL_TENORS.find((t) => t.key === activeTenor)?.label ?? activeTenor;
+  const sideLabel = CAL_VOL_SIDES.find((s) => s.key === activeSide)?.label ?? activeSide;
   const sosLabel = isCalVol ? `${tenorLabel} IV spread (vol pts)` : 'SoS (pts)';
 
   const enterPct = data?.signal?.enter_q != null ? `${((1 - data.signal.enter_q) * 100).toFixed(0)}/${(data.signal.enter_q * 100).toFixed(0)}` : '10/90';
@@ -288,8 +300,8 @@ const QisView: React.FC = () => {
             Systematic Trading Strategies
           </h2>
           <p className="text-[11px] text-slate-500 max-w-3xl mt-1">
-            QIS：期货 carry + Equity Calendar Vol。一级选策略族，二级选 50 / 300 / 1000，并可切换 tenor 对 3M–6M / 1M–3M。
-            结果缓存在 <code className="font-mono">qis_results.sqlite</code>（按 tenor 分键）；入场/出场为滚动分位数带（仅用历史窗口）。
+            QIS：期货 carry + Equity Calendar Vol。一级选策略族，二级选 50 / 300 / 1000，tenor 对 3M–6M / 1M–3M，以及 Long+Short / Only Long+Close / Only Short+Close。
+            结果缓存在 <code className="font-mono">qis_results.sqlite</code>（按 tenor × side 分键）；入场/出场为滚动分位数带（仅用历史窗口）。
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -335,6 +347,22 @@ const QisView: React.FC = () => {
                   </button>
                 ))}
               </div>
+              <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                {CAL_VOL_SIDES.map((s) => (
+                  <button
+                    key={s.key}
+                    type="button"
+                    onClick={() => setSideMode(s.key)}
+                    className={`px-3 py-1.5 text-xs font-bold ${
+                      sideMode === s.key
+                        ? 'bg-[#000066] text-white'
+                        : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
             </>
           )}
           <button
@@ -346,7 +374,7 @@ const QisView: React.FC = () => {
           </button>
           {isCalVol && (
             <a
-              href={qisHoldingsExcelUrl(strategyId, 252, tenorPair)}
+              href={qisHoldingsExcelUrl(strategyId, 252, tenorPair, sideMode)}
               className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-md border border-slate-200 bg-white text-[#000066] hover:bg-slate-50"
               title="Download concrete holdings Excel (t−1 signal / t close)"
             >
@@ -376,7 +404,7 @@ const QisView: React.FC = () => {
                 NAV {data.summary.final_nav.toLocaleString('en-CN', { maximumFractionDigits: 0 })}
                 {data.summary.first_open ? ` · first open ${data.summary.first_open}` : ''}
                 {typeof data.params.z_window === 'number' ? ` · window=${data.params.z_window}d` : ''}
-                {isCalVol ? ` · tenor=${tenorLabel}` : ''}
+                {isCalVol ? ` · tenor=${tenorLabel} · side=${sideLabel}` : ''}
               </div>
             </div>
             <p className="text-[11px] text-slate-600 leading-relaxed">{data.description}</p>

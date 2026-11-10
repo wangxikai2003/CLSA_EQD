@@ -15,6 +15,7 @@ if str(BACKEND) not in sys.path:
 from engine.black76 import black76_greeks
 from engine.calendar_vol_strategy import (
     CalendarVolBacktestEngine,
+    SIDE_MODES,
     T_3M,
     TENOR_PAIRS,
     UNIVERSES,
@@ -141,9 +142,41 @@ def test_full_backtest_invariants(universe, tenor_pair):
 
 def test_300_36_nav_regression():
     """Locked 3M–6M CSI300 final NAV multiple (~1.198563)."""
-    payload = run_calendar_vol("300", initial_nav=100_000_000.0, z_window=252, tenor_pair="3M-6M")
+    payload = run_calendar_vol(
+        "300",
+        initial_nav=100_000_000.0,
+        z_window=252,
+        tenor_pair="3M-6M",
+        side_mode="both",
+    )
     mult = float(payload["summary"]["final_nav_multiple"])
     assert abs(mult - 1.198563) < 5e-4, mult
+
+
+def test_side_mode_filters_positions():
+    """long_only never holds −1; short_only never holds +1; both has both sides."""
+    both = run_calendar_vol("300", tenor_pair="3M-6M", side_mode="both")
+    long_o = run_calendar_vol("300", tenor_pair="3M-6M", side_mode="long_only")
+    short_o = run_calendar_vol("300", tenor_pair="3M-6M", side_mode="short_only")
+    assert both["params"]["side_mode"] == "both"
+    assert set(SIDE_MODES) == {"both", "long_only", "short_only"}
+    assert any(p == 1 for p in both["signal"]["position"])
+    assert any(p == -1 for p in both["signal"]["position"])
+    assert any(p == 1 for p in long_o["signal"]["position"])
+    assert all(p != -1 for p in long_o["signal"]["position"])
+    assert any(p == -1 for p in short_o["signal"]["position"])
+    assert all(p != 1 for p in short_o["signal"]["position"])
+    kinds_l = {m["kind"] for m in long_o["signal"].get("trade_markers") or []}
+    kinds_s = {m["kind"] for m in short_o["signal"].get("trade_markers") or []}
+    assert "short" not in kinds_l
+    assert "long" not in kinds_s
+    assert "close" in kinds_l or 0 in long_o["signal"]["position"]
+    assert "close" in kinds_s or 0 in short_o["signal"]["position"]
+    assert float(long_o["summary"]["final_nav_multiple"]) != float(
+        both["summary"]["final_nav_multiple"]
+    ) or float(short_o["summary"]["final_nav_multiple"]) != float(
+        both["summary"]["final_nav_multiple"]
+    )
 
 
 def test_signal_lag_t_minus_1_execution():

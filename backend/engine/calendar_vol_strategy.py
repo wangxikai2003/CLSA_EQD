@@ -56,6 +56,10 @@ TENOR_PAIRS: Dict[str, Dict[str, Any]] = {
 }
 DEFAULT_TENOR_PAIR = "3M-6M"
 
+# Position-side filter: both = Normal(+1) & Reverse(−1); long/short_only keep flat+close.
+SIDE_MODES = ("both", "long_only", "short_only")
+DEFAULT_SIDE_MODE = "both"
+
 # option product (DB) → index / futures multipliers
 UNIVERSES: Dict[str, Dict[str, Any]] = {
     "50": {
@@ -109,15 +113,38 @@ def normalize_tenor_pair(tenor_pair: str) -> str:
     return key
 
 
+def normalize_side_mode(side_mode: str) -> str:
+    key = str(side_mode).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "long": "long_only",
+        "short": "short_only",
+        "longonly": "long_only",
+        "shortonly": "short_only",
+        "only_long": "long_only",
+        "only_short": "short_only",
+        "all": "both",
+        "ls": "both",
+    }
+    key = aliases.get(key, key)
+    if key not in SIDE_MODES:
+        raise ValueError(f"unknown side_mode {side_mode!r}; choose {list(SIDE_MODES)}")
+    return key
+
+
 def default_holdings_export_path(
-    universe: str, tenor_pair: str = DEFAULT_TENOR_PAIR
+    universe: str,
+    tenor_pair: str = DEFAULT_TENOR_PAIR,
+    side_mode: str = DEFAULT_SIDE_MODE,
 ) -> Path:
     cfg = UNIVERSES[universe]
     tp = normalize_tenor_pair(tenor_pair)
-    if tp == DEFAULT_TENOR_PAIR:
-        return EXPORTS_DIR / f"{cfg['strategy_id']}_holdings.xlsx"
-    slug = tp.lower().replace("-", "")
-    return EXPORTS_DIR / f"{cfg['strategy_id']}_{slug}_holdings.xlsx"
+    sm = normalize_side_mode(side_mode)
+    parts = [cfg["strategy_id"]]
+    if tp != DEFAULT_TENOR_PAIR:
+        parts.append(tp.lower().replace("-", ""))
+    if sm != DEFAULT_SIDE_MODE:
+        parts.append(sm)
+    return EXPORTS_DIR / f"{'_'.join(parts)}_holdings.xlsx"
 
 
 def _equity_db() -> Path:
@@ -241,6 +268,7 @@ class CalendarVolBacktestEngine:
         exit_lo_q: float = EXIT_LO_Q,
         exit_hi_q: float = EXIT_HI_Q,
         tenor_pair: str = DEFAULT_TENOR_PAIR,
+        side_mode: str = DEFAULT_SIDE_MODE,
     ):
         if universe not in UNIVERSES:
             raise ValueError(f"unknown universe {universe}; choose {list(UNIVERSES)}")
@@ -253,6 +281,7 @@ class CalendarVolBacktestEngine:
         self.t_near = float(self.tenor_cfg["t_near"])
         self.t_far = float(self.tenor_cfg["t_far"])
         self.tenor_display = str(self.tenor_cfg["display"])
+        self.side_mode = normalize_side_mode(side_mode)
         self.initial_nav = float(initial_nav)
         self.z_window = int(z_window)
         self.enter_q = float(enter_q)
@@ -478,6 +507,29 @@ class CalendarVolBacktestEngine:
         r0 = hit.iloc[0]
         return float(r0["mid_price"]), float(r0["iv"])
 
+    def _apply_side_mode(self, target: int, position: int) -> int:
+        """Filter target by side_mode; always allow flat (0) closes.
+
+        long_only: keep +1 and 0; ignore −1 entries (stay flat / force-close stray short).
+        short_only: keep −1 and 0; ignore +1 entries.
+        both: unchanged.
+        """
+        sm = self.side_mode
+        if sm == "both":
+            return target
+        if sm == "long_only":
+            if target == -1:
+                return 0
+            if position == -1:
+                return 0
+            return target
+        # short_only
+        if target == 1:
+            return 0
+        if position == 1:
+            return 0
+        return target
+
     def _decide_signal(
         self,
         position: int,
@@ -491,18 +543,20 @@ class CalendarVolBacktestEngine:
         """Emit next-day target from post-trade state + today's close spread."""
         bands_ok = all(math.isfinite(x) for x in (eh, el, xh, xl))
         if not bands_ok:
-            return position
+            return self._apply_side_mode(position, position)
         if position == 0:
             if spread > eh:
-                return 1  # Normal: short near / long far (spread rich)
-            if spread < el:
-                return -1  # Reverse
-            return 0
+                raw = 1  # Normal: short near / long far (spread rich)
+            elif spread < el:
+                raw = -1  # Reverse
+            else:
+                raw = 0
+            return self._apply_side_mode(raw, position)
         if xl <= spread <= xh:
             return 0
         if position == -1 and hold_days >= MAX_HOLD_REVERSE:
             return 0
-        return position
+        return self._apply_side_mode(position, position)
 
     def _append_holdings(
         self,
@@ -589,7 +643,9 @@ class CalendarVolBacktestEngine:
         out = (
             Path(path)
             if path
-            else default_holdings_export_path(self.universe, self.tenor_pair)
+            else default_holdings_export_path(
+                self.universe, self.tenor_pair, self.side_mode
+            )
         )
         out.parent.mkdir(parents=True, exist_ok=True)
         df = self.holdings_dataframe()
@@ -600,6 +656,7 @@ class CalendarVolBacktestEngine:
                     {"key": "strategy_id", "value": self.cfg["strategy_id"]},
                     {"key": "universe", "value": self.universe},
                     {"key": "tenor_pair", "value": self.tenor_pair},
+                    {"key": "side_mode", "value": self.side_mode},
                     {"key": "signal_lag", "value": "t-1 signal → t close execution"},
                     {
                         "key": "price",
@@ -1021,6 +1078,7 @@ class CalendarVolBacktestEngine:
             "exit_hi_q": self.exit_hi_q,
             "window": self.z_window,
             "tenor_pair": self.tenor_pair,
+            "side_mode": self.side_mode,
             "perf_start": perf[0]["d"],
             "first_open": open_row["d"],
         }
@@ -1044,19 +1102,27 @@ class CalendarVolBacktestEngine:
         cfg = self.cfg
         opt_p, fut_p = cfg["product"], cfg["fut_root"]
         nl, fl = self.near_label, self.far_label
+        side_label = {
+            "both": "Long+Short",
+            "long_only": "Long only (+ close)",
+            "short_only": "Short only (+ close)",
+        }[self.side_mode]
 
         return {
             "strategy_id": cfg["strategy_id"],
-            "strategy_name": f"{cfg['strategy_name']} ({self.tenor_display})",
+            "strategy_name": (
+                f"{cfg['strategy_name']} ({self.tenor_display}, {side_label})"
+            ),
             "description": (
                 f"{cfg['index_name']} ({cfg['spot_code']}) {self.tenor_display} ATM CT-IV "
-                f"spread mean-reversion. "
+                f"spread mean-reversion · side_mode={self.side_mode}. "
                 f"Signal at t−1 close (rolling quantiles of Spread on prior {self.z_window}d; "
                 f"enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
                 f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}; no look-ahead); "
                 f"execute open/close/resize at t close. "
                 f"Dual ATM straddles ({opt_p}) + daily {fut_p} delta hedge. "
-                "Reverse max hold 20d. NAV/metrics start the day after first open. Costs: none (v1)."
+                "Reverse max hold 20d (short side). "
+                "NAV/metrics start the day after first open. Costs: none (v1)."
             ),
             "legs": [
                 {
@@ -1090,6 +1156,7 @@ class CalendarVolBacktestEngine:
                 ),
                 "ttm_targets": {nl: self.t_near, fl: self.t_far},
                 "tenor_pair": self.tenor_pair,
+                "side_mode": self.side_mode,
                 "z_window": self.z_window,
                 "enter_q": self.enter_q,
                 "exit_lo_q": self.exit_lo_q,
@@ -1136,12 +1203,14 @@ def run_calendar_vol(
     export_holdings: bool = False,
     holdings_path: Optional[Path] = None,
     tenor_pair: str = DEFAULT_TENOR_PAIR,
+    side_mode: str = DEFAULT_SIDE_MODE,
 ) -> Dict[str, Any]:
     eng = CalendarVolBacktestEngine(
         universe=universe,
         initial_nav=initial_nav,
         z_window=z_window,
         tenor_pair=tenor_pair,
+        side_mode=side_mode,
     )
     payload = eng.run()
     if export_holdings:
@@ -1154,7 +1223,11 @@ def run_equity_3_6_calendar_vol_300(
     initial_nav: float = 100_000_000.0, z_window: int = DEFAULT_Z_WINDOW
 ) -> Dict[str, Any]:
     return run_calendar_vol(
-        "300", initial_nav=initial_nav, z_window=z_window, tenor_pair=DEFAULT_TENOR_PAIR
+        "300",
+        initial_nav=initial_nav,
+        z_window=z_window,
+        tenor_pair=DEFAULT_TENOR_PAIR,
+        side_mode=DEFAULT_SIDE_MODE,
     )
 
 
@@ -1165,6 +1238,7 @@ def run_by_strategy_id(
     export_holdings: bool = False,
     holdings_path: Optional[Path] = None,
     tenor_pair: str = DEFAULT_TENOR_PAIR,
+    side_mode: str = DEFAULT_SIDE_MODE,
 ) -> Dict[str, Any]:
     if strategy_id not in STRATEGY_BY_ID:
         raise KeyError(strategy_id)
@@ -1175,6 +1249,7 @@ def run_by_strategy_id(
         export_holdings=export_holdings,
         holdings_path=holdings_path,
         tenor_pair=tenor_pair,
+        side_mode=side_mode,
     )
 
 
@@ -1184,12 +1259,14 @@ def export_holdings_for_universe(
     z_window: int = DEFAULT_Z_WINDOW,
     path: Optional[Path] = None,
     tenor_pair: str = DEFAULT_TENOR_PAIR,
+    side_mode: str = DEFAULT_SIDE_MODE,
 ) -> Path:
     eng = CalendarVolBacktestEngine(
         universe=universe,
         initial_nav=initial_nav,
         z_window=z_window,
         tenor_pair=tenor_pair,
+        side_mode=side_mode,
     )
     eng.run()
     return eng.write_holdings_excel(path)

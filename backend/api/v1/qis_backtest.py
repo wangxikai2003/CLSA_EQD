@@ -306,7 +306,7 @@ def run_cross_calendar_carry(
 
 @router.get("/strategies")
 def list_strategies():
-    from engine.calendar_vol_strategy import TENOR_PAIRS, UNIVERSES
+    from engine.calendar_vol_strategy import SIDE_MODES, TENOR_PAIRS, UNIVERSES
 
     cal = [
         {
@@ -315,11 +315,13 @@ def list_strategies():
             "status": "live",
             "blurb": (
                 f"{u['index_name']} Calendar Vol ATM CT-IV; tenor 3M−6M | 1M−3M; "
+                f"side both | long_only | short_only; "
                 f"t−1 signal / t close; {u['product']} straddles + {u['fut_root']} hedge"
             ),
             "family": "calendar_vol",
             "universe": key,
             "tenor_pairs": list(TENOR_PAIRS.keys()),
+            "side_modes": list(SIDE_MODES),
         }
         for key, u in UNIVERSES.items()
     ]
@@ -335,6 +337,7 @@ def list_strategies():
             *cal,
         ],
         "tenor_pairs": list(TENOR_PAIRS.keys()),
+        "side_modes": list(SIDE_MODES),
     }
 
 
@@ -352,6 +355,10 @@ def backtest(
         "3M-6M",
         description="Calendar tenor pair: 3M-6M (default) or 1M-3M",
     ),
+    side_mode: str = Query(
+        "both",
+        description="Position side: both | long_only | short_only",
+    ),
 ):
     db = st._equity_db()
 
@@ -366,6 +373,7 @@ def backtest(
 
     from engine.calendar_vol_strategy import (
         STRATEGY_BY_ID,
+        normalize_side_mode,
         normalize_tenor_pair,
         run_by_strategy_id,
     )
@@ -374,24 +382,39 @@ def backtest(
     if strategy_id in STRATEGY_BY_ID:
         try:
             tp = normalize_tenor_pair(tenor_pair)
+            sm = normalize_side_mode(side_mode)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         spot = next((p for p in st._SPOT_CANDIDATES if p.exists()), None)
         src = qrs.source_key(db, spot)
         if not refresh:
-            hit = qrs.get_cached(strategy_id, z_window, _INITIAL_NAV, src, tenor_pair=tp)
+            hit = qrs.get_cached(
+                strategy_id, z_window, _INITIAL_NAV, src, tenor_pair=tp, side_mode=sm
+            )
             if hit is not None:
                 return hit
         # in-process short cache
-        mem_key = (strategy_id, z_window, src, _INITIAL_NAV, tp)
+        mem_key = (strategy_id, z_window, src, _INITIAL_NAV, tp, sm)
         mem = _cache.get("cal_vol_map") or {}
         if not refresh and mem_key in mem:
             return mem[mem_key]
 
         payload = run_by_strategy_id(
-            strategy_id, _INITIAL_NAV, z_window=z_window, tenor_pair=tp
+            strategy_id,
+            _INITIAL_NAV,
+            z_window=z_window,
+            tenor_pair=tp,
+            side_mode=sm,
         )
-        qrs.put_cached(strategy_id, z_window, _INITIAL_NAV, src, payload, tenor_pair=tp)
+        qrs.put_cached(
+            strategy_id,
+            z_window,
+            _INITIAL_NAV,
+            src,
+            payload,
+            tenor_pair=tp,
+            side_mode=sm,
+        )
         mem[mem_key] = payload
         _cache["cal_vol_map"] = mem
         payload = {
@@ -401,6 +424,7 @@ def backtest(
                 "source_key": src,
                 "persisted": True,
                 "tenor_pair": tp,
+                "side_mode": sm,
             },
         }
         return payload
@@ -420,6 +444,9 @@ def download_holdings(
     strategy_id: str,
     z_window: int = Query(252, ge=20, le=756),
     tenor_pair: str = Query("3M-6M", description="Calendar tenor pair: 3M-6M or 1M-3M"),
+    side_mode: str = Query(
+        "both", description="Position side: both | long_only | short_only"
+    ),
     persist: bool = Query(
         True,
         description="Also write Excel under data/exports/ on the server/local disk",
@@ -430,6 +457,7 @@ def download_holdings(
         STRATEGY_BY_ID,
         CalendarVolBacktestEngine,
         default_holdings_export_path,
+        normalize_side_mode,
         normalize_tenor_pair,
     )
 
@@ -440,15 +468,22 @@ def download_holdings(
         )
     try:
         tp = normalize_tenor_pair(tenor_pair)
+        sm = normalize_side_mode(side_mode)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     universe = STRATEGY_BY_ID[strategy_id]
     eng = CalendarVolBacktestEngine(
-        universe=universe, initial_nav=_INITIAL_NAV, z_window=z_window, tenor_pair=tp
+        universe=universe,
+        initial_nav=_INITIAL_NAV,
+        z_window=z_window,
+        tenor_pair=tp,
+        side_mode=sm,
     )
     eng.run()
     if persist:
-        disk = eng.write_holdings_excel(default_holdings_export_path(universe, tp))
+        disk = eng.write_holdings_excel(
+            default_holdings_export_path(universe, tp, sm)
+        )
     else:
         disk = None
 
@@ -461,6 +496,7 @@ def download_holdings(
                 {"key": "strategy_id", "value": strategy_id},
                 {"key": "universe", "value": universe},
                 {"key": "tenor_pair", "value": tp},
+                {"key": "side_mode", "value": sm},
                 {"key": "signal_lag", "value": "t-1 signal → t close execution"},
                 {"key": "price", "value": "option/futures close (no settle)"},
                 {"key": "n_rows", "value": len(df)},
@@ -469,7 +505,12 @@ def download_holdings(
         )
         meta.to_excel(xl, sheet_name="meta", index=False)
     buf.seek(0)
-    slug = "" if tp == "3M-6M" else f"_{tp.lower().replace('-', '')}"
+    slug_parts = []
+    if tp != "3M-6M":
+        slug_parts.append(tp.lower().replace("-", ""))
+    if sm != "both":
+        slug_parts.append(sm)
+    slug = ("_" + "_".join(slug_parts)) if slug_parts else ""
     filename = f"{strategy_id}{slug}_holdings.xlsx"
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
