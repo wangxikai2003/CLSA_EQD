@@ -52,3 +52,14 @@ class PayoffResultModel(BaseModel):
     ko_prob: float
     ki_prob: float
     tags: Dict[str, Any] = {}
+
+
+# Re-export Lego legs for API / docs consumers
+from products.universal_exotic import (  # noqa: E402
+    AssetLeg,
+    CouponLeg,
+    FundingLeg,
+    KILeg,
+    KOLeg,
+    UniversalExoticProduct,
+)

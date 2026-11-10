@@ -54,8 +54,9 @@ gcloud run deploy "$SERVICE" \
   --region "$REGION" \
   --project "$PROJECT" \
   --allow-unauthenticated \
-  --memory 1Gi \
-  --cpu 1 \
+  --memory 2Gi \
+  --cpu 2 \
+  --concurrency 40 \
   --timeout 300 \
   --quiet
 

@@ -12,7 +12,49 @@ export interface DeskHedgeParams {
   n_paths?: number;
 }
 
-/** Backend snowball/phoenix pricing bridge used by ExoticPricer. */
+function backendProductPayload(product: ExoticProduct): { product_type: ExoticPriceRequest['product_type']; product: Record<string, unknown> } {
+  if (product.type === ExoticType.SNOWBALL) {
+    return {
+      product_type: 'snowball',
+      product: {
+        tenor: product.maturity,
+        ko_barrier: product.koBarrier ?? 1.03,
+        ki_barrier: product.kiBarrier ?? 0.75,
+        coupon: product.koCoupon ?? 0.2,
+        bonus_coupon: product.dividendCoupon ?? 0,
+        step_down: product.koStepDown ?? 0,
+        obs_freq: (product.obsFreq || 'Monthly').toLowerCase(),
+        strike: 1.0,
+      },
+    };
+  }
+  if (product.type === ExoticType.FCN) {
+    return {
+      product_type: 'fcn',
+      product: {
+        tenor: product.maturity,
+        ko_barrier: product.koBarrier ?? 1.05,
+        strike: product.strike ?? 0.75,
+        ki_barrier: product.kiBarrier ?? product.strike ?? 0.75,
+        fixed_coupon_pa: product.fixedCouponPa ?? 0.15,
+        obs_freq: (product.obsFreq || 'Monthly').toLowerCase(),
+        worst_of: true,
+      },
+    };
+  }
+  return {
+    product_type: 'booster',
+    product: {
+      tenor: product.maturity,
+      strike: product.strike ?? 1.0,
+      participation: 1.0,
+      structure: 'booster',
+      barrier: product.barrier,
+    },
+  };
+}
+
+/** Backend pricing bridge used by ExoticPricer. */
 export async function priceExoticBackend(
   product: ExoticProduct,
   spot: number,
@@ -20,27 +62,10 @@ export async function priceExoticBackend(
   signal?: AbortSignal,
   desk?: DeskHedgeParams
 ): Promise<{ price: number; raw?: import('./api_v1').ExoticPriceResponse }> {
-  const isSnowball = product.type === ExoticType.SNOWBALL;
+  const { product_type, product: prod } = backendProductPayload(product);
   const req: ExoticPriceRequest = {
-    product_type: isSnowball ? 'snowball' : 'booster',
-    product: isSnowball
-      ? {
-          tenor: product.maturity,
-          ko_barrier: product.koBarrier ?? 1.03,
-          ki_barrier: product.kiBarrier ?? 0.75,
-          coupon: product.koCoupon ?? 0.2,
-          bonus_coupon: product.dividendCoupon ?? 0,
-          step_down: product.koStepDown ?? 0,
-          obs_freq: (product.obsFreq || 'Monthly').toLowerCase(),
-          strike: 1.0,
-        }
-      : {
-          tenor: product.maturity,
-          strike: product.strike ?? 1.0,
-          participation: 1.0,
-          structure: 'booster',
-          barrier: product.barrier,
-        },
+    product_type,
+    product: prod,
     market: {
       spots: [spot],
       r: product.r,
@@ -59,6 +84,7 @@ export async function priceExoticBackend(
       barrier_shift_bps: desk?.barrier_shift_bps ?? 0,
       spread_smoothing_width: desk?.spread_smoothing_width ?? 0,
       return_profiles: desk?.return_profiles ?? ((desk?.barrier_shift_bps ?? 0) > 0 || (desk?.spread_smoothing_width ?? 0) > 0),
+      return_ki_profiles: product.type !== ExoticType.SHARKFIN,
     },
   };
   const res = await priceExoticApi(req, signal);
@@ -222,6 +248,8 @@ export const priceExotic = (
 
         let payoff = 0;
 
+        const regime = product.kiRegime || 'blended';
+
         if (product.type === ExoticType.SNOWBALL) {
             const kiPrice = product.spotRef * (product.kiBarrier || 0.75);
             const initialKoPct = product.koBarrier || 1.03;
@@ -269,17 +297,56 @@ export const priceExotic = (
             }
 
             if (!knockedOut) {
-                // At maturity
+                // At maturity — apply KI regime override for Greeks
                 const S_T = path[totalSteps];
-                if (knockedIn) {
-                    // Massive Loss Scenario: Track Index downside
-                    // Ratio payoff capped at 1 (though usually just S_T/S_0)
+                const treatKI =
+                  regime === 'post_ki' ? true : regime === 'pre_ki' ? false : knockedIn;
+                if (treatKI) {
                     payoff = Math.min(1, S_T / product.spotRef);
                 } else {
-                    // Protected Scenario (Bonus Coupon)
                     payoff = 1 + divCoupon * maturity;
                 }
                 payoff = payoff * Math.exp(-r * maturity);
+            }
+
+        } else if (product.type === ExoticType.FCN) {
+            // Catalog FCN: fixed coupon each obs; KO → 100%+coupon; else Min(100%, ST/Strike)
+            const koPct = product.koBarrier ?? 1.05;
+            const strikePct = product.strike ?? 0.75;
+            const cpnPa = product.fixedCouponPa ?? 0.15;
+            const koPrice = product.spotRef * koPct;
+            let obsInterval = 21;
+            if (product.obsFreq === 'Daily') obsInterval = 1;
+            else if (product.obsFreq === 'Monthly') obsInterval = 21;
+            else if (product.obsFreq === 'Yearly') obsInterval = 252;
+            else if (product.obsFreq === 'European') obsInterval = totalSteps;
+
+            let knockedOut = false;
+            let couponAccrued = 0;
+            const periodYears = obsInterval / stepsPerYear;
+            const cpnEach = cpnPa * periodYears;
+
+            for (let t = 1; t <= totalSteps; t++) {
+                if (t % obsInterval === 0) {
+                    const timeElapsed = t / stepsPerYear;
+                    couponAccrued += cpnEach;
+                    payoff += cpnEach * Math.exp(-r * timeElapsed);
+                    if (path[t] >= koPrice) {
+                        knockedOut = true;
+                        payoff += 1 * Math.exp(-r * timeElapsed);
+                        break;
+                    }
+                }
+            }
+            if (!knockedOut) {
+                const S_T = path[totalSteps];
+                const perf = S_T / product.spotRef;
+                const belowStrike = perf < strikePct;
+                const treatKI =
+                  regime === 'post_ki' ? true : regime === 'pre_ki' ? false : belowStrike;
+                // Catalog: Min(100%, Final/Strike); pre-KI forces 100%
+                const redemption = treatKI ? Math.min(1, perf / strikePct) : 1;
+                payoff += redemption * Math.exp(-r * maturity);
             }
 
         } else if (product.type === ExoticType.SHARKFIN) {
@@ -356,10 +423,11 @@ export const generateExoticAnalysis = (product: ExoticProduct, currentSpot: numb
     const end = currentSpot * (1 + rangePercent);
     const stepSize = (end - start) / steps;
 
+    const supportsKI = product.type === ExoticType.SNOWBALL || product.type === ExoticType.FCN;
+
     for (let s = start; s <= end; s+= stepSize) {
         const res = calculateExoticGreeks(product, s);
-        
-        data.push({
+        const row: any = {
             spot: s,
             moneyness: (s / currentSpot) * 100, 
             price: res.price,
@@ -367,7 +435,20 @@ export const generateExoticAnalysis = (product: ExoticProduct, currentSpot: numb
             gamma: res.gamma,
             vega: res.vega,
             theta: res.theta
-        });
+        };
+        if (supportsKI) {
+            const pre = calculateExoticGreeks({ ...product, kiRegime: 'pre_ki' }, s);
+            const post = calculateExoticGreeks({ ...product, kiRegime: 'post_ki' }, s);
+            row.price_pre_ki = pre.price;
+            row.delta_pre_ki = pre.delta;
+            row.gamma_pre_ki = pre.gamma;
+            row.vega_pre_ki = pre.vega;
+            row.price_post_ki = post.price;
+            row.delta_post_ki = post.delta;
+            row.gamma_post_ki = post.gamma;
+            row.vega_post_ki = post.vega;
+        }
+        data.push(row);
     }
     return data;
 };

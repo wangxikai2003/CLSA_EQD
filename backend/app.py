@@ -44,6 +44,7 @@ try:
     from api.v1 import market as market_routes
     from api.v1 import pricing as pricing_routes
     from api.v1 import stream as stream_routes
+    from api.v1 import exotic_workbench as exotic_routes
     from api.v1 import qis_backtest as qis_routes
     from api.v1 import synth_tenors as synth_tenor_routes
     from api.v1 import vol_spreads as vol_spread_routes
@@ -56,6 +57,7 @@ try:
     app.include_router(synth_tenor_routes.router, prefix="/api/v1/market")
     app.include_router(vol_spread_routes.router, prefix="/api/v1/market")
     app.include_router(qis_routes.router, prefix="/api/v1/qis")
+    app.include_router(exotic_routes.router)
 except Exception as _v1_err:  # pragma: no cover
     import logging
 
@@ -63,8 +65,24 @@ except Exception as _v1_err:  # pragma: no cover
 
 
 @app.on_event("startup")
+def _warmup_vectorized_engine() -> None:
+    """Compile Numba kernels once so first /greeks-term-structure stays <800ms."""
+    try:
+        import numpy as np
+        from engine.vectorized_engine import price_dual_grid_at_t
+
+        spots = np.linspace(80.0, 120.0, 5)
+        price_dual_grid_at_t(
+            "snowball", 100.0, spots, 0.0, 1.0, 0.02, 0.0, 0.2,
+            1.03, 0.75, 1.0, 0.15, n_paths=200, steps_per_year=24, seed=0,
+        )
+    except Exception:
+        pass
+
+
+@app.on_event("startup")
 def _warmup_synth_tenors_cache() -> None:
-    """Pre-build synth-tenors in a daemon thread so cold Spread tab avoids gateway 503."""
+    """Load disk cache or build synth-tenors so Spread tab avoids cold 429/503."""
     import logging
     import threading
 
@@ -74,20 +92,8 @@ def _warmup_synth_tenors_cache() -> None:
         try:
             from api.v1 import synth_tenors as st
 
-            payload = st.build_payload()
-            payload["coverage"] = {
-                p: {t: len(v) for t, v in tens.items()} for p, tens in payload["levels"].items()
-            }
-            db = st._equity_db()
-            spot = next((p for p in st._SPOT_CANDIDATES if p.exists()), None)
-            cdb = st._commodity_db()
-            st._cache["key"] = (
-                db.stat().st_mtime,
-                spot.stat().st_mtime if spot else None,
-                cdb.stat().st_mtime if cdb else None,
-            )
-            st._cache["payload"] = payload
-            log.info("synth-tenors cache warmed (%d products)", len(payload.get("products", [])))
+            payload = st.get_cached_payload(refresh=False)
+            log.info("synth-tenors cache ready (%d products)", len(payload.get("products", [])))
         except Exception as e:  # pragma: no cover
             log.warning("synth-tenors warmup skipped: %s", e)
 

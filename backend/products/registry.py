@@ -278,6 +278,23 @@ def price_product(
         want_greeks=bool(greeks_cfg.get("enabled")),
     )
 
+    spot0 = float(np.atleast_1d(market.get("spots", [100.0]))[0])
+
+    # Pre-KI / Post-KI Greeks profiles (Snowball / FCN and any product with KI)
+    return_ki = bool(greeks_cfg.get("return_ki_profiles", True))
+    if return_ki and product_type.lower() in ("snowball", "fcn", "phoenix"):
+        pre_prod = dict(raw_prod)
+        pre_prod["force_ki"] = False
+        post_prod = dict(raw_prod)
+        post_prod["force_ki"] = True
+        pre_px = _price_once(product_type, pre_prod, market, sim, greeks_cfg, want_greeks=False)
+        post_px = _price_once(product_type, post_prod, market, sim, greeks_cfg, want_greeks=False)
+        out["pre_ki_profile"] = _spot_profile(product_type, pre_prod, market, sim, spot0)
+        out["post_ki_profile"] = _spot_profile(product_type, post_prod, market, sim, spot0)
+        out["diagnostics"]["price_pre_ki"] = pre_px["price"]
+        out["diagnostics"]["price_post_ki"] = post_px["price"]
+        out["diagnostics"]["ki_spread"] = float(pre_px["price"] - post_px["price"])
+
     if return_profiles:
         shifted_prod = _inject_desk_params(product, greeks_cfg, apply_shift=True)
         shifted = _price_once(
@@ -288,7 +305,6 @@ def price_product(
             greeks_cfg,
             want_greeks=False,
         )
-        spot0 = float(np.atleast_1d(market.get("spots", [100.0]))[0])
         raw_profile = _spot_profile(product_type, raw_prod, market, sim, spot0)
         shifted_profile = _spot_profile(product_type, shifted_prod, market, sim, spot0)
         reserve = float(shifted["price"] - out["price"])
