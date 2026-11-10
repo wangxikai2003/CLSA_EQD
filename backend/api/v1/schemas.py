@@ -125,6 +125,9 @@ QISStrategyId = Literal[
     "equity_3_6_calendar_vol_50",
     "equity_3_6_calendar_vol_300",
     "equity_3_6_calendar_vol_1000",
+    "equity_3_6_calendar_vol_zscore_50",
+    "equity_3_6_calendar_vol_zscore_300",
+    "equity_3_6_calendar_vol_zscore_1000",
 ]
 
 

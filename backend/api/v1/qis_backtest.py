@@ -306,22 +306,39 @@ def run_cross_calendar_carry(
 
 @router.get("/strategies")
 def list_strategies():
-    from engine.calendar_vol_strategy import UNIVERSES
+    from engine.calendar_vol_strategy import SIGNAL_ZSCORE, STRATEGIES
 
-    cal = [
-        {
-            "id": u["strategy_id"],
-            "name": u["strategy_name"],
-            "status": "live",
-            "blurb": (
-                f"{u['index_name']} 3M−6M ATM CT-IV; t−1 signal / t close; "
-                f"{u['product']} straddles + {u['fut_root']} hedge"
-            ),
-            "family": "calendar_vol",
-            "universe": key,
-        }
-        for key, u in UNIVERSES.items()
-    ]
+    # Stable order: quantile 50/300/1000 then zscore 50/300/1000
+    mode_rank = {SIGNAL_ZSCORE: 1}
+    uni_rank = {"50": 0, "300": 1, "1000": 2}
+    cal = []
+    for sid, u in sorted(
+        STRATEGIES.items(),
+        key=lambda kv: (
+            mode_rank.get(kv[1]["signal_mode"], 0),
+            uni_rank.get(kv[1]["universe"], 9),
+        ),
+    ):
+        mode = u["signal_mode"]
+        rule = (
+            "Z±1.5 enter / |Z|≤0.2 exit"
+            if mode == SIGNAL_ZSCORE
+            else "rolling 10/90 enter · 40–60 exit"
+        )
+        cal.append(
+            {
+                "id": sid,
+                "name": u["strategy_name"],
+                "status": "live",
+                "blurb": (
+                    f"{u['index_name']} 3M−6M ATM CT-IV; {rule}; "
+                    f"t−1 signal / t close; {u['product']} straddles + {u['fut_root']} hedge"
+                ),
+                "family": "calendar_vol_zscore" if mode == SIGNAL_ZSCORE else "calendar_vol",
+                "universe": u["universe"],
+                "signal_mode": mode,
+            }
+        )
     return {
         "strategies": [
             {
@@ -402,23 +419,31 @@ def download_holdings(
 ):
     """Concrete holdings ledger (date/contract/dir/qty/price) for calendar-vol QIS."""
     from engine.calendar_vol_strategy import (
-        STRATEGY_BY_ID,
+        STRATEGIES,
         CalendarVolBacktestEngine,
         default_holdings_export_path,
     )
 
-    if strategy_id not in STRATEGY_BY_ID:
+    if strategy_id not in STRATEGIES:
         raise HTTPException(
             404,
             f"Holdings export only for calendar-vol strategies; got {strategy_id}",
         )
-    universe = STRATEGY_BY_ID[strategy_id]
+    spec = STRATEGIES[strategy_id]
+    universe = spec["universe"]
+    signal_mode = spec["signal_mode"]
     eng = CalendarVolBacktestEngine(
-        universe=universe, initial_nav=_INITIAL_NAV, z_window=z_window
+        universe=universe,
+        initial_nav=_INITIAL_NAV,
+        z_window=z_window,
+        signal_mode=signal_mode,
+        strategy_id=strategy_id,
     )
     eng.run()
     if persist:
-        disk = eng.write_holdings_excel(default_holdings_export_path(universe))
+        disk = eng.write_holdings_excel(
+            default_holdings_export_path(universe, signal_mode)
+        )
     else:
         disk = None
 
@@ -430,6 +455,7 @@ def download_holdings(
             [
                 {"key": "strategy_id", "value": strategy_id},
                 {"key": "universe", "value": universe},
+                {"key": "signal_mode", "value": signal_mode},
                 {"key": "signal_lag", "value": "t-1 signal → t close execution"},
                 {"key": "price", "value": "option/futures close (no settle)"},
                 {"key": "n_rows", "value": len(df)},
