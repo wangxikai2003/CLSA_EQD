@@ -482,15 +482,19 @@ export function fetchQisStrategies(opts?: AbortSignal | FetchRetryOpts) {
   );
 }
 
+export type QisTenorPair = '3M-6M' | '1M-3M';
+
 export function fetchQisBacktest(
   strategyId: string,
   refresh = false,
   opts?: AbortSignal | FetchRetryOpts,
   zWindow = 252,
+  tenorPair: QisTenorPair = '3M-6M',
 ) {
   const q = new URLSearchParams();
   if (refresh) q.set('refresh', 'true');
   q.set('z_window', String(zWindow));
+  q.set('tenor_pair', tenorPair);
   const qs = q.toString();
   return getJsonWithRetry<QisBacktestResponse>(
     `/api/v1/qis/backtest/${strategyId}?${qs}`,
@@ -499,9 +503,14 @@ export function fetchQisBacktest(
 }
 
 /** Calendar-vol concrete holdings Excel (date/contract/dir/qty/price). */
-export function qisHoldingsExcelUrl(strategyId: string, zWindow = 252) {
+export function qisHoldingsExcelUrl(
+  strategyId: string,
+  zWindow = 252,
+  tenorPair: QisTenorPair = '3M-6M',
+) {
   const q = new URLSearchParams();
   q.set('z_window', String(zWindow));
+  q.set('tenor_pair', tenorPair);
   q.set('persist', 'true');
   return `/api/v1/qis/backtest/${encodeURIComponent(strategyId)}/holdings.xlsx?${q}`;
 }

@@ -9,7 +9,13 @@ import {
   qisHoldingsExcelUrl,
   QisBacktestResponse,
   QisStrategyInfo,
+  QisTenorPair,
 } from '../../services/api_v1';
+
+const CAL_VOL_TENORS: { key: QisTenorPair; label: string }[] = [
+  { key: '3M-6M', label: '3M–6M' },
+  { key: '1M-3M', label: '1M–3M' },
+];
 
 const WINDOW_LABELS: { key: keyof QisBacktestResponse['metrics']; label: string }[] = [
   { key: '1y', label: '1 Year' },
@@ -54,6 +60,7 @@ const QisView: React.FC = () => {
   const [strategies, setStrategies] = useState<QisStrategyInfo[]>([]);
   const [family, setFamily] = useState<FamilyKey>('calendar_vol');
   const [universe, setUniverse] = useState<'50' | '300' | '1000'>('300');
+  const [tenorPair, setTenorPair] = useState<QisTenorPair>('3M-6M');
   const [data, setData] = useState<QisBacktestResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadStatus, setLoadStatus] = useState('Running backtest…');
@@ -68,14 +75,20 @@ const QisView: React.FC = () => {
     setLoading(true);
     setErr(null);
     setLoadStatus(refresh ? '刷新回测…' : 'Running backtest…');
-    fetchQisBacktest(strategyId, refresh, {
-      signal,
-      onRetry: ({ attempt, maxAttempts, delayMs }) => {
-        setLoadStatus(
-          `服务冷启动/繁忙，继续等待（${attempt}/${maxAttempts}），约 ${Math.ceil(delayMs / 1000)}s 后重试…`
-        );
+    fetchQisBacktest(
+      strategyId,
+      refresh,
+      {
+        signal,
+        onRetry: ({ attempt, maxAttempts, delayMs }) => {
+          setLoadStatus(
+            `服务冷启动/繁忙，继续等待（${attempt}/${maxAttempts}），约 ${Math.ceil(delayMs / 1000)}s 后重试…`
+          );
+        },
       },
-    })
+      252,
+      family === 'calendar_vol' ? tenorPair : '3M-6M',
+    )
       .then((d) => {
         if (signal?.aborted) return;
         setData(d);
@@ -117,7 +130,7 @@ const QisView: React.FC = () => {
     load(false, ac.signal);
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [strategyId]);
+  }, [strategyId, tenorPair]);
 
   const decompChart = useMemo(() => {
     const d = data?.pnl_decomposition;
@@ -149,7 +162,10 @@ const QisView: React.FC = () => {
   }, [data]);
 
   const isCalVol = strategyId.startsWith('equity_3_6_calendar_vol_');
-  const sosLabel = isCalVol ? 'IV spread (vol pts)' : 'SoS (pts)';
+  const activeTenor =
+    (typeof data?.params?.tenor_pair === 'string' ? data.params.tenor_pair : tenorPair) as QisTenorPair;
+  const tenorLabel = CAL_VOL_TENORS.find((t) => t.key === activeTenor)?.label ?? activeTenor;
+  const sosLabel = isCalVol ? `${tenorLabel} IV spread (vol pts)` : 'SoS (pts)';
 
   const enterPct = data?.signal?.enter_q != null ? `${((1 - data.signal.enter_q) * 100).toFixed(0)}/${(data.signal.enter_q * 100).toFixed(0)}` : '10/90';
   const exitPct =
@@ -166,8 +182,8 @@ const QisView: React.FC = () => {
             Systematic Trading Strategies
           </h2>
           <p className="text-[11px] text-slate-500 max-w-3xl mt-1">
-            QIS：期货 carry + Equity 3-6 Calendar Vol。一级选策略族，二级选 50 / 300 / 1000。
-            结果缓存在 <code className="font-mono">qis_results.sqlite</code>；入场/出场为滚动分位数带（仅用历史窗口）。
+            QIS：期货 carry + Equity Calendar Vol。一级选策略族，二级选 50 / 300 / 1000，并可切换 tenor 对 3M–6M / 1M–3M。
+            结果缓存在 <code className="font-mono">qis_results.sqlite</code>（按 tenor 分键）；入场/出场为滚动分位数带（仅用历史窗口）。
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -177,25 +193,43 @@ const QisView: React.FC = () => {
             onChange={(e) => setFamily(e.target.value as FamilyKey)}
           >
             <option value="cross_calendar_carry">Cross Calendar Carry</option>
-            <option value="calendar_vol">Equity 3-6 Calendar Vol</option>
+            <option value="calendar_vol">Equity Calendar Vol</option>
           </select>
           {family === 'calendar_vol' && (
-            <div className="flex rounded-md border border-slate-200 overflow-hidden">
-              {CAL_VOL_UNIVERSES.map((u) => (
-                <button
-                  key={u.key}
-                  type="button"
-                  onClick={() => setUniverse(u.key)}
-                  className={`px-3 py-1.5 text-xs font-bold ${
-                    universe === u.key
-                      ? 'bg-[#000066] text-white'
-                      : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  {u.label}
-                </button>
-              ))}
-            </div>
+            <>
+              <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                {CAL_VOL_UNIVERSES.map((u) => (
+                  <button
+                    key={u.key}
+                    type="button"
+                    onClick={() => setUniverse(u.key)}
+                    className={`px-3 py-1.5 text-xs font-bold ${
+                      universe === u.key
+                        ? 'bg-[#000066] text-white'
+                        : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {u.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                {CAL_VOL_TENORS.map((t) => (
+                  <button
+                    key={t.key}
+                    type="button"
+                    onClick={() => setTenorPair(t.key)}
+                    className={`px-3 py-1.5 text-xs font-bold ${
+                      tenorPair === t.key
+                        ? 'bg-[#000066] text-white'
+                        : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </>
           )}
           <button
             type="button"
@@ -206,7 +240,7 @@ const QisView: React.FC = () => {
           </button>
           {isCalVol && (
             <a
-              href={qisHoldingsExcelUrl(strategyId)}
+              href={qisHoldingsExcelUrl(strategyId, 252, tenorPair)}
               className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-md border border-slate-200 bg-white text-[#000066] hover:bg-slate-50"
               title="Download concrete holdings Excel (t−1 signal / t close)"
             >
@@ -236,6 +270,7 @@ const QisView: React.FC = () => {
                 NAV {data.summary.final_nav.toLocaleString('en-CN', { maximumFractionDigits: 0 })}
                 {data.summary.first_open ? ` · first open ${data.summary.first_open}` : ''}
                 {typeof data.params.z_window === 'number' ? ` · window=${data.params.z_window}d` : ''}
+                {isCalVol ? ` · tenor=${tenorLabel}` : ''}
               </div>
             </div>
             <p className="text-[11px] text-slate-600 leading-relaxed">{data.description}</p>
@@ -415,7 +450,7 @@ const QisView: React.FC = () => {
               {data.signal && signalChart.length > 0 && (
                 <div className="bg-white rounded-lg border border-slate-200 p-4">
                   <h3 className="font-bold text-[#000066] text-sm mb-3">
-                    3M−6M Spread & Rolling Quantile Bands
+                    {tenorLabel} Spread & Rolling Quantile Bands
                   </h3>
                   <div className="h-[300px]">
                     <ResponsiveContainer width="100%" height="100%">

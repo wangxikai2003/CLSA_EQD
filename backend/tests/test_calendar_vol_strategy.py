@@ -16,6 +16,7 @@ from engine.black76 import black76_greeks
 from engine.calendar_vol_strategy import (
     CalendarVolBacktestEngine,
     T_3M,
+    TENOR_PAIRS,
     UNIVERSES,
     rolling_quantile_bands,
     rolling_zscore,
@@ -92,9 +93,13 @@ def test_black76_call_put_vega_equal():
 
 
 @pytest.mark.parametrize("universe", list(UNIVERSES.keys()))
-def test_full_backtest_invariants(universe):
-    payload = run_calendar_vol(universe, initial_nav=100_000_000.0, z_window=252)
+@pytest.mark.parametrize("tenor_pair", list(TENOR_PAIRS.keys()))
+def test_full_backtest_invariants(universe, tenor_pair):
+    payload = run_calendar_vol(
+        universe, initial_nav=100_000_000.0, z_window=252, tenor_pair=tenor_pair
+    )
     assert payload["strategy_id"] == UNIVERSES[universe]["strategy_id"]
+    assert payload["params"]["tenor_pair"] == tenor_pair
     assert payload["params"]["enter_q"] == 0.9
     assert payload["params"]["first_open"] < payload["params"]["perf_start"]
     assert "t-1" in payload["params"]["signal_lag"]
@@ -132,6 +137,13 @@ def test_full_backtest_invariants(universe):
         + de["residual_pnl"][-1]
     )
     assert abs(s - total) < 1.0
+
+
+def test_300_36_nav_regression():
+    """Locked 3M–6M CSI300 final NAV multiple (~1.198563)."""
+    payload = run_calendar_vol("300", initial_nav=100_000_000.0, z_window=252, tenor_pair="3M-6M")
+    mult = float(payload["summary"]["final_nav_multiple"])
+    assert abs(mult - 1.198563) < 5e-4, mult
 
 
 def test_signal_lag_t_minus_1_execution():
