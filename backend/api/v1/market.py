@@ -154,8 +154,9 @@ def vol_cone(
     conn.row_factory = sqlite3.Row
     fut = pd.read_sql(
         """
-        SELECT trade_date, settle FROM futures_eod
-         WHERE product=? ORDER BY trade_date, contract_ym
+        SELECT trade_date, contract_ym, close FROM futures_eod
+         WHERE product=? AND close IS NOT NULL AND close > 0
+         ORDER BY trade_date, contract_ym
         """,
         conn,
         params=(product.upper(),),
@@ -163,10 +164,11 @@ def vol_cone(
     if fut.empty:
         conn.close()
         raise HTTPException(404, f"No futures for {product}")
-    daily = fut.groupby("trade_date", as_index=False)["settle"].mean()
+    # Near-month close only (min contract_ym) — never settle.
+    daily = fut.sort_values(["trade_date", "contract_ym"]).groupby("trade_date", as_index=False).first()
     daily["trade_date"] = pd.to_datetime(daily["trade_date"])
     daily = daily.sort_values("trade_date")
-    rets = np.log(daily["settle"]).diff().dropna()
+    rets = np.log(daily["close"]).diff().dropna()
 
     cone = []
     for w in wins:
@@ -292,7 +294,8 @@ def tquote(
             if iv is not None
             else {"delta": None, "gamma": None}
         )
-        # settle book: no true bid/ask — synthetic 1-tick wide spread around mid
+        # Close book (option_iv.mid_price ← S_DQ_CLOSE): no true bid/ask —
+        # synthetic 1-tick wide spread around close for display only.
         tick = max(abs(mid or 0) * 0.005, 0.2) if mid is not None else None
         bid = (mid - tick) if mid is not None and tick is not None else mid
         ask = (mid + tick) if mid is not None and tick is not None else mid
@@ -307,7 +310,7 @@ def tquote(
             "gamma": greeks.get("gamma"),
             "oi": None,
             "volume": None,
-            "source": "settle",
+            "source": "close",
         }
         if r["cp"] == "C":
             slot["call"] = cell
@@ -325,5 +328,5 @@ def tquote(
         "atm_strike": atm,
         "ttm": ttm,
         "board": board,
-        "source": "settle",
+        "source": "close",
     }

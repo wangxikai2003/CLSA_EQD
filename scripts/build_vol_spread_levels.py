@@ -60,13 +60,13 @@ def svi_iv(k: float, ttm: float, a, b, rho, m, sigma, jw_v=None) -> float:
     return math.sqrt(max(w, 1e-12) / ttm)
 
 
-def front_settle(conn: sqlite3.Connection, db_product: str) -> pd.Series:
-    """Near-month settle (min contract_ym each day) for RV."""
+def front_close(conn: sqlite3.Connection, db_product: str) -> pd.Series:
+    """Near-month close (min contract_ym each day) for RV — no settle fallback."""
     df = pd.read_sql(
         """
-        SELECT trade_date, contract_ym, settle
+        SELECT trade_date, contract_ym, close
           FROM futures_eod
-         WHERE product=? AND settle IS NOT NULL AND settle > 0
+         WHERE product=? AND close IS NOT NULL AND close > 0
          ORDER BY trade_date, contract_ym
         """,
         conn,
@@ -76,13 +76,13 @@ def front_settle(conn: sqlite3.Connection, db_product: str) -> pd.Series:
         return pd.Series(dtype=float)
     df = df.sort_values(["trade_date", "contract_ym"])
     front = df.groupby("trade_date", as_index=False).first()
-    s = front.set_index("trade_date")["settle"].astype(float)
+    s = front.set_index("trade_date")["close"].astype(float)
     s.index = pd.to_datetime(s.index)
     return s.sort_index()
 
 
-def rv_series(settle: pd.Series) -> Dict[str, pd.Series]:
-    rets = np.log(settle).diff()
+def rv_series(close: pd.Series) -> Dict[str, pd.Series]:
+    rets = np.log(close).diff()
     out = {}
     for lab, w in RV_WINDOWS:
         rv = rets.rolling(w, min_periods=max(5, w // 2)).std() * math.sqrt(252)
@@ -171,11 +171,11 @@ def process_universe(conn: sqlite3.Connection, universe: list) -> list:
     for u in universe:
         pub, db, ac = u["public"], u["db"], u["asset_class"]
         print(f"  {pub} (db={db}) …", flush=True)
-        settle = front_settle(conn, db)
-        if settle.empty:
+        close = front_close(conn, db)
+        if close.empty:
             print("    no futures")
         else:
-            for lab, ser in rv_series(settle).items():
+            for lab, ser in rv_series(close).items():
                 for d, v in ser.items():
                     records.append(
                         {

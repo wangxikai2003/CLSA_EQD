@@ -10,7 +10,12 @@ import { JwParams } from '../services/api';
 import JwParamPanel from './JwParamPanel';
 import ProgressBar from './ProgressBar';
 import { useExoticPricing } from '../hooks/useExoticPricing';
-import type { ExoticPriceRequest } from '../services/api_v1';
+import GreeksTermStructureView from './GreeksTermStructureView';
+import {
+  abortGreeksTermStructure,
+  fetchGreeksTermStructure,
+  type GreeksTermStructureResponse,
+} from '../services/api_v1';
 
 interface Props {
   spot: number;
@@ -51,6 +56,25 @@ const ExoticPricer: React.FC<Props> = ({
     if (barrierFill.strike != null) setStrikePct(barrierFill.strike);
   }, [barrierFill]);
 
+  // Catalog-like defaults when switching product type
+  useEffect(() => {
+    if (productType === ExoticType.FCN) {
+      setKoLevel(1.05);
+      setStrikePct(0.75);
+      setObsFreq('Monthly');
+      setMaturity(1);
+      setFixedCouponPa(0.15);
+      setKiMonitoring('EUROPEAN');
+    } else if (productType === ExoticType.SNOWBALL) {
+      setKoLevel(1.03);
+      setKiLevel(0.75);
+      setKiMonitoring('DAILY');
+    } else if (productType === ExoticType.SHARKFIN) {
+      setStrikePct(1.0);
+      setBarrierPct(1.2);
+    }
+  }, [productType]);
+
   // Snowball specific
   const [kiLevel, setKiLevel] = useState(0.75); // 75%
   const [koLevel, setKoLevel] = useState(1.03); // 103%
@@ -61,10 +85,12 @@ const ExoticPricer: React.FC<Props> = ({
   const [stepDown, setStepDown] = useState(0.00); // Step down per observation
   const [obsFreq, setObsFreq] = useState<'Monthly'|'Daily'|'Yearly'|'European'>('Monthly');
 
-  // Sharkfin specific
+  // Sharkfin / FCN strike-barrier
   const [strikePct, setStrikePct] = useState(1.0);
   const [barrierPct, setBarrierPct] = useState(1.2);
   const [rebatePct, setRebatePct] = useState(0.02); // 2%
+  // FCN (catalog defaults: KO 105%, Strike ~75%, coupon 15% p.a.)
+  const [fixedCouponPa, setFixedCouponPa] = useState(0.15);
 
   // Desk over-hedging & smoothing
   const [deskOpen, setDeskOpen] = useState(false);
@@ -72,9 +98,16 @@ const ExoticPricer: React.FC<Props> = ({
   const [smoothingPct, setSmoothingPct] = useState(2.0); // percent → width
   const [showNominal, setShowNominal] = useState(true);
   const [showDesk, setShowDesk] = useState(true);
+  const [showPreKI, setShowPreKI] = useState(true);
+  const [showPostKI, setShowPostKI] = useState(true);
   const [reserveInfo, setReserveInfo] = useState<{ reserve: number; pv_shifted: number } | null>(null);
+  const [kiSpread, setKiSpread] = useState<number | null>(null);
   const priceAbortRef = useRef<AbortController | null>(null);
-  const { progress, cancel: cancelStream, price: priceStreamed, loading: streamLoading } = useExoticPricing();
+  const gtsAbortRef = useRef<AbortController | null>(null);
+  const [gtsData, setGtsData] = useState<GreeksTermStructureResponse | null>(null);
+  const [gtsLoading, setGtsLoading] = useState(false);
+  const [kiMonitoring, setKiMonitoring] = useState<'DAILY' | 'EUROPEAN'>('DAILY');
+  const { progress, cancel: cancelStream, loading: streamLoading } = useExoticPricing();
   
   // View Control
   const [viewRange, setViewRange] = useState(0.20); // 20% range default
@@ -109,19 +142,84 @@ const ExoticPricer: React.FC<Props> = ({
     vol: effectiveVol, // Use Local Effective Vol
     r,
     notional,
-    kiBarrier: kiLevel,
-    koBarrier: koLevel,
+    kiBarrier: productType === ExoticType.FCN ? strikePct : kiLevel,
+    koBarrier: productType === ExoticType.FCN ? koLevel : koLevel,
     koStepDown: stepDown,
     obsFreq: obsFreq,
     
     // Coupons
     koCoupon: koCoupon,
     dividendCoupon: divCoupon,
+    fixedCouponPa,
 
     strike: strikePct,
-    barrier: barrierPct,
+    barrier: productType === ExoticType.FCN ? koLevel : barrierPct,
     rebate: rebatePct,
-  }), [productType, spot, maturity, effectiveVol, r, notional, kiLevel, koLevel, koCoupon, divCoupon, stepDown, obsFreq, strikePct, barrierPct, rebatePct]);
+  }), [productType, spot, maturity, effectiveVol, r, notional, kiLevel, koLevel, koCoupon, divCoupon, stepDown, obsFreq, strikePct, barrierPct, rebatePct, fixedCouponPa]);
+
+  // Greeks term-structure (AbortController + debounce)
+  useEffect(() => {
+    if (productType === ExoticType.SHARKFIN) {
+      setGtsData(null);
+      return;
+    }
+    gtsAbortRef.current?.abort();
+    abortGreeksTermStructure();
+    const ctrl = new AbortController();
+    gtsAbortRef.current = ctrl;
+    const timer = window.setTimeout(async () => {
+      setGtsLoading(true);
+      try {
+        const ptype = productType === ExoticType.FCN ? 'fcn' : 'snowball';
+        const res = await fetchGreeksTermStructure(
+          {
+            product_type: ptype,
+            product: {
+              tenor: maturity,
+              ko_barrier: koLevel,
+              ki_barrier: productType === ExoticType.FCN ? strikePct : kiLevel,
+              strike: productType === ExoticType.FCN ? strikePct : 1.0,
+              coupon: productType === ExoticType.FCN ? fixedCouponPa : koCoupon,
+              bonus_coupon: divCoupon,
+              step_down: stepDown,
+              obs_freq: obsFreq.toLowerCase(),
+              fixed_coupon_pa: fixedCouponPa,
+              snowball_coupon_pa: koCoupon,
+            },
+            market: {
+              spots: [spot],
+              r,
+              q: [0],
+              flat_vols: [effectiveVol],
+              vol_mode: 'flat',
+            },
+            spot_range: [spot * (1 - viewRange * 1.5), spot * (1 + viewRange * 1.5)],
+            spot_steps: 41,
+            ki_monitoring_type: kiMonitoring,
+            ko_monitoring_type: 'EUROPEAN',
+            include_greeks: ['pv', 'delta', 'gamma'],
+            n_paths: 4000,
+            barrier_shift_bps: barrierShiftBps,
+            spread_smoothing_width: smoothingPct / 100,
+          },
+          ctrl.signal,
+        );
+        if (!ctrl.signal.aborted) setGtsData(res);
+      } catch (e) {
+        if ((e as Error)?.name === 'AbortError') return;
+        console.warn('greeks-term-structure', e);
+      } finally {
+        if (!ctrl.signal.aborted) setGtsLoading(false);
+      }
+    }, 280);
+    return () => {
+      window.clearTimeout(timer);
+      ctrl.abort();
+    };
+  }, [
+    productType, maturity, koLevel, kiLevel, strikePct, fixedCouponPa, koCoupon, divCoupon,
+    stepDown, obsFreq, spot, r, effectiveVol, viewRange, kiMonitoring, barrierShiftBps, smoothingPct,
+  ]);
 
   // Initial Calculation & Backtest Data Gen
   useEffect(() => {
@@ -171,52 +269,52 @@ const ExoticPricer: React.FC<Props> = ({
             let data = generateExoticAnalysis(product, spot, viewRange);
             let center = data.reduce((prev, curr) => Math.abs(curr.spot - spot) < Math.abs(prev.spot - spot) ? curr : prev);
             setReserveInfo(null);
+            setKiSpread(null);
             if (!USE_LOCAL_MC) {
               try {
                 let raw: import('../services/api_v1').ExoticPriceResponse | undefined;
                 let px: number;
-                if ((desk.n_paths ?? 0) >= 40000) {
-                  const isSnowball = product.type === ExoticType.SNOWBALL;
-                  const req: ExoticPriceRequest = {
-                    product_type: isSnowball ? 'snowball' : 'booster',
-                    product: isSnowball
-                      ? {
-                          tenor: product.maturity,
-                          ko_barrier: product.koBarrier ?? 1.03,
-                          ki_barrier: product.kiBarrier ?? 0.75,
-                          coupon: product.koCoupon ?? 0.2,
-                          bonus_coupon: product.dividendCoupon ?? 0,
-                          step_down: product.koStepDown ?? 0,
-                          obs_freq: (product.obsFreq || 'Monthly').toLowerCase(),
-                          strike: 1.0,
-                        }
-                      : {
-                          tenor: product.maturity,
-                          strike: product.strike ?? 1.0,
-                          participation: 1.0,
-                          structure: 'booster',
-                          barrier: product.barrier,
-                        },
-                    market: { spots: [spot], r: product.r, q: [0], flat_vols: [effectiveVol], corr: [[1]] },
-                    sim: { n_paths: desk.n_paths, n_steps: Math.max(12, Math.floor(product.maturity * 12)), seed: 42, bridge: true },
-                    greeks: {
-                      enabled: false,
-                      barrier_shift_bps: desk.barrier_shift_bps,
-                      spread_smoothing_width: desk.spread_smoothing_width,
-                      return_profiles: desk.return_profiles,
-                    },
-                  };
-                  raw = await priceStreamed(req, { stream: true });
-                  if (!raw) return; // cancelled
-                  px = raw.price * (product.notional || 1);
-                } else {
-                  const out = await priceExoticBackend(product, spot, effectiveVol, ctrl.signal, desk);
-                  px = out.price;
-                  raw = out.raw;
-                }
+                const out = await priceExoticBackend(product, spot, effectiveVol, ctrl.signal, {
+                  ...desk,
+                  n_paths: desk.n_paths,
+                });
+                px = out.price;
+                raw = out.raw;
                 if (ctrl.signal.aborted) return;
                 center = { ...center, price: px };
-                if (raw?.raw_profile && raw?.shifted_profile) {
+
+                // Prefer pre/post KI profiles for Greeks charts
+                if (raw?.pre_ki_profile && raw?.post_ki_profile) {
+                  const pre = raw.pre_ki_profile;
+                  const post = raw.post_ki_profile;
+                  const n = Math.min(pre.spot_mult.length, post.spot_mult.length);
+                  data = Array.from({ length: n }, (_, i) => {
+                    const m = pre.spot_mult[i];
+                    const row: any = {
+                      moneyness: m * 100,
+                      spot: spot * m,
+                      price: (raw!.raw_profile?.pv?.[i] ?? pre.pv[i]) * notional,
+                      price_pre_ki: pre.pv[i] * notional,
+                      price_post_ki: post.pv[i] * notional,
+                      delta: pre.delta[i] * notional,
+                      delta_pre_ki: pre.delta[i] * notional,
+                      delta_post_ki: post.delta[i] * notional,
+                      gamma: pre.gamma[i] * notional,
+                      gamma_pre_ki: pre.gamma[i] * notional,
+                      gamma_post_ki: post.gamma[i] * notional,
+                      vega: 0,
+                    };
+                    if (raw!.shifted_profile) {
+                      row.price_desk = raw!.shifted_profile.pv[i] * notional;
+                      row.delta_desk = raw!.shifted_profile.delta[i] * notional;
+                      row.gamma_desk = raw!.shifted_profile.gamma[i] * notional;
+                    }
+                    return row;
+                  });
+                  if (raw.diagnostics?.ki_spread != null) {
+                    setKiSpread(Number(raw.diagnostics.ki_spread) * notional);
+                  }
+                } else if (raw?.raw_profile && raw?.shifted_profile) {
                   const n = Math.min(raw.raw_profile.spot_mult.length, raw.shifted_profile.spot_mult.length);
                   data = Array.from({ length: n }, (_, i) => {
                     const m = raw!.raw_profile!.spot_mult[i];
@@ -232,12 +330,12 @@ const ExoticPricer: React.FC<Props> = ({
                       vega: 0,
                     };
                   });
-                  if (raw.reserve_metrics) {
-                    setReserveInfo({
-                      reserve: raw.reserve_metrics.reserve * notional,
-                      pv_shifted: raw.reserve_metrics.pv_shifted * notional,
-                    });
-                  }
+                }
+                if (raw?.reserve_metrics) {
+                  setReserveInfo({
+                    reserve: raw.reserve_metrics.reserve * notional,
+                    pv_shifted: raw.reserve_metrics.pv_shifted * notional,
+                  });
                 }
               } catch (e) {
                 if ((e as Error)?.name === 'AbortError') return;
@@ -295,6 +393,7 @@ const ExoticPricer: React.FC<Props> = ({
                                 className="w-full border border-slate-300 rounded p-2 text-slate-700 font-semibold focus:ring-2 focus:ring-[#000066] focus:outline-none"
                             >
                                 <option value={ExoticType.SNOWBALL}>Snowball (Autocall)</option>
+                                <option value={ExoticType.FCN}>FCN (Fixed Coupon Note)</option>
                                 <option value={ExoticType.SHARKFIN}>Sharkfin (Barrier Call)</option>
                             </select>
                         </div>
@@ -419,6 +518,43 @@ const ExoticPricer: React.FC<Props> = ({
                             </>
                         )}
 
+                        {productType === ExoticType.FCN && (
+                            <>
+                                <div className="text-[9px] text-slate-400 mb-1">
+                                  Catalog: fixed coupon each obs until KO; else Min(100%, Final/Strike) at maturity
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">KO Barrier</label>
+                                        <input type="number" step="0.01" value={koLevel} onChange={e => setKoLevel(parseFloat(e.target.value))} className="w-full border p-1.5 rounded text-green-600 font-bold" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Strike (Put)</label>
+                                        <input type="number" step="0.01" value={strikePct} onChange={e => setStrikePct(parseFloat(e.target.value))} className="w-full border p-1.5 rounded text-[#E20000] font-bold" />
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Fixed Coupon p.a.</label>
+                                        <input type="number" step="0.01" value={fixedCouponPa} onChange={e => setFixedCouponPa(parseFloat(e.target.value))} className="w-full border p-1.5 rounded text-[#EAB308] font-bold" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Obs Freq</label>
+                                        <select
+                                            value={obsFreq}
+                                            onChange={(e) => setObsFreq(e.target.value as any)}
+                                            className="w-full border p-1.5 rounded text-xs"
+                                        >
+                                            <option value="Daily">Daily</option>
+                                            <option value="Monthly">Monthly</option>
+                                            <option value="Yearly">Yearly</option>
+                                            <option value="European">European (End)</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </>
+                        )}
+
                         {productType === ExoticType.SHARKFIN && (
                             <>
                                 <div className="grid grid-cols-2 gap-3">
@@ -448,6 +584,20 @@ const ExoticPricer: React.FC<Props> = ({
                                 <input type="number" step="10000" value={notional} onChange={e => setNotional(parseFloat(e.target.value))} className="w-full border p-1.5 rounded" />
                             </div>
                         </div>
+
+                        {(productType === ExoticType.SNOWBALL || productType === ExoticType.FCN) && (
+                          <div className="mt-3">
+                            <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">KI Monitoring</label>
+                            <select
+                              value={kiMonitoring}
+                              onChange={(e) => setKiMonitoring(e.target.value as 'DAILY' | 'EUROPEAN')}
+                              className="w-full border p-1.5 rounded text-xs"
+                            >
+                              <option value="DAILY">Daily / American (AKI)</option>
+                              <option value="EUROPEAN">European / AXKI</option>
+                            </select>
+                          </div>
+                        )}
 
                         <div className="mt-4 border border-slate-200 rounded-lg overflow-hidden">
                             <button
@@ -484,7 +634,15 @@ const ExoticPricer: React.FC<Props> = ({
                                             className="w-full accent-[#EAB308]"
                                         />
                                     </div>
-                                    <div className="flex gap-3 text-slate-600">
+                                    <div className="flex flex-wrap gap-3 text-slate-600">
+                                        <label className="flex items-center gap-1">
+                                            <input type="checkbox" checked={showPreKI} onChange={(e) => setShowPreKI(e.target.checked)} />
+                                            Pre-KI Greeks
+                                        </label>
+                                        <label className="flex items-center gap-1">
+                                            <input type="checkbox" checked={showPostKI} onChange={(e) => setShowPostKI(e.target.checked)} />
+                                            Post-KI Greeks
+                                        </label>
                                         <label className="flex items-center gap-1">
                                             <input type="checkbox" checked={showNominal} onChange={(e) => setShowNominal(e.target.checked)} />
                                             Contract Nominal
@@ -494,6 +652,11 @@ const ExoticPricer: React.FC<Props> = ({
                                             Desk Shifted
                                         </label>
                                     </div>
+                                    {kiSpread != null && (
+                                        <div className="bg-slate-50 border border-slate-100 rounded px-2 py-1 font-mono text-[10px]">
+                                            Pre−Post KI spread ${kiSpread.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                        </div>
+                                    )}
                                     {reserveInfo && (
                                         <div className="bg-amber-50 border border-amber-100 rounded px-2 py-1 font-mono text-[10px]">
                                             Reserve ${(reserveInfo.reserve).toLocaleString(undefined, { maximumFractionDigits: 0 })}
@@ -577,7 +740,13 @@ const ExoticPricer: React.FC<Props> = ({
                                 />
                                 <ReferenceLine x={100} stroke="#EAB308" strokeDasharray="3 3" />
                                 {showNominal && (
-                                  <Area type="monotone" dataKey="price" stroke="#000066" fill="#000066" fillOpacity={0.1} name="Contract Nominal" />
+                                  <Area type="monotone" dataKey="price" stroke="#000066" fill="#000066" fillOpacity={0.1} name="Blended / Nominal" />
+                                )}
+                                {showPreKI && simData.some((d) => d.price_pre_ki != null) && (
+                                  <Area type="monotone" dataKey="price_pre_ki" stroke="#16a34a" fill="#16a34a" fillOpacity={0.06} name="Pre-KI" />
+                                )}
+                                {showPostKI && simData.some((d) => d.price_post_ki != null) && (
+                                  <Area type="monotone" dataKey="price_post_ki" stroke="#E20000" fill="#E20000" fillOpacity={0.06} name="Post-KI" />
                                 )}
                                 {showDesk && simData.some((d) => d.price_desk != null) && (
                                   <Area type="monotone" dataKey="price_desk" stroke="#EAB308" fill="#EAB308" fillOpacity={0.08} name="Desk Shifted" />
@@ -588,38 +757,50 @@ const ExoticPricer: React.FC<Props> = ({
                     
                     <div className="grid grid-cols-2 gap-4 h-[200px]">
                         <div className="bg-white rounded border border-slate-100 p-2">
-                            <h4 className="text-[10px] font-bold mb-1 text-center" style={{color: COLORS.CITIC_RED}}>Delta</h4>
+                            <h4 className="text-[10px] font-bold mb-1 text-center" style={{color: COLORS.CITIC_RED}}>
+                              Delta · Pre-KI vs Post-KI
+                            </h4>
                             <GreeksChart
                               data={simData}
                               marketSpot={spot}
-                              dataKey="delta"
-                              color={COLORS.CITIC_RED}
-                              name="Nominal"
-                              altDataKey="delta_desk"
-                              altColor="#EAB308"
-                              altName="Desk"
-                              showPrimary={showNominal}
-                              showAlt={showDesk}
+                              dataKey={simData.some((d) => d.delta_pre_ki != null) ? 'delta_pre_ki' : 'delta'}
+                              color="#16a34a"
+                              name="Pre-KI"
+                              altDataKey={simData.some((d) => d.delta_post_ki != null) ? 'delta_post_ki' : (showDesk ? 'delta_desk' : undefined)}
+                              altColor="#E20000"
+                              altName="Post-KI"
+                              showPrimary={showPreKI || showNominal}
+                              showAlt={showPostKI || showDesk}
                               yScale={1.1}
                             />
                         </div>
                         <div className="bg-white rounded border border-slate-100 p-2">
-                            <h4 className="text-[10px] font-bold mb-1 text-center text-purple-700">Gamma (spike vs smooth)</h4>
+                            <h4 className="text-[10px] font-bold mb-1 text-center text-purple-700">
+                              Gamma · Pre-KI vs Post-KI
+                            </h4>
                             <GreeksChart
                               data={simData}
                               marketSpot={spot}
-                              dataKey="gamma"
-                              color="#7c3aed"
-                              name="Nominal"
-                              altDataKey="gamma_desk"
-                              altColor="#EAB308"
-                              altName="Desk Smooth"
-                              showPrimary={showNominal}
-                              showAlt={showDesk}
+                              dataKey={simData.some((d) => d.gamma_pre_ki != null) ? 'gamma_pre_ki' : 'gamma'}
+                              color="#16a34a"
+                              name="Pre-KI"
+                              altDataKey={simData.some((d) => d.gamma_post_ki != null) ? 'gamma_post_ki' : (showDesk ? 'gamma_desk' : undefined)}
+                              altColor="#E20000"
+                              altName="Post-KI"
+                              showPrimary={showPreKI || showNominal}
+                              showAlt={showPostKI || showDesk}
                               yScale={1.1}
                             />
                         </div>
                     </div>
+
+                    {(productType === ExoticType.SNOWBALL || productType === ExoticType.FCN) && (
+                      <GreeksTermStructureView
+                        data={gtsData}
+                        loading={gtsLoading}
+                        spot={spot}
+                      />
+                    )}
                 </div>
 
                 {/* Right: Summary */}
