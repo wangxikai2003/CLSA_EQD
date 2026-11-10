@@ -33,19 +33,14 @@ DEFAULT_Z_WINDOW = 252  # rolling window for quantiles / Z (trading days)
 ENTER_Q = 0.90  # enter outside 10/90
 EXIT_LO_Q = 0.40
 EXIT_HI_Q = 0.60
-# Fixed Z-score bands (implementation_prompt / pre-quantile rule)
-Z_ENTER = 1.5
-Z_EXIT = 0.2
 MAX_HOLD_REVERSE = 20
 VEGA_BUDGET_FRAC = 0.01
-
-SIGNAL_QUANTILE = "quantile"
-SIGNAL_ZSCORE = "zscore"
-SIGNAL_MODES = (SIGNAL_QUANTILE, SIGNAL_ZSCORE)
 
 # option product (DB) → index / futures multipliers
 UNIVERSES: Dict[str, Dict[str, Any]] = {
     "50": {
+        "strategy_id": "equity_3_6_calendar_vol_50",
+        "strategy_name": "Equity 3-6 Calendar Volatility Long Short Strategy — 50",
         "product": "HO",
         "fut_root": "IH",
         "spot_code": "000016.SH",
@@ -54,6 +49,8 @@ UNIVERSES: Dict[str, Dict[str, Any]] = {
         "m_fut": 300.0,
     },
     "300": {
+        "strategy_id": "equity_3_6_calendar_vol_300",
+        "strategy_name": "Equity 3-6 Calendar Volatility Long Short Strategy — 300",
         "product": "IO",
         "fut_root": "IF",
         "spot_code": "000300.SH",
@@ -62,6 +59,8 @@ UNIVERSES: Dict[str, Dict[str, Any]] = {
         "m_fut": 300.0,
     },
     "1000": {
+        "strategy_id": "equity_3_6_calendar_vol_1000",
+        "strategy_name": "Equity 3-6 Calendar Volatility Long Short Strategy — 1000",
         "product": "MO",
         "fut_root": "IM",
         "spot_code": "000852.SH",
@@ -71,49 +70,14 @@ UNIVERSES: Dict[str, Dict[str, Any]] = {
     },
 }
 
-
-def _strategy_name(universe: str, signal_mode: str) -> str:
-    base = f"Equity 3-6 Calendar Volatility Long Short Strategy — {universe}"
-    if signal_mode == SIGNAL_ZSCORE:
-        return f"{base} (Z-score)"
-    return base
-
-
-def _strategy_id(universe: str, signal_mode: str) -> str:
-    if signal_mode == SIGNAL_ZSCORE:
-        return f"equity_3_6_calendar_vol_zscore_{universe}"
-    return f"equity_3_6_calendar_vol_{universe}"
-
-
-# Registered QIS calendar-vol strategies: existing quantile trio + zscore trio.
-STRATEGIES: Dict[str, Dict[str, Any]] = {}
-for _u in UNIVERSES:
-    for _mode in SIGNAL_MODES:
-        _sid = _strategy_id(_u, _mode)
-        STRATEGIES[_sid] = {
-            "strategy_id": _sid,
-            "strategy_name": _strategy_name(_u, _mode),
-            "universe": _u,
-            "signal_mode": _mode,
-            **UNIVERSES[_u],
-        }
-
-# Back-compat: universe key → quantile strategy (original three IDs).
-for _u, _cfg in UNIVERSES.items():
-    _cfg["strategy_id"] = _strategy_id(_u, SIGNAL_QUANTILE)
-    _cfg["strategy_name"] = _strategy_name(_u, SIGNAL_QUANTILE)
-    _cfg["signal_mode"] = SIGNAL_QUANTILE
-
-STRATEGY_BY_ID = {sid: spec["universe"] for sid, spec in STRATEGIES.items()}
-STRATEGY_MODE_BY_ID = {sid: spec["signal_mode"] for sid, spec in STRATEGIES.items()}
+STRATEGY_BY_ID = {u["strategy_id"]: key for key, u in UNIVERSES.items()}
 
 EXPORTS_DIR = ROOT / "data" / "exports"
 
 
-def default_holdings_export_path(
-    universe: str, signal_mode: str = SIGNAL_QUANTILE
-) -> Path:
-    return EXPORTS_DIR / f"{_strategy_id(universe, signal_mode)}_holdings.xlsx"
+def default_holdings_export_path(universe: str) -> Path:
+    cfg = UNIVERSES[universe]
+    return EXPORTS_DIR / f"{cfg['strategy_id']}_holdings.xlsx"
 
 
 def _equity_db() -> Path:
@@ -236,31 +200,16 @@ class CalendarVolBacktestEngine:
         enter_q: float = ENTER_Q,
         exit_lo_q: float = EXIT_LO_Q,
         exit_hi_q: float = EXIT_HI_Q,
-        signal_mode: str = SIGNAL_QUANTILE,
-        z_enter: float = Z_ENTER,
-        z_exit: float = Z_EXIT,
-        strategy_id: Optional[str] = None,
     ):
         if universe not in UNIVERSES:
             raise ValueError(f"unknown universe {universe}; choose {list(UNIVERSES)}")
-        if signal_mode not in SIGNAL_MODES:
-            raise ValueError(f"unknown signal_mode {signal_mode}; choose {SIGNAL_MODES}")
         self.universe = universe
-        self.signal_mode = signal_mode
-        self.cfg = {
-            **UNIVERSES[universe],
-            "strategy_id": strategy_id or _strategy_id(universe, signal_mode),
-            "strategy_name": _strategy_name(universe, signal_mode),
-            "signal_mode": signal_mode,
-            "universe": universe,
-        }
+        self.cfg = UNIVERSES[universe]
         self.initial_nav = float(initial_nav)
         self.z_window = int(z_window)
         self.enter_q = float(enter_q)
         self.exit_lo_q = float(exit_lo_q)
         self.exit_hi_q = float(exit_hi_q)
-        self.z_enter = float(z_enter)
-        self.z_exit = float(z_exit)
         self.product = self.cfg["product"]
         self.spot_code = self.cfg["spot_code"]
         self.m_opt = float(self.cfg["m_opt"])
@@ -472,24 +421,8 @@ class CalendarVolBacktestEngine:
         el: float,
         xh: float,
         xl: float,
-        z: float = float("nan"),
     ) -> int:
-        """Emit next-day target from post-trade state + today's close signal."""
-        if self.signal_mode == SIGNAL_ZSCORE:
-            if not math.isfinite(z):
-                return position
-            if position == 0:
-                if z > self.z_enter:
-                    return 1  # Normal: short 3M / long 6M (spread rich)
-                if z < -self.z_enter:
-                    return -1  # Reverse
-                return 0
-            if abs(z) <= self.z_exit:
-                return 0
-            if position == -1 and hold_days >= MAX_HOLD_REVERSE:
-                return 0
-            return position
-
+        """Emit next-day target from post-trade state + today's close spread."""
         bands_ok = all(math.isfinite(x) for x in (eh, el, xh, xl))
         if not bands_ok:
             return position
@@ -585,11 +518,7 @@ class CalendarVolBacktestEngine:
 
     def write_holdings_excel(self, path: Optional[Path] = None) -> Path:
         """Write concrete holdings ledger to Excel (date/contract/dir/qty/price…)."""
-        out = (
-            Path(path)
-            if path
-            else default_holdings_export_path(self.universe, self.signal_mode)
-        )
+        out = Path(path) if path else default_holdings_export_path(self.universe)
         out.parent.mkdir(parents=True, exist_ok=True)
         df = self.holdings_dataframe()
         with pd.ExcelWriter(out, engine="openpyxl") as xl:
@@ -598,7 +527,6 @@ class CalendarVolBacktestEngine:
                 [
                     {"key": "strategy_id", "value": self.cfg["strategy_id"]},
                     {"key": "universe", "value": self.universe},
-                    {"key": "signal_mode", "value": self.signal_mode},
                     {"key": "signal_lag", "value": "t-1 signal → t close execution"},
                     {
                         "key": "price",
@@ -739,7 +667,7 @@ class CalendarVolBacktestEngine:
 
             # 3) Emit signal for next day from post-trade state + today's close.
             signal_next = self._decide_signal(
-                target, hold, spread, eh_f, el_f, xh_f, xl_f, z=zv
+                target, hold, spread, eh_f, el_f, xh_f, xl_f
             )
             pending_signal = signal_next
 
@@ -964,12 +892,9 @@ class CalendarVolBacktestEngine:
             "exit_lo": [_opt(rows[i]["exit_lo"]) for i in sig_idx],
             "position": [rows[i]["position"] for i in sig_idx],  # executed at t close
             "signal_next": [rows[i]["signal_next"] for i in sig_idx],  # for t+1 trade
-            "signal_mode": self.signal_mode,
-            "enter_q": self.enter_q if self.signal_mode == SIGNAL_QUANTILE else None,
-            "exit_lo_q": self.exit_lo_q if self.signal_mode == SIGNAL_QUANTILE else None,
-            "exit_hi_q": self.exit_hi_q if self.signal_mode == SIGNAL_QUANTILE else None,
-            "enter_band": self.z_enter if self.signal_mode == SIGNAL_ZSCORE else None,
-            "exit_band": self.z_exit if self.signal_mode == SIGNAL_ZSCORE else None,
+            "enter_q": self.enter_q,
+            "exit_lo_q": self.exit_lo_q,
+            "exit_hi_q": self.exit_hi_q,
             "window": self.z_window,
             "perf_start": perf[0]["d"],
             "first_open": open_row["d"],
@@ -994,24 +919,14 @@ class CalendarVolBacktestEngine:
         cfg = self.cfg
         opt_p, fut_p = cfg["product"], cfg["fut_root"]
 
-        if self.signal_mode == SIGNAL_ZSCORE:
-            signal_desc = (
-                f"Signal at t−1 close (rolling Z of Spread on prior {self.z_window}d; "
-                f"enter |Z|>{self.z_enter:g}; exit |Z|≤{self.z_exit:g}; no look-ahead); "
-            )
-        else:
-            signal_desc = (
-                f"Signal at t−1 close (rolling quantiles of Spread on prior {self.z_window}d; "
-                f"enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
-                f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}; no look-ahead); "
-            )
-
         return {
             "strategy_id": cfg["strategy_id"],
             "strategy_name": cfg["strategy_name"],
             "description": (
                 f"{cfg['index_name']} ({cfg['spot_code']}) 3M−6M ATM CT-IV spread mean-reversion. "
-                f"{signal_desc}"
+                f"Signal at t−1 close (rolling quantiles of Spread on prior {self.z_window}d; "
+                f"enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
+                f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}; no look-ahead); "
                 f"execute open/close/resize at t close. "
                 f"Dual ATM straddles ({opt_p}) + daily {fut_p} delta hedge. "
                 "Reverse max hold 20d. NAV/metrics start the day after first open. Costs: none (v1)."
@@ -1028,7 +943,6 @@ class CalendarVolBacktestEngine:
                 "cost_rate": 0.0,
                 "rebalance": "daily close",
                 "signal_lag": "t-1 close signal → t close execution (PnL t→t+1 on held book)",
-                "signal_mode": self.signal_mode,
                 "price": (
                     f"option close (option_iv.mid_price←S_DQ_CLOSE) / {fut_p} close; "
                     "no settle fallback; CT ATM IV via SVI total-var ACT/365"
@@ -1036,11 +950,9 @@ class CalendarVolBacktestEngine:
                 "sizing": f"dollar vega={VEGA_BUDGET_FRAC*100:.0f}% NAV per vol-pt on 6M; N_3M=-N_6M*ν6/ν3",
                 "ttm_targets": {"3M": T_3M, "6M": T_6M},
                 "z_window": self.z_window,
-                "enter_q": self.enter_q if self.signal_mode == SIGNAL_QUANTILE else None,
-                "exit_lo_q": self.exit_lo_q if self.signal_mode == SIGNAL_QUANTILE else None,
-                "exit_hi_q": self.exit_hi_q if self.signal_mode == SIGNAL_QUANTILE else None,
-                "z_enter": self.z_enter if self.signal_mode == SIGNAL_ZSCORE else None,
-                "z_exit": self.z_exit if self.signal_mode == SIGNAL_ZSCORE else None,
+                "enter_q": self.enter_q,
+                "exit_lo_q": self.exit_lo_q,
+                "exit_hi_q": self.exit_hi_q,
                 "max_hold_reverse": MAX_HOLD_REVERSE,
                 "max_abs_port_vega": round(max_vega_resid, 8),
                 "universe": self.universe,
@@ -1082,15 +994,9 @@ def run_calendar_vol(
     z_window: int = DEFAULT_Z_WINDOW,
     export_holdings: bool = False,
     holdings_path: Optional[Path] = None,
-    signal_mode: str = SIGNAL_QUANTILE,
-    strategy_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     eng = CalendarVolBacktestEngine(
-        universe=universe,
-        initial_nav=initial_nav,
-        z_window=z_window,
-        signal_mode=signal_mode,
-        strategy_id=strategy_id,
+        universe=universe, initial_nav=initial_nav, z_window=z_window
     )
     payload = eng.run()
     if export_holdings:
@@ -1112,17 +1018,14 @@ def run_by_strategy_id(
     export_holdings: bool = False,
     holdings_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    if strategy_id not in STRATEGIES:
+    if strategy_id not in STRATEGY_BY_ID:
         raise KeyError(strategy_id)
-    spec = STRATEGIES[strategy_id]
     return run_calendar_vol(
-        spec["universe"],
+        STRATEGY_BY_ID[strategy_id],
         initial_nav=initial_nav,
         z_window=z_window,
         export_holdings=export_holdings,
         holdings_path=holdings_path,
-        signal_mode=spec["signal_mode"],
-        strategy_id=strategy_id,
     )
 
 
@@ -1131,33 +1034,9 @@ def export_holdings_for_universe(
     initial_nav: float = 100_000_000.0,
     z_window: int = DEFAULT_Z_WINDOW,
     path: Optional[Path] = None,
-    signal_mode: str = SIGNAL_QUANTILE,
 ) -> Path:
     eng = CalendarVolBacktestEngine(
-        universe=universe,
-        initial_nav=initial_nav,
-        z_window=z_window,
-        signal_mode=signal_mode,
-    )
-    eng.run()
-    return eng.write_holdings_excel(path)
-
-
-def export_holdings_for_strategy(
-    strategy_id: str,
-    initial_nav: float = 100_000_000.0,
-    z_window: int = DEFAULT_Z_WINDOW,
-    path: Optional[Path] = None,
-) -> Path:
-    if strategy_id not in STRATEGIES:
-        raise KeyError(strategy_id)
-    spec = STRATEGIES[strategy_id]
-    eng = CalendarVolBacktestEngine(
-        universe=spec["universe"],
-        initial_nav=initial_nav,
-        z_window=z_window,
-        signal_mode=spec["signal_mode"],
-        strategy_id=strategy_id,
+        universe=universe, initial_nav=initial_nav, z_window=z_window
     )
     eng.run()
     return eng.write_holdings_excel(path)

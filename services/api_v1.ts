@@ -417,17 +417,16 @@ export interface QisSignalSeries {
   spread: number[];
   zscore: (number | null)[];
   position: number[];
-  signal_mode?: 'quantile' | 'zscore' | string;
-  /** Fixed Z bands (zscore mode) */
-  enter_band?: number | null;
-  exit_band?: number | null;
+  /** @deprecated fixed Z bands — prefer enter_hi/lo time series */
+  enter_band?: number;
+  exit_band?: number;
   enter_hi?: (number | null)[];
   enter_lo?: (number | null)[];
   exit_hi?: (number | null)[];
   exit_lo?: (number | null)[];
-  enter_q?: number | null;
-  exit_lo_q?: number | null;
-  exit_hi_q?: number | null;
+  enter_q?: number;
+  exit_lo_q?: number;
+  exit_hi_q?: number;
   window?: number;
   perf_start?: string;
   first_open?: string;

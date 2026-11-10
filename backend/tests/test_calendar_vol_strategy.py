@@ -14,14 +14,11 @@ if str(BACKEND) not in sys.path:
 
 from engine.black76 import black76_greeks
 from engine.calendar_vol_strategy import (
-    SIGNAL_ZSCORE,
-    STRATEGIES,
     CalendarVolBacktestEngine,
     T_3M,
     UNIVERSES,
     rolling_quantile_bands,
     rolling_zscore,
-    run_by_strategy_id,
     run_calendar_vol,
     total_var_interp_iv,
 )
@@ -99,7 +96,6 @@ def test_full_backtest_invariants(universe):
     payload = run_calendar_vol(universe, initial_nav=100_000_000.0, z_window=252)
     assert payload["strategy_id"] == UNIVERSES[universe]["strategy_id"]
     assert payload["params"]["enter_q"] == 0.9
-    assert payload["params"]["signal_mode"] == "quantile"
     assert payload["params"]["first_open"] < payload["params"]["perf_start"]
     assert "t-1" in payload["params"]["signal_lag"]
     assert "close" in payload["params"]["price"].lower()
@@ -136,39 +132,6 @@ def test_full_backtest_invariants(universe):
         + de["residual_pnl"][-1]
     )
     assert abs(s - total) < 1.0
-
-
-@pytest.mark.parametrize("universe", list(UNIVERSES.keys()))
-def test_zscore_variant_invariants(universe):
-    sid = f"equity_3_6_calendar_vol_zscore_{universe}"
-    assert sid in STRATEGIES
-    payload = run_by_strategy_id(sid, initial_nav=100_000_000.0, z_window=252)
-    assert payload["strategy_id"] == sid
-    assert payload["params"]["signal_mode"] == SIGNAL_ZSCORE
-    assert payload["params"]["z_enter"] == 1.5
-    assert payload["params"]["z_exit"] == 0.2
-    assert payload["params"]["enter_q"] is None
-    assert payload["signal"]["enter_band"] == 1.5
-    assert payload["signal"]["exit_band"] == 0.2
-    assert payload["params"]["first_open"] < payload["params"]["perf_start"]
-    c = payload["pnl_contribution"]
-    total = c["total_pnl"]
-    de = payload["pnl_decomposition"]
-    s = (
-        de["vega_pnl"][-1]
-        + de["theta_pnl"][-1]
-        + de["gamma_pnl"][-1]
-        + de["basis_pnl"][-1]
-        + de["net_delta_pnl"][-1]
-        + de["residual_pnl"][-1]
-    )
-    assert abs(s - total) < 1.0
-
-
-def test_strategy_registry_has_six_calendar_vol():
-    assert len(STRATEGIES) == 6
-    assert len([s for s in STRATEGIES if "zscore" in s]) == 3
-    assert len([s for s in STRATEGIES if "zscore" not in s]) == 3
 
 
 def test_signal_lag_t_minus_1_execution():
