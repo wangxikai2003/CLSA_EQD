@@ -10,6 +10,7 @@ import {
   QisBacktestResponse,
   QisStrategyInfo,
   QisTenorPair,
+  QisTradeMarker,
 } from '../../services/api_v1';
 
 const CAL_VOL_TENORS: { key: QisTenorPair; label: string }[] = [
@@ -26,11 +27,22 @@ const WINDOW_LABELS: { key: keyof QisBacktestResponse['metrics']; label: string 
 
 const DECOMP_COLORS = {
   vega: '#7C3AED',
-  theta: '#16A34A',
-  gamma: '#DC2626',
-  basis: '#EA580C',
+  theta: '#0F766E',
+  gamma: '#C2410C',
+  basis: '#A16207',
   net_delta: '#64748B',
   residual: '#94A3B8',
+};
+
+/** Chart palette: NAV/spread yellow; Long red / Short green / Close blue; bands avoid those. */
+const CHART = {
+  nav: '#EAB308',
+  spread: '#EAB308',
+  long: '#DC2626',
+  short: '#16A34A',
+  close: '#2563EB',
+  enterBand: '#7C3AED',
+  exitBand: '#64748B',
 };
 
 const CAL_VOL_UNIVERSES = [
@@ -40,6 +52,8 @@ const CAL_VOL_UNIVERSES = [
 ] as const;
 
 type FamilyKey = 'cross_calendar_carry' | 'calendar_vol';
+
+type MarkerKind = 'long' | 'short' | 'close';
 
 function fmtPct(x: number | null | undefined, digits = 2) {
   if (x == null || Number.isNaN(x)) return '—';
@@ -55,6 +69,63 @@ function fmtMoney(x: number | null | undefined) {
   if (x == null || Number.isNaN(x)) return '—';
   return x.toLocaleString('en-CN', { maximumFractionDigits: 0 });
 }
+
+/** Derive Long/Short/Close markers from executed position transitions. */
+function markersFromPosition(
+  dates: string[],
+  position: number[],
+  yAt: (i: number) => number | null,
+): { d: string; y: number; kind: MarkerKind }[] {
+  const out: { d: string; y: number; kind: MarkerKind }[] = [];
+  for (let i = 1; i < dates.length; i++) {
+    const prev = position[i - 1] ?? 0;
+    const curr = position[i] ?? 0;
+    if (prev === curr) continue;
+    const y = yAt(i);
+    if (y == null || Number.isNaN(y)) continue;
+    const kind: MarkerKind = curr === 1 ? 'long' : curr === -1 ? 'short' : 'close';
+    out.push({ d: dates[i], y, kind });
+  }
+  return out;
+}
+
+function normalizeTradeMarkers(
+  raw: QisTradeMarker[] | undefined,
+  fallback: { d: string; y: number; kind: MarkerKind }[],
+): { d: string; y: number; kind: MarkerKind }[] {
+  if (!raw?.length) return fallback;
+  const out: { d: string; y: number; kind: MarkerKind }[] = [];
+  for (const m of raw) {
+    const kind = (m.kind === 'long' || m.kind === 'short' || m.kind === 'close'
+      ? m.kind
+      : m.position === 1
+        ? 'long'
+        : m.position === -1
+          ? 'short'
+          : 'close') as MarkerKind;
+    const y =
+      m.sos != null && Number.isFinite(m.sos)
+        ? m.sos
+        : m.spread != null && Number.isFinite(m.spread)
+          ? m.spread * 100
+          : null;
+    if (y == null) continue;
+    out.push({ d: m.d, y, kind });
+  }
+  return out.length ? out : fallback;
+}
+
+function markerMap(markers: { d: string; y: number; kind: MarkerKind }[]) {
+  const m = new Map<string, MarkerKind>();
+  for (const x of markers) m.set(x.d, x.kind);
+  return m;
+}
+
+const markerDot = (fill: string) => (props: { cx?: number; cy?: number }) => {
+  const { cx, cy } = props;
+  if (cx == null || cy == null) return null;
+  return <circle cx={cx} cy={cy} r={3.5} fill={fill} stroke="#fff" strokeWidth={0.75} />;
+};
 
 const QisView: React.FC = () => {
   const [strategies, setStrategies] = useState<QisStrategyInfo[]>([]);
@@ -146,20 +217,55 @@ const QisView: React.FC = () => {
     }));
   }, [data]);
 
+  const tradeMarkers = useMemo(() => {
+    const s = data?.signal;
+    if (!s?.dates?.length || !s.position?.length) return [] as { d: string; y: number; kind: MarkerKind }[];
+    const fallback = markersFromPosition(s.dates, s.position, (i) => {
+      const sp = s.spread[i];
+      return sp == null || Number.isNaN(sp) ? null : sp * 100;
+    });
+    return normalizeTradeMarkers(s.trade_markers, fallback);
+  }, [data]);
+
+  const byKind = useMemo(() => markerMap(tradeMarkers), [tradeMarkers]);
+
   const signalChart = useMemo(() => {
     const s = data?.signal;
     if (!s?.dates?.length) return [];
     const hasBands = Array.isArray(s.enter_hi) && s.enter_hi.length === s.dates.length;
-    return s.dates.map((dt, i) => ({
-      d: dt,
-      spread_pts: (s.spread[i] ?? 0) * 100,
-      enter_hi: hasBands && s.enter_hi![i] != null ? (s.enter_hi![i] as number) * 100 : null,
-      enter_lo: hasBands && s.enter_lo![i] != null ? (s.enter_lo![i] as number) * 100 : null,
-      exit_hi: hasBands && s.exit_hi![i] != null ? (s.exit_hi![i] as number) * 100 : null,
-      exit_lo: hasBands && s.exit_lo![i] != null ? (s.exit_lo![i] as number) * 100 : null,
-      position: s.position[i],
-    }));
-  }, [data]);
+    const kindByD = byKind;
+    return s.dates.map((dt, i) => {
+      const spreadPts = (s.spread[i] ?? 0) * 100;
+      const kind = kindByD.get(dt);
+      return {
+        d: dt,
+        spread_pts: spreadPts,
+        enter_hi: hasBands && s.enter_hi![i] != null ? (s.enter_hi![i] as number) * 100 : null,
+        enter_lo: hasBands && s.enter_lo![i] != null ? (s.enter_lo![i] as number) * 100 : null,
+        exit_hi: hasBands && s.exit_hi![i] != null ? (s.exit_hi![i] as number) * 100 : null,
+        exit_lo: hasBands && s.exit_lo![i] != null ? (s.exit_lo![i] as number) * 100 : null,
+        position: s.position[i],
+        long_pt: kind === 'long' ? spreadPts : null,
+        short_pt: kind === 'short' ? spreadPts : null,
+        close_pt: kind === 'close' ? spreadPts : null,
+      };
+    });
+  }, [data, byKind]);
+
+  const navChart = useMemo(() => {
+    if (!data?.nav?.length) return [];
+    const kindByD = byKind;
+    return data.nav.map((r) => {
+      const kind = kindByD.get(r.d);
+      const sos = r.sos;
+      return {
+        ...r,
+        long_pt: kind === 'long' && sos != null ? sos : null,
+        short_pt: kind === 'short' && sos != null ? sos : null,
+        close_pt: kind === 'close' && sos != null ? sos : null,
+      };
+    });
+  }, [data, byKind]);
 
   const isCalVol = strategyId.startsWith('equity_3_6_calendar_vol_');
   const activeTenor =
@@ -305,7 +411,7 @@ const QisView: React.FC = () => {
             <h3 className="font-bold text-[#000066] text-sm mb-3">净值曲线 (NAV / initial)</h3>
             <div className="h-[340px]">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={data.nav}>
+                <LineChart data={navChart}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                   <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
                   <YAxis yAxisId="nav" tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
@@ -317,7 +423,7 @@ const QisView: React.FC = () => {
                     type="monotone"
                     dataKey="nav"
                     name="NAV multiple"
-                    stroke="#000066"
+                    stroke={CHART.nav}
                     dot={false}
                     strokeWidth={2}
                   />
@@ -326,14 +432,57 @@ const QisView: React.FC = () => {
                     type="monotone"
                     dataKey="sos"
                     name={sosLabel}
-                    stroke="#EAB308"
+                    stroke={CHART.spread}
                     dot={false}
                     strokeWidth={1}
-                    strokeOpacity={0.7}
+                    strokeOpacity={0.55}
+                  />
+                  <Line
+                    yAxisId="sos"
+                    type="monotone"
+                    dataKey="long_pt"
+                    name="Long"
+                    stroke={CHART.long}
+                    strokeWidth={0}
+                    dot={markerDot(CHART.long)}
+                    activeDot={false}
+                    legendType="circle"
+                    connectNulls={false}
+                    isAnimationActive={false}
+                  />
+                  <Line
+                    yAxisId="sos"
+                    type="monotone"
+                    dataKey="short_pt"
+                    name="Short"
+                    stroke={CHART.short}
+                    strokeWidth={0}
+                    dot={markerDot(CHART.short)}
+                    activeDot={false}
+                    legendType="circle"
+                    connectNulls={false}
+                    isAnimationActive={false}
+                  />
+                  <Line
+                    yAxisId="sos"
+                    type="monotone"
+                    dataKey="close_pt"
+                    name="Close"
+                    stroke={CHART.close}
+                    strokeWidth={0}
+                    dot={markerDot(CHART.close)}
+                    activeDot={false}
+                    legendType="circle"
+                    connectNulls={false}
+                    isAnimationActive={false}
                   />
                 </LineChart>
               </ResponsiveContainer>
             </div>
+            <p className="text-[9px] text-slate-400 mt-1">
+              黄线：净值（粗）与 IV spread（细）。点落在 spread 轴上：Long/Normal 红 · Short/Reverse 绿 · 平仓蓝
+              （由 executed position 变化推导）。
+            </p>
           </div>
 
           <div className="bg-white rounded-lg border border-slate-200 p-4 overflow-x-auto">
@@ -460,17 +609,53 @@ const QisView: React.FC = () => {
                         <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} unit="pt" />
                         <Tooltip contentStyle={{ fontSize: 11 }} />
                         <Legend wrapperStyle={{ fontSize: 10 }} />
-                        <Line type="monotone" dataKey="spread_pts" name="Spread (vol pts)" stroke="#000066" dot={false} strokeWidth={1.5} />
-                        <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke="#DC2626" dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                        <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke="#DC2626" dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                        <Line type="monotone" dataKey="exit_hi" name={`Exit hi`} stroke="#16A34A" dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
-                        <Line type="monotone" dataKey="exit_lo" name={`Exit lo`} stroke="#16A34A" dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                        <Line type="monotone" dataKey="spread_pts" name="Spread (vol pts)" stroke={CHART.spread} dot={false} strokeWidth={1.5} />
+                        <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                        <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                        <Line type="monotone" dataKey="exit_hi" name={`Exit hi`} stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                        <Line type="monotone" dataKey="exit_lo" name={`Exit lo`} stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                        <Line
+                          type="monotone"
+                          dataKey="long_pt"
+                          name="Long"
+                          stroke={CHART.long}
+                          strokeWidth={0}
+                          dot={markerDot(CHART.long)}
+                          activeDot={false}
+                          legendType="circle"
+                          connectNulls={false}
+                          isAnimationActive={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="short_pt"
+                          name="Short"
+                          stroke={CHART.short}
+                          strokeWidth={0}
+                          dot={markerDot(CHART.short)}
+                          activeDot={false}
+                          legendType="circle"
+                          connectNulls={false}
+                          isAnimationActive={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="close_pt"
+                          name="Close"
+                          stroke={CHART.close}
+                          strokeWidth={0}
+                          dot={markerDot(CHART.close)}
+                          activeDot={false}
+                          legendType="circle"
+                          connectNulls={false}
+                          isAnimationActive={false}
+                        />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
                   <p className="text-[9px] text-slate-400 mt-1">
-                    红虚线：滚动入场分位（Spread &gt; hi → Normal；&lt; lo → Reverse）；绿虚线：出场带（落入 {exitPct}% 区间平仓）。
-                    分位仅用过去 {data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。
+                    黄线：Spread。紫虚线：滚动入场分位（Spread &gt; hi → Normal/Long；&lt; lo → Reverse/Short）；灰虚线：出场带（落入 {exitPct}% 区间平仓）。
+                    散点：Long 红 · Short 绿 · 平仓蓝。分位仅用过去 {data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。
                     {strategies.length ? '' : ''}
                   </p>
                 </div>

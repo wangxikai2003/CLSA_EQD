@@ -412,11 +412,23 @@ export interface QisPnLDecomposition {
   residual_pnl: number[];
 }
 
+export interface QisTradeMarker {
+  d: string;
+  kind: 'long' | 'short' | 'close' | string;
+  spread?: number | null;
+  sos?: number | null;
+  position?: number;
+  prev_position?: number;
+}
+
 export interface QisSignalSeries {
   dates: string[];
   spread: number[];
   zscore: (number | null)[];
   position: number[];
+  signal_next?: number[];
+  /** Executed position transitions (presentation); fallback: derive from position[] */
+  trade_markers?: QisTradeMarker[];
   /** @deprecated fixed Z bands — prefer enter_hi/lo time series */
   enter_band?: number;
   exit_band?: number;

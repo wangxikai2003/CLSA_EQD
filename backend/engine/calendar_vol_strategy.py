@@ -927,22 +927,22 @@ class CalendarVolBacktestEngine:
             return None if not math.isfinite(x) else round(x * 100.0, 4)
 
         step = max(1, len(perf) // 800)
+        nav_idx = list(range(0, len(perf), step))
+        if not nav_idx or nav_idx[-1] != len(perf) - 1:
+            nav_idx.append(len(perf) - 1)
+        # Include executed position-change days so UI markers land on the NAV/sos chart.
+        for i in range(1, len(perf)):
+            if int(perf[i]["position"]) != int(perf[i - 1]["position"]):
+                nav_idx.append(i)
+        nav_idx = sorted(set(nav_idx))
         nav_chart = [
             {
                 "d": perf[i]["d"],
                 "nav": round(perf[i]["nav"] / base_nav, 6),
                 "sos": _sos_pts(perf[i]["spread"]),
             }
-            for i in range(0, len(perf), step)
+            for i in nav_idx
         ]
-        if nav_chart and nav_chart[-1]["d"] != perf[-1]["d"]:
-            nav_chart.append(
-                {
-                    "d": perf[-1]["d"],
-                    "nav": round(perf[-1]["nav"] / base_nav, 6),
-                    "sos": _sos_pts(perf[-1]["spread"]),
-                }
-            )
 
         dec_idx = list(range(0, len(perf), step))
         if dec_idx[-1] != len(perf) - 1:
@@ -966,6 +966,12 @@ class CalendarVolBacktestEngine:
         sig_idx = list(range(0, len(rows), sig_step))
         if sig_idx[-1] != len(rows) - 1:
             sig_idx.append(len(rows) - 1)
+        # Keep every executed position change so chart markers are not lost to downsample.
+        for i in range(1, len(rows)):
+            if int(rows[i]["position"]) != int(rows[i - 1]["position"]):
+                sig_idx.append(i)
+        sig_idx = sorted(set(sig_idx))
+
         def _opt(v: Any) -> Optional[float]:
             if v is None:
                 return None
@@ -974,6 +980,30 @@ class CalendarVolBacktestEngine:
             except (TypeError, ValueError):
                 return None
             return None if not math.isfinite(x) else round(x, 6)
+
+        # Presentation-only trade markers from executed position transitions (no strategy change).
+        trade_markers: List[Dict[str, Any]] = []
+        for i in range(1, len(rows)):
+            prev_p = int(rows[i - 1]["position"])
+            curr_p = int(rows[i]["position"])
+            if prev_p == curr_p:
+                continue
+            if curr_p == 1:
+                kind = "long"
+            elif curr_p == -1:
+                kind = "short"
+            else:
+                kind = "close"
+            trade_markers.append(
+                {
+                    "d": rows[i]["d"],
+                    "kind": kind,
+                    "spread": _opt(rows[i]["spread"]),
+                    "sos": _sos_pts(rows[i]["spread"]),
+                    "position": curr_p,
+                    "prev_position": prev_p,
+                }
+            )
 
         signal = {
             "dates": [rows[i]["d"] for i in sig_idx],
@@ -985,6 +1015,7 @@ class CalendarVolBacktestEngine:
             "exit_lo": [_opt(rows[i]["exit_lo"]) for i in sig_idx],
             "position": [rows[i]["position"] for i in sig_idx],  # executed at t close
             "signal_next": [rows[i]["signal_next"] for i in sig_idx],  # for t+1 trade
+            "trade_markers": trade_markers,
             "enter_q": self.enter_q,
             "exit_lo_q": self.exit_lo_q,
             "exit_hi_q": self.exit_hi_q,
