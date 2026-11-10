@@ -214,7 +214,11 @@ def _resolve_date(
 def _load_matrix(
     conn: sqlite3.Connection, product: str, date: str, side: str = "otm"
 ) -> Optional[Dict[str, Any]]:
+    # build_vol_db drops svi_matrices; materialize_svi_matrices.py recreates it.
+    # Missing table must not 500 /api/surface — fall back to slice-built grid.
     cols = {r[1] for r in conn.execute("PRAGMA table_info(svi_matrices)").fetchall()}
+    if not cols:
+        return None
     if "side" in cols:
         row = conn.execute(
             """SELECT matrix_json, n_rows, n_cols, spot FROM svi_matrices
