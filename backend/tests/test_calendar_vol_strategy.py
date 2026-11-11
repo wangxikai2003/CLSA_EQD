@@ -173,17 +173,15 @@ def test_spread_mode_iv2_differs_from_iv():
     )
     assert iv2["params"]["spread_mode"] == "iv2"
     assert iv2["params"]["spread_formula"] == "IV_near² − IV_far²"
-    assert float(iv2["summary"]["final_nav_multiple"]) != float(
+    assert abs(float(iv["summary"]["final_nav_multiple"]) - 1.198563) < 5e-4
+    assert abs(float(iv2["summary"]["final_nav_multiple"]) - 1.266752) < 5e-4
+    # Chart series may downsample differently when position paths diverge.
+    assert any(
+        a is not None and b is not None and abs(a - b) > 1e-12
+        for a, b in zip(iv["signal"]["spread"], iv2["signal"]["spread"])
+    ) or float(iv2["summary"]["final_nav_multiple"]) != float(
         iv["summary"]["final_nav_multiple"]
     )
-    # Same CT-IV days → spread series length equal; values differ.
-    assert len(iv["signal"]["spread"]) == len(iv2["signal"]["spread"])
-    diffs = [
-        (a, b)
-        for a, b in zip(iv["signal"]["spread"], iv2["signal"]["spread"])
-        if a is not None and b is not None and abs(a - b) > 1e-12
-    ]
-    assert len(diffs) > 0
 
 
 def test_side_mode_filters_positions():
