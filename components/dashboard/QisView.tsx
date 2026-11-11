@@ -378,7 +378,13 @@ const QisView: React.FC = () => {
           </h2>
           <p className="text-[11px] text-slate-500 max-w-3xl mt-1">
             QIS：期货 carry + Equity Calendar Vol。选指数 / tenor / side / spread 后，下方策略卡会同步中文口径说明（数据、信号、腿向、PnL 希腊）。
-            缓存 <code className="font-mono">qis_results.sqlite</code>（tenor × side × spread 分键）。
+            <span className="block mt-1">
+              回测结果落库复用：同一参数集首次成功跑完写入{' '}
+              <code className="font-mono">qis_results.sqlite</code>
+              ，之后直接读库、跳过引擎；仅点 Refresh（或 API{' '}
+              <code className="font-mono">?refresh=true</code>
+              ）才强制重算并覆盖。上游 vol/spot 库指纹变化会自动失效。
+            </span>
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -500,6 +506,9 @@ const QisView: React.FC = () => {
                 {isCalVol
                   ? ` · tenor=${tenorLabel} · side=${sideLabel} · spread=${spreadLabel}`
                   : ''}
+                {data._cache
+                  ? ` · cache ${data._cache.hit ? 'HIT' : 'MISS'}/${data._cache.source ?? '?'}`
+                  : ''}
               </div>
             </div>
             {calVolDocs ? (
@@ -551,6 +560,23 @@ const QisView: React.FC = () => {
                 </div>
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
+                    结果缓存
+                  </div>
+                  <p>
+                    缓存键含 strategy / tenor / side / spread / z_window / NAV / 成本签名 / 上游 DB
+                    指纹。命中时响应带{' '}
+                    <code className="font-mono text-[10px]">_cache.source=db|memory</code>
+                    ；未命中跑引擎后写入库（
+                    <code className="font-mono text-[10px]">source=miss</code>
+                    ）。当前：
+                    {data._cache
+                      ? ` hit=${String(data._cache.hit)} · source=${data._cache.source ?? '—'}`
+                      : ' （本响应无 _cache 元数据）'}
+                    。点右上角 Refresh 强制重算。
+                  </p>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
                     PnL / 希腊分解
                   </div>
                   <p>
@@ -567,7 +593,25 @@ const QisView: React.FC = () => {
                 </div>
               </div>
             ) : (
-              <p className="text-[11px] text-slate-600 leading-relaxed">{data.description}</p>
+              <div className="text-[11px] text-slate-700 leading-relaxed space-y-2.5 border-t border-slate-100 pt-3">
+                <p className="text-slate-600">{data.description}</p>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
+                    结果缓存
+                  </div>
+                  <p>
+                    Cross Calendar Carry 同样落库复用：同 NAV/成本/上游指纹下第二次请求读{' '}
+                    <code className="font-mono text-[10px]">qis_results.sqlite</code>
+                    ，不重跑；Refresh /{' '}
+                    <code className="font-mono text-[10px]">?refresh=true</code> 覆盖。
+                    当前：
+                    {data._cache
+                      ? ` hit=${String(data._cache.hit)} · source=${data._cache.source ?? '—'}`
+                      : ' （本响应无 _cache 元数据）'}
+                    。
+                  </p>
+                </div>
+              </div>
             )}
             <div className="flex flex-wrap gap-2">
               {data.legs.map((l) => (

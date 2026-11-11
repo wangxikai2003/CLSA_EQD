@@ -372,15 +372,78 @@ def backtest(
     ),
 ):
     db = st._equity_db()
+    from api.v1 import qis_results_store as qrs
+
+    spot = next((p for p in st._SPOT_CANDIDATES if p.exists()), None)
+    src = qrs.source_key(db, spot)
 
     if strategy_id == "cross_calendar_carry":
-        key = (strategy_id, db.stat().st_mtime, _INITIAL_NAV, _SLIPPAGE, _FEE)
-        if not refresh and _cache["payload"] is not None and _cache["key"] == key:
-            return _cache["payload"]
+        cs = qrs.cost_sig(_SLIPPAGE, _FEE)
+        mem_key = (
+            strategy_id,
+            qrs.CROSS_Z_WINDOW,
+            src,
+            _INITIAL_NAV,
+            qrs.CROSS_TENOR,
+            qrs.CROSS_SIDE,
+            qrs.CROSS_SPREAD,
+            cs,
+        )
+        if not refresh:
+            hit = qrs.get_cached(
+                strategy_id,
+                qrs.CROSS_Z_WINDOW,
+                _INITIAL_NAV,
+                src,
+                tenor_pair=qrs.CROSS_TENOR,
+                side_mode=qrs.CROSS_SIDE,
+                spread_mode=qrs.CROSS_SPREAD,
+                cost_sig_value=cs,
+            )
+            if hit is not None:
+                return hit
+            mem = _cache.get("carry_map") or {}
+            if mem_key in mem:
+                return qrs.attach_cache_meta(
+                    mem[mem_key],
+                    hit=True,
+                    source="memory",
+                    source_key=src,
+                    tenor_pair=qrs.CROSS_TENOR,
+                    side_mode=qrs.CROSS_SIDE,
+                    spread_mode=qrs.CROSS_SPREAD,
+                    cost_sig=cs,
+                )
+
         payload = run_cross_calendar_carry()
-        _cache["key"] = key
-        _cache["payload"] = payload
-        return payload
+        qrs.put_cached(
+            strategy_id,
+            qrs.CROSS_Z_WINDOW,
+            _INITIAL_NAV,
+            src,
+            payload,
+            tenor_pair=qrs.CROSS_TENOR,
+            side_mode=qrs.CROSS_SIDE,
+            spread_mode=qrs.CROSS_SPREAD,
+            cost_sig_value=cs,
+        )
+        mem = _cache.get("carry_map") or {}
+        mem[mem_key] = {k: v for k, v in payload.items() if not str(k).startswith("_")}
+        _cache["carry_map"] = mem
+        # keep legacy single-slot fields for older callers / diagnostics
+        _cache["key"] = mem_key
+        _cache["payload"] = mem[mem_key]
+        return qrs.attach_cache_meta(
+            payload,
+            hit=False,
+            source="miss",
+            source_key=src,
+            persisted=True,
+            tenor_pair=qrs.CROSS_TENOR,
+            side_mode=qrs.CROSS_SIDE,
+            spread_mode=qrs.CROSS_SPREAD,
+            cost_sig=cs,
+        )
 
     from engine.calendar_vol_strategy import (
         STRATEGY_BY_ID,
@@ -389,7 +452,6 @@ def backtest(
         normalize_tenor_pair,
         run_by_strategy_id,
     )
-    from api.v1 import qis_results_store as qrs
 
     if strategy_id in STRATEGY_BY_ID:
         try:
@@ -398,8 +460,7 @@ def backtest(
             spm = normalize_spread_mode(spread_mode)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
-        spot = next((p for p in st._SPOT_CANDIDATES if p.exists()), None)
-        src = qrs.source_key(db, spot)
+        cs = qrs.cost_sig(0.0, 0.0)
         if not refresh:
             hit = qrs.get_cached(
                 strategy_id,
@@ -409,14 +470,24 @@ def backtest(
                 tenor_pair=tp,
                 side_mode=sm,
                 spread_mode=spm,
+                cost_sig_value=cs,
             )
             if hit is not None:
                 return hit
         # in-process short cache
-        mem_key = (strategy_id, z_window, src, _INITIAL_NAV, tp, sm, spm)
+        mem_key = (strategy_id, z_window, src, _INITIAL_NAV, tp, sm, spm, cs)
         mem = _cache.get("cal_vol_map") or {}
         if not refresh and mem_key in mem:
-            return mem[mem_key]
+            return qrs.attach_cache_meta(
+                mem[mem_key],
+                hit=True,
+                source="memory",
+                source_key=src,
+                tenor_pair=tp,
+                side_mode=sm,
+                spread_mode=spm,
+                cost_sig=cs,
+            )
 
         payload = run_by_strategy_id(
             strategy_id,
@@ -435,21 +506,21 @@ def backtest(
             tenor_pair=tp,
             side_mode=sm,
             spread_mode=spm,
+            cost_sig_value=cs,
         )
-        mem[mem_key] = payload
+        mem[mem_key] = {k: v for k, v in payload.items() if not str(k).startswith("_")}
         _cache["cal_vol_map"] = mem
-        payload = {
-            **payload,
-            "_cache": {
-                "hit": False,
-                "source_key": src,
-                "persisted": True,
-                "tenor_pair": tp,
-                "side_mode": sm,
-                "spread_mode": spm,
-            },
-        }
-        return payload
+        return qrs.attach_cache_meta(
+            payload,
+            hit=False,
+            source="miss",
+            source_key=src,
+            persisted=True,
+            tenor_pair=tp,
+            side_mode=sm,
+            spread_mode=spm,
+            cost_sig=cs,
+        )
 
     raise HTTPException(404, f"Unknown strategy: {strategy_id}")
 

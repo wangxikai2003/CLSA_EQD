@@ -454,6 +454,20 @@ export interface QisPnLContribution {
   residual_pct: number | null;
 }
 
+export interface QisCacheMeta {
+  hit: boolean;
+  /** db = durable sqlite; memory = process cache; miss = just computed */
+  source?: 'db' | 'memory' | 'miss' | string;
+  source_key?: string;
+  persisted?: boolean;
+  db?: string;
+  tenor_pair?: string;
+  side_mode?: string;
+  spread_mode?: string;
+  cost_sig?: string;
+  [k: string]: unknown;
+}
+
 export interface QisBacktestResponse {
   strategy_id: string;
   strategy_name: string;
@@ -485,6 +499,7 @@ export interface QisBacktestResponse {
   pnl_decomposition?: QisPnLDecomposition;
   signal?: QisSignalSeries;
   pnl_contribution?: QisPnLContribution;
+  _cache?: QisCacheMeta;
 }
 
 export function fetchQisStrategies(opts?: AbortSignal | FetchRetryOpts) {
