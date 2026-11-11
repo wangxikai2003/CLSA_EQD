@@ -2,8 +2,34 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
-import { Layers, RefreshCw } from 'lucide-react';
-import { fetchQisBacktest, fetchQisStrategies, QisBacktestResponse, QisStrategyInfo } from '../../services/api_v1';
+import { Download, Layers, RefreshCw } from 'lucide-react';
+import {
+  fetchQisBacktest,
+  fetchQisStrategies,
+  qisHoldingsExcelUrl,
+  QisBacktestResponse,
+  QisSideMode,
+  QisSpreadMode,
+  QisStrategyInfo,
+  QisTenorPair,
+  QisTradeMarker,
+} from '../../services/api_v1';
+
+const CAL_VOL_TENORS: { key: QisTenorPair; label: string }[] = [
+  { key: '3M-6M', label: '3M–6M' },
+  { key: '1M-3M', label: '1M–3M' },
+];
+
+const CAL_VOL_SIDES: { key: QisSideMode; label: string }[] = [
+  { key: 'both', label: 'Long+Short' },
+  { key: 'long_only', label: 'Only Long+Close' },
+  { key: 'short_only', label: 'Only Short+Close' },
+];
+
+const CAL_VOL_SPREADS: { key: QisSpreadMode; label: string }[] = [
+  { key: 'iv', label: 'IV spread' },
+  { key: 'iv2', label: 'IV² spread' },
+];
 
 const WINDOW_LABELS: { key: keyof QisBacktestResponse['metrics']; label: string }[] = [
   { key: '1y', label: '1 Year' },
@@ -14,11 +40,22 @@ const WINDOW_LABELS: { key: keyof QisBacktestResponse['metrics']; label: string 
 
 const DECOMP_COLORS = {
   vega: '#7C3AED',
-  theta: '#16A34A',
-  gamma: '#DC2626',
-  basis: '#EA580C',
+  theta: '#0F766E',
+  gamma: '#C2410C',
+  basis: '#A16207',
   net_delta: '#64748B',
   residual: '#94A3B8',
+};
+
+/** Chart palette: NAV/spread yellow; Long red / Short green / Close blue; bands avoid those. */
+const CHART = {
+  nav: '#EAB308',
+  spread: '#EAB308',
+  long: '#DC2626',
+  short: '#16A34A',
+  close: '#2563EB',
+  enterBand: '#7C3AED',
+  exitBand: '#64748B',
 };
 
 const CAL_VOL_UNIVERSES = [
@@ -28,6 +65,8 @@ const CAL_VOL_UNIVERSES = [
 ] as const;
 
 type FamilyKey = 'cross_calendar_carry' | 'calendar_vol';
+
+type MarkerKind = 'long' | 'short' | 'close';
 
 function fmtPct(x: number | null | undefined, digits = 2) {
   if (x == null || Number.isNaN(x)) return '—';
@@ -44,10 +83,70 @@ function fmtMoney(x: number | null | undefined) {
   return x.toLocaleString('en-CN', { maximumFractionDigits: 0 });
 }
 
+/** Derive Long/Short/Close markers from executed position transitions. */
+function markersFromPosition(
+  dates: string[],
+  position: number[],
+  yAt: (i: number) => number | null,
+): { d: string; y: number; kind: MarkerKind }[] {
+  const out: { d: string; y: number; kind: MarkerKind }[] = [];
+  for (let i = 1; i < dates.length; i++) {
+    const prev = position[i - 1] ?? 0;
+    const curr = position[i] ?? 0;
+    if (prev === curr) continue;
+    const y = yAt(i);
+    if (y == null || Number.isNaN(y)) continue;
+    const kind: MarkerKind = curr === 1 ? 'long' : curr === -1 ? 'short' : 'close';
+    out.push({ d: dates[i], y, kind });
+  }
+  return out;
+}
+
+function normalizeTradeMarkers(
+  raw: QisTradeMarker[] | undefined,
+  fallback: { d: string; y: number; kind: MarkerKind }[],
+): { d: string; y: number; kind: MarkerKind }[] {
+  if (!raw?.length) return fallback;
+  const out: { d: string; y: number; kind: MarkerKind }[] = [];
+  for (const m of raw) {
+    const kind = (m.kind === 'long' || m.kind === 'short' || m.kind === 'close'
+      ? m.kind
+      : m.position === 1
+        ? 'long'
+        : m.position === -1
+          ? 'short'
+          : 'close') as MarkerKind;
+    const y =
+      m.sos != null && Number.isFinite(m.sos)
+        ? m.sos
+        : m.spread != null && Number.isFinite(m.spread)
+          ? m.spread * 100
+          : null;
+    if (y == null) continue;
+    out.push({ d: m.d, y, kind });
+  }
+  return out.length ? out : fallback;
+}
+
+function markerMap(markers: { d: string; y: number; kind: MarkerKind }[]) {
+  const m = new Map<string, MarkerKind>();
+  for (const x of markers) m.set(x.d, x.kind);
+  return m;
+}
+
+const markerDot = (fill: string) => (props: { cx?: number; cy?: number }) => {
+  const { cx, cy } = props;
+  if (cx == null || cy == null) return null;
+  return <circle cx={cx} cy={cy} r={3.5} fill={fill} stroke="#fff" strokeWidth={0.75} />;
+};
+
 const QisView: React.FC = () => {
   const [strategies, setStrategies] = useState<QisStrategyInfo[]>([]);
   const [family, setFamily] = useState<FamilyKey>('calendar_vol');
   const [universe, setUniverse] = useState<'50' | '300' | '1000'>('300');
+  const [tenorPair, setTenorPair] = useState<QisTenorPair>('3M-6M');
+  const [sideMode, setSideMode] = useState<QisSideMode>('both');
+  const [spreadMode, setSpreadMode] = useState<QisSpreadMode>('iv');
   const [data, setData] = useState<QisBacktestResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadStatus, setLoadStatus] = useState('Running backtest…');
@@ -62,14 +161,22 @@ const QisView: React.FC = () => {
     setLoading(true);
     setErr(null);
     setLoadStatus(refresh ? '刷新回测…' : 'Running backtest…');
-    fetchQisBacktest(strategyId, refresh, {
-      signal,
-      onRetry: ({ attempt, maxAttempts, delayMs }) => {
-        setLoadStatus(
-          `服务冷启动/繁忙，继续等待（${attempt}/${maxAttempts}），约 ${Math.ceil(delayMs / 1000)}s 后重试…`
-        );
+    fetchQisBacktest(
+      strategyId,
+      refresh,
+      {
+        signal,
+        onRetry: ({ attempt, maxAttempts, delayMs }) => {
+          setLoadStatus(
+            `服务冷启动/繁忙，继续等待（${attempt}/${maxAttempts}），约 ${Math.ceil(delayMs / 1000)}s 后重试…`
+          );
+        },
       },
-    })
+      252,
+      family === 'calendar_vol' ? tenorPair : '3M-6M',
+      family === 'calendar_vol' ? sideMode : 'both',
+      family === 'calendar_vol' ? spreadMode : 'iv',
+    )
       .then((d) => {
         if (signal?.aborted) return;
         setData(d);
@@ -111,7 +218,7 @@ const QisView: React.FC = () => {
     load(false, ac.signal);
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [strategyId]);
+  }, [strategyId, tenorPair, sideMode, spreadMode]);
 
   const decompChart = useMemo(() => {
     const d = data?.pnl_decomposition;
@@ -127,29 +234,139 @@ const QisView: React.FC = () => {
     }));
   }, [data]);
 
+  const tradeMarkers = useMemo(() => {
+    const s = data?.signal;
+    if (!s?.dates?.length || !s.position?.length) return [] as { d: string; y: number; kind: MarkerKind }[];
+    const fallback = markersFromPosition(s.dates, s.position, (i) => {
+      const sp = s.spread[i];
+      return sp == null || Number.isNaN(sp) ? null : sp * 100;
+    });
+    return normalizeTradeMarkers(s.trade_markers, fallback);
+  }, [data]);
+
+  const byKind = useMemo(() => markerMap(tradeMarkers), [tradeMarkers]);
+
   const signalChart = useMemo(() => {
     const s = data?.signal;
     if (!s?.dates?.length) return [];
     const hasBands = Array.isArray(s.enter_hi) && s.enter_hi.length === s.dates.length;
-    return s.dates.map((dt, i) => ({
-      d: dt,
-      spread_pts: (s.spread[i] ?? 0) * 100,
-      enter_hi: hasBands && s.enter_hi![i] != null ? (s.enter_hi![i] as number) * 100 : null,
-      enter_lo: hasBands && s.enter_lo![i] != null ? (s.enter_lo![i] as number) * 100 : null,
-      exit_hi: hasBands && s.exit_hi![i] != null ? (s.exit_hi![i] as number) * 100 : null,
-      exit_lo: hasBands && s.exit_lo![i] != null ? (s.exit_lo![i] as number) * 100 : null,
-      position: s.position[i],
-    }));
-  }, [data]);
+    const kindByD = byKind;
+    return s.dates.map((dt, i) => {
+      const spreadPts = (s.spread[i] ?? 0) * 100;
+      const kind = kindByD.get(dt);
+      return {
+        d: dt,
+        spread_pts: spreadPts,
+        enter_hi: hasBands && s.enter_hi![i] != null ? (s.enter_hi![i] as number) * 100 : null,
+        enter_lo: hasBands && s.enter_lo![i] != null ? (s.enter_lo![i] as number) * 100 : null,
+        exit_hi: hasBands && s.exit_hi![i] != null ? (s.exit_hi![i] as number) * 100 : null,
+        exit_lo: hasBands && s.exit_lo![i] != null ? (s.exit_lo![i] as number) * 100 : null,
+        position: s.position[i],
+        long_pt: kind === 'long' ? spreadPts : null,
+        short_pt: kind === 'short' ? spreadPts : null,
+        close_pt: kind === 'close' ? spreadPts : null,
+      };
+    });
+  }, [data, byKind]);
+
+  const navChart = useMemo(() => {
+    if (!data?.nav?.length) return [];
+    const kindByD = byKind;
+    return data.nav.map((r) => {
+      const kind = kindByD.get(r.d);
+      const sos = r.sos;
+      return {
+        ...r,
+        long_pt: kind === 'long' && sos != null ? sos : null,
+        short_pt: kind === 'short' && sos != null ? sos : null,
+        close_pt: kind === 'close' && sos != null ? sos : null,
+      };
+    });
+  }, [data, byKind]);
 
   const isCalVol = strategyId.startsWith('equity_3_6_calendar_vol_');
-  const sosLabel = isCalVol ? 'IV spread (vol pts)' : 'SoS (pts)';
+  const activeTenor =
+    (typeof data?.params?.tenor_pair === 'string' ? data.params.tenor_pair : tenorPair) as QisTenorPair;
+  const activeSide =
+    (typeof data?.params?.side_mode === 'string' ? data.params.side_mode : sideMode) as QisSideMode;
+  const activeSpread =
+    (typeof data?.params?.spread_mode === 'string' ? data.params.spread_mode : spreadMode) as QisSpreadMode;
+  const tenorLabel = CAL_VOL_TENORS.find((t) => t.key === activeTenor)?.label ?? activeTenor;
+  const sideLabel = CAL_VOL_SIDES.find((s) => s.key === activeSide)?.label ?? activeSide;
+  const spreadLabel = CAL_VOL_SPREADS.find((s) => s.key === activeSpread)?.label ?? activeSpread;
+  const sosLabel = isCalVol
+    ? activeSpread === 'iv2'
+      ? `${tenorLabel} IV² spread (var ×100)`
+      : `${tenorLabel} IV spread (vol pts)`
+    : 'SoS (pts)';
 
   const enterPct = data?.signal?.enter_q != null ? `${((1 - data.signal.enter_q) * 100).toFixed(0)}/${(data.signal.enter_q * 100).toFixed(0)}` : '10/90';
   const exitPct =
     data?.signal?.exit_lo_q != null && data?.signal?.exit_hi_q != null
       ? `${(data.signal.exit_lo_q * 100).toFixed(0)}–${(data.signal.exit_hi_q * 100).toFixed(0)}`
       : '40–60';
+
+  const calVolDocs = useMemo(() => {
+    if (!isCalVol) return null;
+    const near = activeTenor === '1M-3M' ? '1M' : '3M';
+    const far = activeTenor === '1M-3M' ? '3M' : '6M';
+    const tNear = activeTenor === '1M-3M' ? '30/365' : '90/365';
+    const tFar = activeTenor === '1M-3M' ? '90/365' : '180/365';
+    const zWin =
+      typeof data?.params?.z_window === 'number'
+        ? data.params.z_window
+        : 252;
+    const spreadFormula =
+      activeSpread === 'iv2'
+        ? `Spread = IV_${near}² − IV_${far}²`
+        : `Spread = IV_${near} − IV_${far}`;
+    const spreadModeNote =
+      activeSpread === 'iv2'
+        ? '先 CT-IV 插值得到近/远端 IV，再平方后相减（IV² spread / variance diff）。'
+        : '先 CT-IV 插值得到近/远端 IV，再做水平差（IV spread）。';
+
+    let sideBlock: { title: string; body: string };
+    if (activeSide === 'long_only') {
+      sideBlock = {
+        title: 'side_mode = long_only（Only Long+Close）',
+        body:
+          `只做 Normal(+1) = 空近端 / 多远端（${tenorLabel}：空${near}多${far}），整体偏 short gamma / short front vol；` +
+          '忽略所有 Reverse(−1) 开仓，平仓（exit 带 → 0）始终允许。Reverse max_hold 在此模式下不触发。',
+      };
+    } else if (activeSide === 'short_only') {
+      sideBlock = {
+        title: 'side_mode = short_only（Only Short+Close）',
+        body:
+          `只做 Reverse(−1) = 多近端 / 空远端（${tenorLabel}：多${near}空${far}），腿向与 Normal 相反；` +
+          '忽略 +1；平仓始终允许；Reverse 最长 20 交易日强制平。',
+      };
+    } else {
+      sideBlock = {
+        title: 'side_mode = both（Long+Short）',
+        body:
+          `两侧都做：Normal(+1)=空${near}/多${far}；Reverse(−1)=多${near}/空${far}。` +
+          'Reverse 最长 20 交易日；不是事后把 both 的 NAV 切片，而是信号层过滤后整段回测。',
+      };
+    }
+
+    const uniMap: Record<string, string> = {
+      '50': '上证50 · HO / IH / 000016 · 乘数 300',
+      '300': '沪深300 · IO / IF / 000300 · 乘数 300',
+      '1000': '中证1000 · MO / IM / 000852 · 乘数 200',
+    };
+
+    return {
+      near,
+      far,
+      tNear,
+      tFar,
+      zWin,
+      spreadFormula,
+      spreadModeNote,
+      sideBlock,
+      universeLine: uniMap[universe] ?? universe,
+    };
+  }, [isCalVol, activeTenor, activeSide, activeSpread, tenorLabel, universe, data?.params?.z_window]);
 
   return (
     <div className="space-y-4">
@@ -160,8 +377,14 @@ const QisView: React.FC = () => {
             Systematic Trading Strategies
           </h2>
           <p className="text-[11px] text-slate-500 max-w-3xl mt-1">
-            QIS：期货 carry + Equity 3-6 Calendar Vol。一级选策略族，二级选 50 / 300 / 1000。
-            结果缓存在 <code className="font-mono">qis_results.sqlite</code>；入场/出场为滚动分位数带（仅用历史窗口）。
+            QIS：期货 carry + Equity Calendar Vol。选指数 / tenor / side / spread 后，下方策略卡会同步中文口径说明（数据、信号、腿向、PnL 希腊）。
+            <span className="block mt-1">
+              回测结果落库复用：同一参数集首次成功跑完写入{' '}
+              <code className="font-mono">qis_results.sqlite</code>
+              ，之后直接读库、跳过引擎；仅点 Refresh（或 API{' '}
+              <code className="font-mono">?refresh=true</code>
+              ）才强制重算并覆盖。上游 vol/spot 库指纹变化会自动失效。
+            </span>
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -171,25 +394,75 @@ const QisView: React.FC = () => {
             onChange={(e) => setFamily(e.target.value as FamilyKey)}
           >
             <option value="cross_calendar_carry">Cross Calendar Carry</option>
-            <option value="calendar_vol">Equity 3-6 Calendar Vol</option>
+            <option value="calendar_vol">Equity Calendar Vol</option>
           </select>
           {family === 'calendar_vol' && (
-            <div className="flex rounded-md border border-slate-200 overflow-hidden">
-              {CAL_VOL_UNIVERSES.map((u) => (
-                <button
-                  key={u.key}
-                  type="button"
-                  onClick={() => setUniverse(u.key)}
-                  className={`px-3 py-1.5 text-xs font-bold ${
-                    universe === u.key
-                      ? 'bg-[#000066] text-white'
-                      : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  {u.label}
-                </button>
-              ))}
-            </div>
+            <>
+              <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                {CAL_VOL_UNIVERSES.map((u) => (
+                  <button
+                    key={u.key}
+                    type="button"
+                    onClick={() => setUniverse(u.key)}
+                    className={`px-3 py-1.5 text-xs font-bold ${
+                      universe === u.key
+                        ? 'bg-[#000066] text-white'
+                        : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {u.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                {CAL_VOL_TENORS.map((t) => (
+                  <button
+                    key={t.key}
+                    type="button"
+                    onClick={() => setTenorPair(t.key)}
+                    className={`px-3 py-1.5 text-xs font-bold ${
+                      tenorPair === t.key
+                        ? 'bg-[#000066] text-white'
+                        : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                {CAL_VOL_SIDES.map((s) => (
+                  <button
+                    key={s.key}
+                    type="button"
+                    onClick={() => setSideMode(s.key)}
+                    className={`px-3 py-1.5 text-xs font-bold ${
+                      sideMode === s.key
+                        ? 'bg-[#000066] text-white'
+                        : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                {CAL_VOL_SPREADS.map((s) => (
+                  <button
+                    key={s.key}
+                    type="button"
+                    onClick={() => setSpreadMode(s.key)}
+                    className={`px-3 py-1.5 text-xs font-bold ${
+                      spreadMode === s.key
+                        ? 'bg-[#000066] text-white'
+                        : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            </>
           )}
           <button
             type="button"
@@ -198,6 +471,15 @@ const QisView: React.FC = () => {
           >
             <RefreshCw size={12} /> Refresh
           </button>
+          {isCalVol && (
+            <a
+              href={qisHoldingsExcelUrl(strategyId, 252, tenorPair, sideMode, spreadMode)}
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-md border border-slate-200 bg-white text-[#000066] hover:bg-slate-50"
+              title="Download concrete holdings Excel (t−1 signal / t close)"
+            >
+              <Download size={12} /> Holdings.xlsx
+            </a>
+          )}
         </div>
       </div>
 
@@ -221,9 +503,116 @@ const QisView: React.FC = () => {
                 NAV {data.summary.final_nav.toLocaleString('en-CN', { maximumFractionDigits: 0 })}
                 {data.summary.first_open ? ` · first open ${data.summary.first_open}` : ''}
                 {typeof data.params.z_window === 'number' ? ` · window=${data.params.z_window}d` : ''}
+                {isCalVol
+                  ? ` · tenor=${tenorLabel} · side=${sideLabel} · spread=${spreadLabel}`
+                  : ''}
+                {data._cache
+                  ? ` · cache ${data._cache.hit ? 'HIT' : 'MISS'}/${data._cache.source ?? '?'}`
+                  : ''}
               </div>
             </div>
-            <p className="text-[11px] text-slate-600 leading-relaxed">{data.description}</p>
+            {calVolDocs ? (
+              <div className="text-[11px] text-slate-700 leading-relaxed space-y-2.5 border-t border-slate-100 pt-3">
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
+                    回测数据
+                  </div>
+                  <p>
+                    Wind close 库：期权 <code className="font-mono text-[10px]">mid_price←close</code>
+                    （S_DQ_CLOSE，无 settle fallback）；期货只用 close。
+                    执行时序：t−1 close 算信号 → t close 成交；持仓按次日 mid 差价 + 期货对冲 mark-to-market。
+                    标的：{calVolDocs.universeLine}。成本 v1 不计；初始 NAV ¥
+                    {(data.params.initial_nav / 1e8).toFixed(0)}亿。
+                  </p>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
+                    信号算子
+                  </div>
+                  <p>
+                    CT-IV：SVI otm，总方差对 T 插值（ACT/365），目标 T={calVolDocs.tNear}（{calVolDocs.near}）/
+                    {calVolDocs.tFar}（{calVolDocs.far}）。
+                    {calVolDocs.spreadModeNote}
+                    公式 <code className="font-mono text-[10px]">{calVolDocs.spreadFormula}</code>。
+                    滚动分位窗 {calVolDocs.zWin} 日（不含当日/未来）：入场 {enterPct}（Spread &gt; hi → Normal/+1；
+                    &lt; lo → Reverse/−1）；出场落入 {exitPct}% 带平仓。Reverse max hold = 20 交易日。
+                  </p>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
+                    {calVolDocs.sideBlock.title}
+                  </div>
+                  <p>{calVolDocs.sideBlock.body}</p>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
+                    仓位 / 参数
+                  </div>
+                  <p>
+                    tenor_pair=<code className="font-mono text-[10px]">{activeTenor}</code> ·
+                    side_mode=<code className="font-mono text-[10px]">{activeSide}</code> ·
+                    spread_mode=<code className="font-mono text-[10px]">{activeSpread}</code> ·
+                    z_window={calVolDocs.zWin}。
+                    远端美元 Vega 预算 = 1% NAV / vol-pt；
+                    N_{calVolDocs.near}=−N_{calVolDocs.far}·ν{calVolDocs.far}/ν{calVolDocs.near}（日频，净美元 Vega≈0）。
+                    双腿 ATM straddle + 日频期货 delta hedge。绩效自首次开仓次日起算。
+                  </p>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
+                    结果缓存
+                  </div>
+                  <p>
+                    缓存键含 strategy / tenor / side / spread / z_window / NAV / 成本签名 / 上游 DB
+                    指纹。命中时响应带{' '}
+                    <code className="font-mono text-[10px]">_cache.source=db|memory</code>
+                    ；未命中跑引擎后写入库（
+                    <code className="font-mono text-[10px]">source=miss</code>
+                    ）。当前：
+                    {data._cache
+                      ? ` hit=${String(data._cache.hit)} · source=${data._cache.source ?? '—'}`
+                      : ' （本响应无 _cache 元数据）'}
+                    。点右上角 Refresh 强制重算。
+                  </p>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
+                    PnL / 希腊分解
+                  </div>
+                  <p>
+                    实际 PnL = 期权 mid 差价 + 期货对冲差价（数据源同上 close）。
+                    另有 Black-76 希腊分解面板（见下方 Cumulative Greeks）：
+                    ΔPnL≈(m_opt·ΣnΔ + m_fut·n_fut)·dS；
+                    Γ≈½ m_opt·ΣnΓ·(dS)²；
+                    Vega≈m_opt·Σ n·vega_pt·ΔIV·100；
+                    Theta≈m_opt·ΣnΘ·(1/365)；
+                    Basis≈m_fut·n_fut·Δ(F−S)；
+                    Residual = actual − (Δ+Γ+Vega+Θ+Basis)。
+                    实现：<code className="font-mono text-[10px]">backend/engine/calendar_vol_strategy.py</code>。
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="text-[11px] text-slate-700 leading-relaxed space-y-2.5 border-t border-slate-100 pt-3">
+                <p className="text-slate-600">{data.description}</p>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
+                    结果缓存
+                  </div>
+                  <p>
+                    Cross Calendar Carry 同样落库复用：同 NAV/成本/上游指纹下第二次请求读{' '}
+                    <code className="font-mono text-[10px]">qis_results.sqlite</code>
+                    ，不重跑；Refresh /{' '}
+                    <code className="font-mono text-[10px]">?refresh=true</code> 覆盖。
+                    当前：
+                    {data._cache
+                      ? ` hit=${String(data._cache.hit)} · source=${data._cache.source ?? '—'}`
+                      : ' （本响应无 _cache 元数据）'}
+                    。
+                  </p>
+                </div>
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               {data.legs.map((l) => (
                 <span
@@ -255,7 +644,7 @@ const QisView: React.FC = () => {
             <h3 className="font-bold text-[#000066] text-sm mb-3">净值曲线 (NAV / initial)</h3>
             <div className="h-[340px]">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={data.nav}>
+                <LineChart data={navChart}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                   <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
                   <YAxis yAxisId="nav" tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
@@ -267,7 +656,7 @@ const QisView: React.FC = () => {
                     type="monotone"
                     dataKey="nav"
                     name="NAV multiple"
-                    stroke="#000066"
+                    stroke={CHART.nav}
                     dot={false}
                     strokeWidth={2}
                   />
@@ -276,14 +665,57 @@ const QisView: React.FC = () => {
                     type="monotone"
                     dataKey="sos"
                     name={sosLabel}
-                    stroke="#EAB308"
+                    stroke={CHART.spread}
                     dot={false}
                     strokeWidth={1}
-                    strokeOpacity={0.7}
+                    strokeOpacity={0.55}
+                  />
+                  <Line
+                    yAxisId="sos"
+                    type="monotone"
+                    dataKey="long_pt"
+                    name="Long"
+                    stroke={CHART.long}
+                    strokeWidth={0}
+                    dot={markerDot(CHART.long)}
+                    activeDot={false}
+                    legendType="circle"
+                    connectNulls={false}
+                    isAnimationActive={false}
+                  />
+                  <Line
+                    yAxisId="sos"
+                    type="monotone"
+                    dataKey="short_pt"
+                    name="Short"
+                    stroke={CHART.short}
+                    strokeWidth={0}
+                    dot={markerDot(CHART.short)}
+                    activeDot={false}
+                    legendType="circle"
+                    connectNulls={false}
+                    isAnimationActive={false}
+                  />
+                  <Line
+                    yAxisId="sos"
+                    type="monotone"
+                    dataKey="close_pt"
+                    name="Close"
+                    stroke={CHART.close}
+                    strokeWidth={0}
+                    dot={markerDot(CHART.close)}
+                    activeDot={false}
+                    legendType="circle"
+                    connectNulls={false}
+                    isAnimationActive={false}
                   />
                 </LineChart>
               </ResponsiveContainer>
             </div>
+            <p className="text-[9px] text-slate-400 mt-1">
+              黄线：净值（粗）与 IV spread（细）。点落在 spread 轴上：Long/Normal 红 · Short/Reverse 绿 · 平仓蓝
+              （由 executed position 变化推导）。
+            </p>
           </div>
 
           <div className="bg-white rounded-lg border border-slate-200 p-4 overflow-x-auto">
@@ -353,6 +785,9 @@ const QisView: React.FC = () => {
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
+                <p className="text-[9px] text-slate-400 mt-1">
+                  累积曲线对应上方口径中的 Black-76 分解；账面 NAV 仍以 mid MTM + 期货对冲为准，Residual 吸收模型与 MTM 之差。
+                </p>
               </div>
 
               {data.pnl_contribution && (
@@ -400,7 +835,7 @@ const QisView: React.FC = () => {
               {data.signal && signalChart.length > 0 && (
                 <div className="bg-white rounded-lg border border-slate-200 p-4">
                   <h3 className="font-bold text-[#000066] text-sm mb-3">
-                    3M−6M Spread & Rolling Quantile Bands
+                    {tenorLabel} Spread & Rolling Quantile Bands
                   </h3>
                   <div className="h-[300px]">
                     <ResponsiveContainer width="100%" height="100%">
@@ -410,17 +845,53 @@ const QisView: React.FC = () => {
                         <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} unit="pt" />
                         <Tooltip contentStyle={{ fontSize: 11 }} />
                         <Legend wrapperStyle={{ fontSize: 10 }} />
-                        <Line type="monotone" dataKey="spread_pts" name="Spread (vol pts)" stroke="#000066" dot={false} strokeWidth={1.5} />
-                        <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke="#DC2626" dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                        <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke="#DC2626" dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                        <Line type="monotone" dataKey="exit_hi" name={`Exit hi`} stroke="#16A34A" dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
-                        <Line type="monotone" dataKey="exit_lo" name={`Exit lo`} stroke="#16A34A" dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                        <Line type="monotone" dataKey="spread_pts" name="Spread (vol pts)" stroke={CHART.spread} dot={false} strokeWidth={1.5} />
+                        <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                        <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                        <Line type="monotone" dataKey="exit_hi" name={`Exit hi`} stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                        <Line type="monotone" dataKey="exit_lo" name={`Exit lo`} stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                        <Line
+                          type="monotone"
+                          dataKey="long_pt"
+                          name="Long"
+                          stroke={CHART.long}
+                          strokeWidth={0}
+                          dot={markerDot(CHART.long)}
+                          activeDot={false}
+                          legendType="circle"
+                          connectNulls={false}
+                          isAnimationActive={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="short_pt"
+                          name="Short"
+                          stroke={CHART.short}
+                          strokeWidth={0}
+                          dot={markerDot(CHART.short)}
+                          activeDot={false}
+                          legendType="circle"
+                          connectNulls={false}
+                          isAnimationActive={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="close_pt"
+                          name="Close"
+                          stroke={CHART.close}
+                          strokeWidth={0}
+                          dot={markerDot(CHART.close)}
+                          activeDot={false}
+                          legendType="circle"
+                          connectNulls={false}
+                          isAnimationActive={false}
+                        />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
                   <p className="text-[9px] text-slate-400 mt-1">
-                    红虚线：滚动入场分位（Spread &gt; hi → Normal；&lt; lo → Reverse）；绿虚线：出场带（落入 {exitPct}% 区间平仓）。
-                    分位仅用过去 {data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。
+                    黄线：Spread。紫虚线：滚动入场分位（Spread &gt; hi → Normal/Long；&lt; lo → Reverse/Short）；灰虚线：出场带（落入 {exitPct}% 区间平仓）。
+                    散点：Long 红 · Short 绿 · 平仓蓝。分位仅用过去 {data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。
                     {strategies.length ? '' : ''}
                   </p>
                 </div>

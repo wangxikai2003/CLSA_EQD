@@ -3,6 +3,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { OptionLeg, PositionType, OptionType, AnalysisResult, VolSurfaceModel, InterpolationMethod } from './types';
 import StrategyBuilder from './components/StrategyBuilder';
 import ExoticPricer from './components/ExoticPricer';
+import ExoticWorkbench from './components/ExoticWorkbench/ExoticWorkbench';
 import VolatilitySurfaceChart from './components/VolatilitySurface';
 import BoosterResearch from './components/BoosterResearch';
 import DashboardLayout from './components/dashboard/DashboardLayout';
@@ -66,6 +67,7 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ActiveTab>(ActiveTab.VANILLA);
   // Market Intel → Exotic barrier sync
   const [barrierFill, setBarrierFill] = useState<{ ko?: number; ki?: number; barrier?: number; strike?: number } | null>(null);
+  const [showLegacyExotic, setShowLegacyExotic] = useState(false);
 
   // Load product catalog once
   useEffect(() => {
@@ -852,21 +854,36 @@ const App: React.FC = () => {
             </div>
         </div>
 
-        {/* --- TAB 2: EXOTICS & BARRIER --- */}
-        <div className={activeTab === ActiveTab.EXOTIC ? 'block' : 'hidden'}>
-             <ExoticPricer 
-                spot={spotPrice} 
-                r={riskFreeRate} 
-                vol={flatVol} 
-                volModel={volModel}
-                volMethod={volMethod}
-                onMethodChange={setVolMethod}
-                jwBase={jwBase}
-                jwDelta={jwDelta}
-                onJwDeltaChange={setJwDelta}
-                barrierFill={barrierFill}
-             />
+        {/* --- TAB 2: EXOTICS WORKBENCH (mount only when active — avoids API stampede) --- */}
+        {activeTab === ActiveTab.EXOTIC && (
+        <div className="space-y-6">
+             <ExoticWorkbench spot={spotPrice} r={riskFreeRate} vol={flatVol} />
+             <details
+               className="bg-white rounded-lg border border-slate-200 shadow-sm"
+               onToggle={(e) => setShowLegacyExotic((e.target as HTMLDetailsElement).open)}
+             >
+               <summary className="cursor-pointer px-4 py-3 text-sm font-bold text-slate-500">
+                 Legacy Exotic Pricer (Snowball / FCN charts)
+               </summary>
+               {showLegacyExotic && (
+               <div className="p-2 border-t border-slate-100">
+                 <ExoticPricer 
+                    spot={spotPrice} 
+                    r={riskFreeRate} 
+                    vol={flatVol} 
+                    volModel={volModel}
+                    volMethod={volMethod}
+                    onMethodChange={setVolMethod}
+                    jwBase={jwBase}
+                    jwDelta={jwDelta}
+                    onJwDeltaChange={setJwDelta}
+                    barrierFill={barrierFill}
+                 />
+               </div>
+               )}
+             </details>
         </div>
+        )}
 
         {/* --- TAB 3: VOLATILITY SURFACE --- */}
         <div className={activeTab === ActiveTab.VOL_SURFACE ? 'block' : 'hidden'}>
@@ -1079,8 +1096,8 @@ const App: React.FC = () => {
             </div>
         </div>
         
-        {/* --- TAB: MARKET INTELLIGENCE --- */}
-        <div className={activeTab === ActiveTab.MARKET ? 'block' : 'hidden'}>
+        {/* Heavy data tabs: mount only when selected to prevent Cloud Run 429 stampede */}
+        {activeTab === ActiveTab.MARKET && (
             <DashboardLayout
               product={product}
               tradeDate={tradeDate}
@@ -1096,20 +1113,13 @@ const App: React.FC = () => {
                 setActiveTab(ActiveTab.EXOTIC);
               }}
             />
-        </div>
+        )}
 
-        {/* --- TAB: SPREAD (synthetic tenors) --- */}
-        <div className={activeTab === ActiveTab.SPREAD ? 'block' : 'hidden'}>
-            <SpreadView />
-        </div>
+        {activeTab === ActiveTab.SPREAD && <SpreadView />}
 
-        {/* --- TAB: QIS systematic strategies --- */}
-        <div className={activeTab === ActiveTab.QIS ? 'block' : 'hidden'}>
-            <QisView />
-        </div>
+        {activeTab === ActiveTab.QIS && <QisView />}
 
-        {/* --- TAB 4: BOOSTER RESEARCH --- */}
-        <div className={activeTab === ActiveTab.RESEARCH ? 'block' : 'hidden'}>
+        {activeTab === ActiveTab.RESEARCH && (
              <BoosterResearch 
                 volModel={volModel}
                 volMethod={volMethod}
@@ -1118,7 +1128,7 @@ const App: React.FC = () => {
                 jwDelta={jwDelta}
                 onJwDeltaChange={setJwDelta}
              />
-        </div>
+        )}
 
       </main>
     </div>

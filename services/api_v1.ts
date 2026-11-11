@@ -412,11 +412,23 @@ export interface QisPnLDecomposition {
   residual_pnl: number[];
 }
 
+export interface QisTradeMarker {
+  d: string;
+  kind: 'long' | 'short' | 'close' | string;
+  spread?: number | null;
+  sos?: number | null;
+  position?: number;
+  prev_position?: number;
+}
+
 export interface QisSignalSeries {
   dates: string[];
   spread: number[];
   zscore: (number | null)[];
   position: number[];
+  signal_next?: number[];
+  /** Executed position transitions (presentation); fallback: derive from position[] */
+  trade_markers?: QisTradeMarker[];
   /** @deprecated fixed Z bands — prefer enter_hi/lo time series */
   enter_band?: number;
   exit_band?: number;
@@ -440,6 +452,20 @@ export interface QisPnLContribution {
   basis_pct: number | null;
   net_delta_pct: number | null;
   residual_pct: number | null;
+}
+
+export interface QisCacheMeta {
+  hit: boolean;
+  /** db = durable sqlite; memory = process cache; miss = just computed */
+  source?: 'db' | 'memory' | 'miss' | string;
+  source_key?: string;
+  persisted?: boolean;
+  db?: string;
+  tenor_pair?: string;
+  side_mode?: string;
+  spread_mode?: string;
+  cost_sig?: string;
+  [k: string]: unknown;
 }
 
 export interface QisBacktestResponse {
@@ -473,6 +499,7 @@ export interface QisBacktestResponse {
   pnl_decomposition?: QisPnLDecomposition;
   signal?: QisSignalSeries;
   pnl_contribution?: QisPnLContribution;
+  _cache?: QisCacheMeta;
 }
 
 export function fetchQisStrategies(opts?: AbortSignal | FetchRetryOpts) {
@@ -482,20 +509,47 @@ export function fetchQisStrategies(opts?: AbortSignal | FetchRetryOpts) {
   );
 }
 
+export type QisTenorPair = '3M-6M' | '1M-3M';
+export type QisSideMode = 'both' | 'long_only' | 'short_only';
+export type QisSpreadMode = 'iv' | 'iv2';
+
 export function fetchQisBacktest(
   strategyId: string,
   refresh = false,
   opts?: AbortSignal | FetchRetryOpts,
   zWindow = 252,
+  tenorPair: QisTenorPair = '3M-6M',
+  sideMode: QisSideMode = 'both',
+  spreadMode: QisSpreadMode = 'iv',
 ) {
   const q = new URLSearchParams();
   if (refresh) q.set('refresh', 'true');
   q.set('z_window', String(zWindow));
+  q.set('tenor_pair', tenorPair);
+  q.set('side_mode', sideMode);
+  q.set('spread_mode', spreadMode);
   const qs = q.toString();
   return getJsonWithRetry<QisBacktestResponse>(
     `/api/v1/qis/backtest/${strategyId}?${qs}`,
     _asRetryOpts(opts)
   );
+}
+
+/** Calendar-vol concrete holdings Excel (date/contract/dir/qty/price). */
+export function qisHoldingsExcelUrl(
+  strategyId: string,
+  zWindow = 252,
+  tenorPair: QisTenorPair = '3M-6M',
+  sideMode: QisSideMode = 'both',
+  spreadMode: QisSpreadMode = 'iv',
+) {
+  const q = new URLSearchParams();
+  q.set('z_window', String(zWindow));
+  q.set('tenor_pair', tenorPair);
+  q.set('side_mode', sideMode);
+  q.set('spread_mode', spreadMode);
+  q.set('persist', 'true');
+  return `/api/v1/qis/backtest/${encodeURIComponent(strategyId)}/holdings.xlsx?${q}`;
 }
 
 /** Debounce an async fn; last arg may receive AbortSignal when fn supports it. */
@@ -527,4 +581,229 @@ export function debounceAsync<T extends unknown[], R>(
 
 export function clearApiV1Cache() {
   cache.clear();
+}
+
+/* ---- Greeks term-structure (legacy ExoticPricer) ---- */
+
+export interface KiRegimeCurve {
+  valid_spots: number[];
+  pv?: number[] | null;
+  delta?: number[] | null;
+  gamma?: number[] | null;
+}
+
+export interface GreeksTermSlice {
+  t: number;
+  label: string;
+  before_ki: KiRegimeCurve;
+  after_ki: KiRegimeCurve;
+}
+
+export interface GreeksTermStructureResponse {
+  spot_grid: number[];
+  S0: number;
+  T: number;
+  ki_level: number;
+  ko_level: number;
+  ki_monitoring_type: string;
+  ko_monitoring_type: string;
+  slices: GreeksTermSlice[];
+  elapsed_ms?: number;
+}
+
+export interface GreeksTermStructureRequest {
+  product_type: ProductType | string;
+  product: Record<string, unknown>;
+  market: MarketSnapshot;
+  time_slices?: number[];
+  spot_range?: number[];
+  spot_steps?: number;
+  ki_monitoring_type?: string;
+  ko_monitoring_type?: string;
+  include_greeks?: string[];
+  n_paths?: number;
+  seed?: number;
+  barrier_shift_bps?: number;
+  spread_smoothing_width?: number;
+}
+
+let _gtsCtrl: AbortController | null = null;
+
+export function abortGreeksTermStructure() {
+  if (_gtsCtrl) {
+    _gtsCtrl.abort();
+    _gtsCtrl = null;
+  }
+}
+
+export function fetchGreeksTermStructure(
+  req: GreeksTermStructureRequest,
+  signal?: AbortSignal,
+) {
+  if (!signal) {
+    abortGreeksTermStructure();
+    _gtsCtrl = new AbortController();
+    signal = _gtsCtrl.signal;
+  }
+  return postJson<GreeksTermStructureResponse>(
+    '/api/v1/pricing/greeks-term-structure',
+    req,
+    signal,
+  ).catch((e) => {
+    if ((e as Error)?.name === 'AbortError' || String(e).includes('abort')) {
+      const err = new Error('Aborted');
+      err.name = 'AbortError';
+      throw err;
+    }
+    throw e;
+  });
+}
+
+/* ---- Universal Exotic Workbench ---- */
+
+export interface UniversalExoticProductDTO {
+  name: string;
+  tenor: number;
+  notional: number;
+  asset: {
+    underlying: string[];
+    basket_type: 'WORSTOF' | 'BESTOF' | 'WEIGHTED';
+    correlation_matrix?: number[][] | null;
+    repo_rates?: number[] | null;
+    div_yields?: number[] | null;
+    weights?: number[] | null;
+  };
+  funding: {
+    funding_index: 'SOFR' | 'HONIA' | 'FIXED' | string;
+    funding_spread: number;
+    funding_scale: number;
+    funding_freq: string;
+  };
+  ko: {
+    ko_freq: string;
+    ko_monitoring_type: 'EUROPEAN' | 'AMERICAN' | string;
+    ko_schedule: number[];
+    ko_shift?: number[] | null;
+    ko_shift_type?: string;
+    ko_shift_value_type?: string;
+    memory_ko?: boolean;
+  };
+  ki: {
+    ki_level: number;
+    ki_monitoring_type: 'DAILY' | 'EUROPEAN' | string;
+    ki_shift?: number;
+    ki_shift_type?: string;
+    put_strike: number;
+    put_participation: number;
+    settlement_type: 'CASH' | 'PHYSICAL' | string;
+  };
+  coupon: {
+    cpn_type: 'FIXED' | 'SNOWBALL_ACCRUED' | 'PHOENIX_CONDITIONAL' | string;
+    cpn_rate: number;
+    coupon_barrier?: number | null;
+    memory_cpn?: boolean;
+    guaranteed_periods?: number;
+    ko_rebate?: number | null;
+  };
+  day_count?: 'act365' | 'bus252';
+}
+
+let _wbCtrl: AbortController | null = null;
+
+export function abortExoticWorkbench() {
+  if (_wbCtrl) {
+    _wbCtrl.abort();
+    _wbCtrl = null;
+  }
+}
+
+export function fetchExoticPreset(name: string, signal?: AbortSignal) {
+  return getJson<UniversalExoticProductDTO>(
+    `/api/v1/exotic/presets/${encodeURIComponent(name)}`,
+    signal,
+  );
+}
+
+export function priceUniversalExotic(
+  body: {
+    product?: UniversalExoticProductDTO;
+    preset?: string;
+    market?: MarketSnapshot;
+    sim?: { n_paths?: number; n_steps?: number; seed?: number; bridge?: boolean };
+    include_risk_summary?: boolean;
+  },
+  signal?: AbortSignal,
+) {
+  if (!signal) {
+    abortExoticWorkbench();
+    _wbCtrl = new AbortController();
+    signal = _wbCtrl.signal;
+  }
+  return postJson<Record<string, unknown>>('/api/v1/exotic/price', body, signal).catch((e) => {
+    if ((e as Error)?.name === 'AbortError' || String(e).includes('abort')) {
+      const err = new Error('Aborted');
+      err.name = 'AbortError';
+      throw err;
+    }
+    throw e;
+  });
+}
+
+export function solveUniversalExotic(
+  body: {
+    product?: UniversalExoticProductDTO;
+    preset?: string;
+    market?: MarketSnapshot;
+    solve_for?: 'cpn_rate' | 'ko_rebate' | 'ki_level' | 'put_strike';
+    target_price?: number;
+    bounds?: number[];
+    n_paths?: number;
+    seed?: number;
+  },
+  signal?: AbortSignal,
+) {
+  if (!signal) {
+    abortExoticWorkbench();
+    _wbCtrl = new AbortController();
+    signal = _wbCtrl.signal;
+  }
+  return postJson<Record<string, any>>('/api/v1/exotic/solve', body, signal).catch((e) => {
+    if ((e as Error)?.name === 'AbortError' || String(e).includes('abort')) {
+      const err = new Error('Aborted');
+      err.name = 'AbortError';
+      throw err;
+    }
+    throw e;
+  });
+}
+
+export function fetchUniversalGreeksTermStructure(
+  body: {
+    product?: UniversalExoticProductDTO;
+    preset?: string;
+    market?: MarketSnapshot;
+    time_slices?: number[];
+    spot_range?: number[];
+    spot_steps?: number;
+    include_greeks?: string[];
+    n_paths?: number;
+    seed?: number;
+    barrier_shift_bps?: number;
+    spread_smoothing_width?: number;
+    include_risk_summary?: boolean;
+  },
+  signal?: AbortSignal,
+) {
+  return postJson<GreeksTermStructureResponse>(
+    '/api/v1/exotic/greeks-term-structure',
+    body,
+    signal,
+  ).catch((e) => {
+    if ((e as Error)?.name === 'AbortError' || String(e).includes('abort')) {
+      const err = new Error('Aborted');
+      err.name = 'AbortError';
+      throw err;
+    }
+    throw e;
+  });
 }

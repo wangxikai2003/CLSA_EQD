@@ -59,6 +59,7 @@ export interface AnalysisResult {
 
 export enum ExoticType {
   SNOWBALL = 'Snowball (Autocall)',
+  FCN = 'FCN (Fixed Coupon Note)',
   SHARKFIN = 'Sharkfin (Up-and-Out Call)'
 }
 
@@ -80,10 +81,16 @@ export interface ExoticProduct {
   
   obsFreq?: 'Monthly' | 'Daily' | 'Yearly' | 'European';
 
-  // Sharkfin Specifics
-  strike?: number; // % of spot
+  // FCN Specifics (EQD catalog: fixed coupon until KO; put strike at maturity)
+  fixedCouponPa?: number; // e.g. 0.15 = 15% p.a.
+
+  // Sharkfin / shared
+  strike?: number; // % of spot (FCN put strike ~0.72–0.76; Sharkfin call strike)
   barrier?: number; // % of spot
   rebate?: number; // % payout if knocked out
+
+  /** Greeks regime for local MC: blended | pre_ki | post_ki */
+  kiRegime?: 'blended' | 'pre_ki' | 'post_ki';
 }
 
 export interface ExoticAnalysisData {

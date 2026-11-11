@@ -23,6 +23,7 @@ class GreeksConfig(BaseModel):
     barrier_shift_bps: float = 0.0
     spread_smoothing_width: float = 0.0
     return_profiles: bool = False
+    return_ki_profiles: bool = True
 
 
 class MarketSnapshot(BaseModel):
@@ -54,6 +55,50 @@ class ExoticPriceResponse(BaseModel):
     raw_profile: Optional[Dict[str, Any]] = None
     shifted_profile: Optional[Dict[str, Any]] = None
     reserve_metrics: Optional[Dict[str, Any]] = None
+    pre_ki_profile: Optional[Dict[str, Any]] = None
+    post_ki_profile: Optional[Dict[str, Any]] = None
+
+
+class GreeksTermStructureRequest(BaseModel):
+    product_type: Literal["snowball", "fcn", "phoenix"] = "snowball"
+    product: Dict[str, Any] = Field(default_factory=dict)
+    market: MarketSnapshot = Field(default_factory=MarketSnapshot)
+    time_slices: Optional[List[float]] = None
+    spot_range: Optional[List[float]] = None  # [lo, hi]
+    spot_steps: int = 41
+    ki_monitoring_type: Literal["DAILY", "EUROPEAN", "AMERICAN", "AXKI"] = "DAILY"
+    ko_monitoring_type: Literal["EUROPEAN", "DAILY", "CONTINUOUS_AMERICAN"] = "EUROPEAN"
+    include_greeks: List[str] = Field(default_factory=lambda: ["delta", "gamma", "pv"])
+    n_paths: int = 6000
+    seed: int = 42
+    barrier_shift_bps: float = 0.0
+    spread_smoothing_width: float = 0.0
+
+
+class KiRegimeCurve(BaseModel):
+    valid_spots: List[float]
+    pv: Optional[List[float]] = None
+    delta: Optional[List[float]] = None
+    gamma: Optional[List[float]] = None
+
+
+class GreeksTermSlice(BaseModel):
+    t: float
+    label: str
+    before_ki: KiRegimeCurve
+    after_ki: KiRegimeCurve
+
+
+class GreeksTermStructureResponse(BaseModel):
+    spot_grid: List[float]
+    S0: float
+    T: float
+    ki_level: float
+    ko_level: float
+    ki_monitoring_type: str
+    ko_monitoring_type: str
+    slices: List[GreeksTermSlice]
+    elapsed_ms: float = 0.0
 
 
 class JwCalibRequest(BaseModel):
