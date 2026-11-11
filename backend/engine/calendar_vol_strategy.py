@@ -1,4 +1,4 @@
-"""Equity 3-6 Calendar Volatility Long Short — CSI50 / CSI300 / CSI1000."""
+"""Equity Calendar Volatility Long Short — CSI50 / CSI300 / CSI1000; tenor 3M-6M | 1M-3M."""
 from __future__ import annotations
 
 import math
@@ -26,6 +26,7 @@ _SPOT_CANDIDATES = [
     Path("/app/data/index_spot.parquet"),
 ]
 
+T_1M = 30.0 / 365.0
 T_3M = 90.0 / 365.0
 T_6M = 180.0 / 365.0
 DEFAULT_Z_WINDOW = 252  # rolling window for quantiles / Z (trading days)
@@ -36,11 +37,39 @@ EXIT_HI_Q = 0.60
 MAX_HOLD_REVERSE = 20
 VEGA_BUDGET_FRAC = 0.01
 
+# Locked tenor pairs (framework): far leg holds vega budget.
+# Spread definition depends on spread_mode (iv | iv2); see compute_spread.
+TENOR_PAIRS: Dict[str, Dict[str, Any]] = {
+    "3M-6M": {
+        "near_label": "3M",
+        "far_label": "6M",
+        "t_near": T_3M,
+        "t_far": T_6M,
+        "display": "3M−6M",
+    },
+    "1M-3M": {
+        "near_label": "1M",
+        "far_label": "3M",
+        "t_near": T_1M,
+        "t_far": T_3M,
+        "display": "1M−3M",
+    },
+}
+DEFAULT_TENOR_PAIR = "3M-6M"
+
+# Position-side filter: both = Normal(+1) & Reverse(−1); long/short_only keep flat+close.
+SIDE_MODES = ("both", "long_only", "short_only")
+DEFAULT_SIDE_MODE = "both"
+
+# Spread construction after CT-IV interpolation: level diff vs variance diff.
+SPREAD_MODES = ("iv", "iv2")
+DEFAULT_SPREAD_MODE = "iv"
+
 # option product (DB) → index / futures multipliers
 UNIVERSES: Dict[str, Dict[str, Any]] = {
     "50": {
         "strategy_id": "equity_3_6_calendar_vol_50",
-        "strategy_name": "Equity 3-6 Calendar Volatility Long Short Strategy — 50",
+        "strategy_name": "Equity Calendar Volatility Long Short Strategy — 50",
         "product": "HO",
         "fut_root": "IH",
         "spot_code": "000016.SH",
@@ -50,7 +79,7 @@ UNIVERSES: Dict[str, Dict[str, Any]] = {
     },
     "300": {
         "strategy_id": "equity_3_6_calendar_vol_300",
-        "strategy_name": "Equity 3-6 Calendar Volatility Long Short Strategy — 300",
+        "strategy_name": "Equity Calendar Volatility Long Short Strategy — 300",
         "product": "IO",
         "fut_root": "IF",
         "spot_code": "000300.SH",
@@ -60,7 +89,7 @@ UNIVERSES: Dict[str, Dict[str, Any]] = {
     },
     "1000": {
         "strategy_id": "equity_3_6_calendar_vol_1000",
-        "strategy_name": "Equity 3-6 Calendar Volatility Long Short Strategy — 1000",
+        "strategy_name": "Equity Calendar Volatility Long Short Strategy — 1000",
         "product": "MO",
         "fut_root": "IM",
         "spot_code": "000852.SH",
@@ -71,6 +100,87 @@ UNIVERSES: Dict[str, Dict[str, Any]] = {
 }
 
 STRATEGY_BY_ID = {u["strategy_id"]: key for key, u in UNIVERSES.items()}
+
+EXPORTS_DIR = ROOT / "data" / "exports"
+
+
+def normalize_tenor_pair(tenor_pair: str) -> str:
+    key = str(tenor_pair).strip().upper().replace("−", "-").replace("_", "-")
+    aliases = {
+        "3M6M": "3M-6M",
+        "1M3M": "1M-3M",
+        "3-6": "3M-6M",
+        "1-3": "1M-3M",
+    }
+    key = aliases.get(key, key)
+    if key not in TENOR_PAIRS:
+        raise ValueError(f"unknown tenor_pair {tenor_pair!r}; choose {list(TENOR_PAIRS)}")
+    return key
+
+
+def normalize_side_mode(side_mode: str) -> str:
+    key = str(side_mode).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "long": "long_only",
+        "short": "short_only",
+        "longonly": "long_only",
+        "shortonly": "short_only",
+        "only_long": "long_only",
+        "only_short": "short_only",
+        "all": "both",
+        "ls": "both",
+    }
+    key = aliases.get(key, key)
+    if key not in SIDE_MODES:
+        raise ValueError(f"unknown side_mode {side_mode!r}; choose {list(SIDE_MODES)}")
+    return key
+
+
+def normalize_spread_mode(spread_mode: str) -> str:
+    key = str(spread_mode).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "level": "iv",
+        "diff": "iv",
+        "iv_diff": "iv",
+        "var": "iv2",
+        "variance": "iv2",
+        "iv_sq": "iv2",
+        "iv_squared": "iv2",
+        "square": "iv2",
+        "sq": "iv2",
+    }
+    key = aliases.get(key, key)
+    if key not in SPREAD_MODES:
+        raise ValueError(f"unknown spread_mode {spread_mode!r}; choose {list(SPREAD_MODES)}")
+    return key
+
+
+def compute_spread(iv_near: float, iv_far: float, spread_mode: str = DEFAULT_SPREAD_MODE) -> float:
+    """Spread after CT-IV: iv → near−far; iv2 → near²−far²."""
+    mode = normalize_spread_mode(spread_mode)
+    if mode == "iv2":
+        return float(iv_near) * float(iv_near) - float(iv_far) * float(iv_far)
+    return float(iv_near) - float(iv_far)
+
+
+def default_holdings_export_path(
+    universe: str,
+    tenor_pair: str = DEFAULT_TENOR_PAIR,
+    side_mode: str = DEFAULT_SIDE_MODE,
+    spread_mode: str = DEFAULT_SPREAD_MODE,
+) -> Path:
+    cfg = UNIVERSES[universe]
+    tp = normalize_tenor_pair(tenor_pair)
+    sm = normalize_side_mode(side_mode)
+    spm = normalize_spread_mode(spread_mode)
+    parts = [cfg["strategy_id"]]
+    if tp != DEFAULT_TENOR_PAIR:
+        parts.append(tp.lower().replace("-", ""))
+    if sm != DEFAULT_SIDE_MODE:
+        parts.append(sm)
+    if spm != DEFAULT_SPREAD_MODE:
+        parts.append(spm)
+    return EXPORTS_DIR / f"{'_'.join(parts)}_holdings.xlsx"
 
 
 def _equity_db() -> Path:
@@ -193,11 +303,23 @@ class CalendarVolBacktestEngine:
         enter_q: float = ENTER_Q,
         exit_lo_q: float = EXIT_LO_Q,
         exit_hi_q: float = EXIT_HI_Q,
+        tenor_pair: str = DEFAULT_TENOR_PAIR,
+        side_mode: str = DEFAULT_SIDE_MODE,
+        spread_mode: str = DEFAULT_SPREAD_MODE,
     ):
         if universe not in UNIVERSES:
             raise ValueError(f"unknown universe {universe}; choose {list(UNIVERSES)}")
         self.universe = universe
         self.cfg = UNIVERSES[universe]
+        self.tenor_pair = normalize_tenor_pair(tenor_pair)
+        self.tenor_cfg = TENOR_PAIRS[self.tenor_pair]
+        self.near_label = str(self.tenor_cfg["near_label"])
+        self.far_label = str(self.tenor_cfg["far_label"])
+        self.t_near = float(self.tenor_cfg["t_near"])
+        self.t_far = float(self.tenor_cfg["t_far"])
+        self.tenor_display = str(self.tenor_cfg["display"])
+        self.side_mode = normalize_side_mode(side_mode)
+        self.spread_mode = normalize_spread_mode(spread_mode)
         self.initial_nav = float(initial_nav)
         self.z_window = int(z_window)
         self.enter_q = float(enter_q)
@@ -208,8 +330,9 @@ class CalendarVolBacktestEngine:
         self.m_opt = float(self.cfg["m_opt"])
         self.m_fut = float(self.cfg["m_fut"])
         self._vega_checks: List[float] = []
+        self._holdings_rows: List[Dict[str, Any]] = []
 
-    def _load(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
+    def _load(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.DataFrame]:
         db = _equity_db()
         conn = sqlite3.connect(str(db))
         svi = pd.read_sql(
@@ -223,6 +346,7 @@ class CalendarVolBacktestEngine:
             conn,
             params=(self.product,),
         )
+        # mid_price column is Wind S_DQ_CLOSE (legacy name; never settle).
         opt = pd.read_sql(
             """
             SELECT trade_date, wind_code, expiry, ttm, strike, cp,
@@ -237,9 +361,9 @@ class CalendarVolBacktestEngine:
         )
         fut = pd.read_sql(
             """
-            SELECT trade_date, contract_ym, close, settle
+            SELECT trade_date, wind_code, contract_ym, close
               FROM futures_eod
-             WHERE product=? AND (close > 0 OR settle > 0)
+             WHERE product=? AND close IS NOT NULL AND close > 0
              ORDER BY trade_date, contract_ym
             """,
             conn,
@@ -252,22 +376,28 @@ class CalendarVolBacktestEngine:
         spot_df["trade_date"] = spot_df["trade_date"].astype(str).str[:10]
         spot = spot_df.set_index("trade_date")["close"].astype(float).sort_index()
 
+        # Close-only: never fall back to settle for hedge MTM / sizing.
         fut["trade_date"] = fut["trade_date"].astype(str).str[:10]
-        fut["px"] = fut["close"].where(fut["close"].notna() & (fut["close"] > 0), fut["settle"])
         front = (
             fut.sort_values(["trade_date", "contract_ym"])
-            .groupby("trade_date", as_index=True)
-            .first()["px"]
-            .astype(float)
+            .groupby("trade_date", as_index=False)
+            .first()
+            .set_index("trade_date")[["wind_code", "contract_ym", "close"]]
             .sort_index()
         )
+        front["close"] = front["close"].astype(float)
 
         svi["trade_date"] = svi["trade_date"].astype(str).str[:10]
         opt["trade_date"] = opt["trade_date"].astype(str).str[:10]
         opt["cp"] = opt["cp"].astype(str).str.upper().str[:1]
         return svi, opt, spot, front
 
-    def _daily_ct_iv(self, svi: pd.DataFrame) -> pd.DataFrame:
+    def _daily_ct_iv(
+        self, svi: pd.DataFrame, t_near: Optional[float] = None, t_far: Optional[float] = None
+    ) -> pd.DataFrame:
+        """ATM CT-IV near/far + Spread (iv or iv2). Days missing either bracket omitted."""
+        tn = float(self.t_near if t_near is None else t_near)
+        tf = float(self.t_far if t_far is None else t_far)
         rows = []
         for td, g in svi.groupby("trade_date"):
             ttms = g["ttm"].to_numpy(float)
@@ -275,10 +405,22 @@ class CalendarVolBacktestEngine:
             if np.any(~np.isfinite(watm)):
                 jw = g["jw_v"].to_numpy(float)
                 watm = np.where(np.isfinite(watm), watm, np.maximum(jw, 0.0) * ttms)
-            iv3 = total_var_interp_iv(ttms, watm, T_3M)
-            iv6 = total_var_interp_iv(ttms, watm, T_6M)
-            if iv3 == iv3 and iv6 == iv6 and iv3 > 0 and iv6 > 0:
-                rows.append({"d": td, "iv_3m": iv3, "iv_6m": iv6, "spread": iv3 - iv6})
+            iv_near = total_var_interp_iv(ttms, watm, tn)
+            iv_far = total_var_interp_iv(ttms, watm, tf)
+            if (
+                iv_near == iv_near
+                and iv_far == iv_far
+                and iv_near > 0
+                and iv_far > 0
+            ):
+                rows.append(
+                    {
+                        "d": td,
+                        "iv_near": iv_near,
+                        "iv_far": iv_far,
+                        "spread": compute_spread(iv_near, iv_far, self.spread_mode),
+                    }
+                )
         return pd.DataFrame(rows).set_index("d").sort_index()
 
     def build_synthetic_leg(
@@ -370,24 +512,25 @@ class CalendarVolBacktestEngine:
         direction: int,
         nav: float,
     ) -> Tuple[List[OptPos], float, float]:
-        _, nu6, _ = self.build_synthetic_leg(day_opts, spot, T_6M, 1.0)
-        _, nu3, _ = self.build_synthetic_leg(day_opts, spot, T_3M, 1.0)
-        if nu3 <= 1e-12 or nu6 <= 1e-12:
+        """Far-leg dollar vega = 1% NAV/vol-pt; N_near = −N_far · ν_far / ν_near (daily)."""
+        _, nu_far, _ = self.build_synthetic_leg(day_opts, spot, self.t_far, 1.0)
+        _, nu_near, _ = self.build_synthetic_leg(day_opts, spot, self.t_near, 1.0)
+        if nu_near <= 1e-12 or nu_far <= 1e-12:
             return [], 0.0, 0.0
 
-        unit_vp6 = nu6 / 100.0
+        unit_vp_far = nu_far / 100.0
         target_cny_vp = VEGA_BUDGET_FRAC * nav
-        n6_abs = target_cny_vp / (unit_vp6 * self.m_opt)
-        n6 = direction * n6_abs
-        n3 = -n6 * (nu6 / nu3)
+        n_far_abs = target_cny_vp / (unit_vp_far * self.m_opt)
+        n_far = direction * n_far_abs
+        n_near = -n_far * (nu_far / nu_near)
 
-        pos6, _, _ = self.build_synthetic_leg(day_opts, spot, T_6M, n6)
-        pos3, _, _ = self.build_synthetic_leg(day_opts, spot, T_3M, n3)
-        all_pos = pos3 + pos6
+        pos_far, _, _ = self.build_synthetic_leg(day_opts, spot, self.t_far, n_far)
+        pos_near, _, _ = self.build_synthetic_leg(day_opts, spot, self.t_near, n_near)
+        all_pos = pos_near + pos_far
         if not all_pos:
             return [], 0.0, 0.0
         self._vega_checks.append(abs(sum(p.n * p.vega for p in all_pos)))
-        return all_pos, n3, n6
+        return all_pos, n_near, n_far
 
     def _lookup_mtm(self, pos: OptPos, day_opts: pd.DataFrame) -> Optional[Tuple[float, float]]:
         hit = day_opts[day_opts["wind_code"] == pos.wind_code]
@@ -402,9 +545,180 @@ class CalendarVolBacktestEngine:
         r0 = hit.iloc[0]
         return float(r0["mid_price"]), float(r0["iv"])
 
+    def _apply_side_mode(self, target: int, position: int) -> int:
+        """Filter target by side_mode; always allow flat (0) closes.
+
+        long_only: keep +1 and 0; ignore −1 entries (stay flat / force-close stray short).
+        short_only: keep −1 and 0; ignore +1 entries.
+        both: unchanged.
+        """
+        sm = self.side_mode
+        if sm == "both":
+            return target
+        if sm == "long_only":
+            if target == -1:
+                return 0
+            if position == -1:
+                return 0
+            return target
+        # short_only
+        if target == 1:
+            return 0
+        if position == 1:
+            return 0
+        return target
+
+    def _decide_signal(
+        self,
+        position: int,
+        hold_days: int,
+        spread: float,
+        eh: float,
+        el: float,
+        xh: float,
+        xl: float,
+    ) -> int:
+        """Emit next-day target from post-trade state + today's close spread."""
+        bands_ok = all(math.isfinite(x) for x in (eh, el, xh, xl))
+        if not bands_ok:
+            return self._apply_side_mode(position, position)
+        if position == 0:
+            if spread > eh:
+                raw = 1  # Normal: short near / long far (spread rich)
+            elif spread < el:
+                raw = -1  # Reverse
+            else:
+                raw = 0
+            return self._apply_side_mode(raw, position)
+        if xl <= spread <= xh:
+            return 0
+        if position == -1 and hold_days >= MAX_HOLD_REVERSE:
+            return 0
+        return self._apply_side_mode(position, position)
+
+    def _append_holdings(
+        self,
+        d: str,
+        position: int,
+        opts: List[OptPos],
+        n_if: float,
+        fut_code: str,
+        fut_ym: str,
+        F: float,
+        signal_next: int,
+        executed: bool,
+    ) -> None:
+        for p in opts:
+            self._holdings_rows.append(
+                {
+                    "trade_date": d,
+                    "instrument": "option",
+                    "wind_code": p.wind_code,
+                    "contract_ym": str(p.expiry)[:7].replace("-", "")[2:]
+                    if "-" in str(p.expiry)
+                    else str(p.expiry),
+                    "expiry": p.expiry,
+                    "strike": p.strike,
+                    "cp": p.cp,
+                    "direction": "long" if p.n > 0 else "short",
+                    "qty": float(p.n),
+                    "price": float(p.mid),  # option close (mid_price←S_DQ_CLOSE)
+                    "multiplier": self.m_opt,
+                    "strategy_position": position,
+                    "signal_next": signal_next,
+                    "executed": executed,
+                    "leg": self.near_label
+                    if p.ttm < (self.t_near + self.t_far) / 2
+                    else self.far_label,
+                }
+            )
+        if abs(n_if) > 1e-12:
+            self._holdings_rows.append(
+                {
+                    "trade_date": d,
+                    "instrument": "future",
+                    "wind_code": fut_code,
+                    "contract_ym": fut_ym,
+                    "expiry": None,
+                    "strike": None,
+                    "cp": None,
+                    "direction": "long" if n_if > 0 else "short",
+                    "qty": float(n_if),
+                    "price": float(F),  # futures close
+                    "multiplier": self.m_fut,
+                    "strategy_position": position,
+                    "signal_next": signal_next,
+                    "executed": executed,
+                    "leg": "hedge",
+                }
+            )
+
+    def holdings_dataframe(self) -> pd.DataFrame:
+        if not self._holdings_rows:
+            return pd.DataFrame(
+                columns=[
+                    "trade_date",
+                    "instrument",
+                    "wind_code",
+                    "contract_ym",
+                    "expiry",
+                    "strike",
+                    "cp",
+                    "direction",
+                    "qty",
+                    "price",
+                    "multiplier",
+                    "strategy_position",
+                    "signal_next",
+                    "executed",
+                    "leg",
+                ]
+            )
+        return pd.DataFrame(self._holdings_rows)
+
+    def write_holdings_excel(self, path: Optional[Path] = None) -> Path:
+        """Write concrete holdings ledger to Excel (date/contract/dir/qty/price…)."""
+        out = (
+            Path(path)
+            if path
+            else default_holdings_export_path(
+                self.universe, self.tenor_pair, self.side_mode, self.spread_mode
+            )
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        df = self.holdings_dataframe()
+        with pd.ExcelWriter(out, engine="openpyxl") as xl:
+            df.to_excel(xl, sheet_name="holdings", index=False)
+            meta = pd.DataFrame(
+                [
+                    {"key": "strategy_id", "value": self.cfg["strategy_id"]},
+                    {"key": "universe", "value": self.universe},
+                    {"key": "tenor_pair", "value": self.tenor_pair},
+                    {"key": "side_mode", "value": self.side_mode},
+                    {"key": "spread_mode", "value": self.spread_mode},
+                    {"key": "signal_lag", "value": "t-1 signal → t close execution"},
+                    {
+                        "key": "price",
+                        "value": "option close (mid_price←S_DQ_CLOSE) / futures close",
+                    },
+                    {"key": "n_rows", "value": len(df)},
+                    {
+                        "key": "n_trade_days",
+                        "value": int(df["trade_date"].nunique()) if len(df) else 0,
+                    },
+                ]
+            )
+            meta.to_excel(xl, sheet_name="meta", index=False)
+        return out
+
     def run(self) -> Dict[str, Any]:
         svi, opt, spot, front = self._load()
         ct = self._daily_ct_iv(svi)
+        # 1M–3M: keep the same nominal calendar as 3M–6M for this index.
+        # Days missing the 1M bracket keep NaN spread → no signal (do not shorten start).
+        if self.tenor_pair != DEFAULT_TENOR_PAIR:
+            ct_ref = self._daily_ct_iv(svi, t_near=T_3M, t_far=T_6M)
+            ct = ct.reindex(ct_ref.index)
         z = rolling_zscore(ct["spread"], self.z_window)
         bands = rolling_quantile_bands(
             ct["spread"],
@@ -418,23 +732,28 @@ class CalendarVolBacktestEngine:
         dates = sorted(set(ct.index) & set(spot.index) & set(front.index) & set(opt["trade_date"]))
         if len(dates) < self.z_window + 30:
             raise RuntimeError(
-                f"Insufficient aligned history for {self.universe}: {len(dates)} days "
-                f"(need >{self.z_window + 30})"
+                f"Insufficient aligned history for {self.universe}/{self.tenor_pair}: "
+                f"{len(dates)} days (need >{self.z_window + 30})"
             )
 
         opt_by_day = {td: g for td, g in opt.groupby("trade_date")}
         nav = self.initial_nav
         state = DayState()
+        pending_signal = 0  # day-0: observe only; first trade earliest on day 1
         rows: List[Dict[str, Any]] = []
+        self._holdings_rows: List[Dict[str, Any]] = []
         cum_vega = cum_theta = cum_gamma = cum_basis = cum_delta = cum_resid = 0.0
         first_open_i: Optional[int] = None
         hedge_scale = self.m_opt / self.m_fut  # IF/IH: 1/3; IM: 1/2
 
         for i, d in enumerate(dates):
             S = float(spot.loc[d])
-            F = float(front.loc[d])
+            F = float(front.loc[d, "close"])
+            fut_code = str(front.loc[d, "wind_code"])
+            fut_ym = str(front.loc[d, "contract_ym"])
             day_opts = opt_by_day.get(d, pd.DataFrame())
-            spread = float(ct.loc[d, "spread"])
+            sp_raw = ct.loc[d, "spread"]
+            spread = float(sp_raw) if pd.notna(sp_raw) else float("nan")
             zv = ct.loc[d, "z"]
             zv = float(zv) if pd.notna(zv) else float("nan")
             eh = ct.loc[d, "enter_hi"]
@@ -445,13 +764,18 @@ class CalendarVolBacktestEngine:
             el_f = float(el) if pd.notna(el) else float("nan")
             xh_f = float(xh) if pd.notna(xh) else float("nan")
             xl_f = float(xl) if pd.notna(xl) else float("nan")
+            iv_near_raw = ct.loc[d, "iv_near"]
+            iv_far_raw = ct.loc[d, "iv_far"]
+            iv_near_f = float(iv_near_raw) if pd.notna(iv_near_raw) else float("nan")
+            iv_far_f = float(iv_far_raw) if pd.notna(iv_far_raw) else float("nan")
 
+            # 1) Mark overnight holdings (from t−1 execution) to today's close.
             net_delta = basis = gamma = theta = vega_pnl = 0.0
             actual = 0.0
             if i > 0 and state.opts:
                 d_prev = dates[i - 1]
                 S_prev = float(spot.loc[d_prev])
-                F_prev = float(front.loc[d_prev])
+                F_prev = float(front.loc[d_prev, "close"])
                 B_prev = F_prev - S_prev
                 B = F - S
                 dS = S - S_prev
@@ -490,57 +814,65 @@ class CalendarVolBacktestEngine:
             cum_delta += net_delta
             cum_resid += residual
 
-            new_pos = state.position
-            hold = state.hold_days
-            bands_ok = all(math.isfinite(x) for x in (eh_f, el_f, xh_f, xl_f))
-            if bands_ok:
-                if state.position == 0:
-                    if spread > eh_f:
-                        new_pos = 1  # Normal: short 3M / long 6M (spread rich)
-                        hold = 0
-                    elif spread < el_f:
-                        new_pos = -1  # Reverse
-                        hold = 0
-                else:
-                    hold += 1
-                    if xl_f <= spread <= xh_f:
-                        new_pos = 0
-                        hold = 0
-                    elif state.position == -1 and hold >= MAX_HOLD_REVERSE:
-                        new_pos = 0
-                        hold = 0
-
+            # 2) Execute t−1 signal at today's close (open / flat / reverse / resize).
+            # Missing near/far CT-IV (e.g. no 1M bracket) → cannot open/resize; flatten.
+            target = int(pending_signal)
             opts: List[OptPos] = []
             n_if = 0.0
-            n3 = n6 = 0.0
-            if new_pos != 0 and not day_opts.empty:
-                opts, n3, n6 = self._size_legs(day_opts, S, new_pos, nav)
+            n_near = n_far = 0.0
+            hold = 0
+            executed = False
+            can_trade = math.isfinite(spread) and math.isfinite(iv_near_f) and math.isfinite(iv_far_f)
+            if target != 0 and not day_opts.empty and can_trade:
+                opts, n_near, n_far = self._size_legs(day_opts, S, target, nav)
                 if opts:
                     opt_delta_pts = sum(p.n * p.delta for p in opts)
                     n_if = -hedge_scale * opt_delta_pts
+                    hold = state.hold_days + 1 if state.position == target else 0
+                    executed = True
                 else:
-                    new_pos = 0
+                    target = 0
                     hold = 0
+            elif target == 0:
+                executed = state.position != 0  # flat after prior open = close trade
+                hold = 0
+            else:
+                # signalled open but no option book / missing CT bracket → stay flat
+                target = 0
+                hold = 0
 
-            if first_open_i is None and new_pos != 0:
+            if first_open_i is None and target != 0:
                 first_open_i = i
 
-            state = DayState(position=new_pos, hold_days=hold, opts=opts, n_if=n_if)
+            state = DayState(position=target, hold_days=hold, opts=opts, n_if=n_if)
+
+            # 3) Emit signal for next day from post-trade state + today's close.
+            # NaN spread (missing bracket) → keep position / no new entry via bands_ok=False.
+            signal_next = self._decide_signal(
+                target, hold, spread, eh_f, el_f, xh_f, xl_f
+            )
+            pending_signal = signal_next
+
+            if target != 0 or executed:
+                self._append_holdings(
+                    d, target, opts, n_if, fut_code, fut_ym, F, signal_next, executed or target != 0
+                )
 
             rows.append(
                 {
                     "d": d,
                     "nav": nav,
                     "ret": (actual / (nav - actual)) if i > 0 and (nav - actual) != 0 else 0.0,
-                    "spread": spread,
+                    "spread": spread if math.isfinite(spread) else float("nan"),
                     "z": zv if math.isfinite(zv) else None,
                     "enter_hi": eh_f if math.isfinite(eh_f) else None,
                     "enter_lo": el_f if math.isfinite(el_f) else None,
                     "exit_hi": xh_f if math.isfinite(xh_f) else None,
                     "exit_lo": xl_f if math.isfinite(xl_f) else None,
-                    "position": new_pos,
-                    "n3": n3,
-                    "n6": n6,
+                    "position": target,  # executed / held after t close
+                    "signal_next": signal_next,  # to be traded at t+1 close
+                    "n_near": n_near,
+                    "n_far": n_far,
                     "n_if": n_if,
                     "net_delta_pnl": net_delta,
                     "basis_pnl": basis,
@@ -555,8 +887,8 @@ class CalendarVolBacktestEngine:
                     "cum_basis": cum_basis,
                     "cum_delta": cum_delta,
                     "cum_resid": cum_resid,
-                    "iv_3m": float(ct.loc[d, "iv_3m"]),
-                    "iv_6m": float(ct.loc[d, "iv_6m"]),
+                    "iv_near": iv_near_f,
+                    "iv_far": iv_far_f,
                 }
             )
 
@@ -683,23 +1015,30 @@ class CalendarVolBacktestEngine:
             metrics[name]["start"] = str(nav_w.index[0]) if len(nav_w) else None
             metrics[name]["end"] = str(nav_w.index[-1]) if len(nav_w) else None
 
+        def _sos_pts(sp: Any) -> Optional[float]:
+            try:
+                x = float(sp)
+            except (TypeError, ValueError):
+                return None
+            return None if not math.isfinite(x) else round(x * 100.0, 4)
+
         step = max(1, len(perf) // 800)
+        nav_idx = list(range(0, len(perf), step))
+        if not nav_idx or nav_idx[-1] != len(perf) - 1:
+            nav_idx.append(len(perf) - 1)
+        # Include executed position-change days so UI markers land on the NAV/sos chart.
+        for i in range(1, len(perf)):
+            if int(perf[i]["position"]) != int(perf[i - 1]["position"]):
+                nav_idx.append(i)
+        nav_idx = sorted(set(nav_idx))
         nav_chart = [
             {
                 "d": perf[i]["d"],
                 "nav": round(perf[i]["nav"] / base_nav, 6),
-                "sos": round(perf[i]["spread"] * 100.0, 4),
+                "sos": _sos_pts(perf[i]["spread"]),
             }
-            for i in range(0, len(perf), step)
+            for i in nav_idx
         ]
-        if nav_chart and nav_chart[-1]["d"] != perf[-1]["d"]:
-            nav_chart.append(
-                {
-                    "d": perf[-1]["d"],
-                    "nav": round(perf[-1]["nav"] / base_nav, 6),
-                    "sos": round(perf[-1]["spread"] * 100.0, 4),
-                }
-            )
 
         dec_idx = list(range(0, len(perf), step))
         if dec_idx[-1] != len(perf) - 1:
@@ -723,6 +1062,12 @@ class CalendarVolBacktestEngine:
         sig_idx = list(range(0, len(rows), sig_step))
         if sig_idx[-1] != len(rows) - 1:
             sig_idx.append(len(rows) - 1)
+        # Keep every executed position change so chart markers are not lost to downsample.
+        for i in range(1, len(rows)):
+            if int(rows[i]["position"]) != int(rows[i - 1]["position"]):
+                sig_idx.append(i)
+        sig_idx = sorted(set(sig_idx))
+
         def _opt(v: Any) -> Optional[float]:
             if v is None:
                 return None
@@ -732,19 +1077,48 @@ class CalendarVolBacktestEngine:
                 return None
             return None if not math.isfinite(x) else round(x, 6)
 
+        # Presentation-only trade markers from executed position transitions (no strategy change).
+        trade_markers: List[Dict[str, Any]] = []
+        for i in range(1, len(rows)):
+            prev_p = int(rows[i - 1]["position"])
+            curr_p = int(rows[i]["position"])
+            if prev_p == curr_p:
+                continue
+            if curr_p == 1:
+                kind = "long"
+            elif curr_p == -1:
+                kind = "short"
+            else:
+                kind = "close"
+            trade_markers.append(
+                {
+                    "d": rows[i]["d"],
+                    "kind": kind,
+                    "spread": _opt(rows[i]["spread"]),
+                    "sos": _sos_pts(rows[i]["spread"]),
+                    "position": curr_p,
+                    "prev_position": prev_p,
+                }
+            )
+
         signal = {
             "dates": [rows[i]["d"] for i in sig_idx],
-            "spread": [round(rows[i]["spread"], 6) for i in sig_idx],
+            "spread": [_opt(rows[i]["spread"]) for i in sig_idx],
             "zscore": [None if rows[i]["z"] is None else round(float(rows[i]["z"]), 4) for i in sig_idx],
             "enter_hi": [_opt(rows[i]["enter_hi"]) for i in sig_idx],
             "enter_lo": [_opt(rows[i]["enter_lo"]) for i in sig_idx],
             "exit_hi": [_opt(rows[i]["exit_hi"]) for i in sig_idx],
             "exit_lo": [_opt(rows[i]["exit_lo"]) for i in sig_idx],
-            "position": [rows[i]["position"] for i in sig_idx],
+            "position": [rows[i]["position"] for i in sig_idx],  # executed at t close
+            "signal_next": [rows[i]["signal_next"] for i in sig_idx],  # for t+1 trade
+            "trade_markers": trade_markers,
             "enter_q": self.enter_q,
             "exit_lo_q": self.exit_lo_q,
             "exit_hi_q": self.exit_hi_q,
             "window": self.z_window,
+            "tenor_pair": self.tenor_pair,
+            "side_mode": self.side_mode,
+            "spread_mode": self.spread_mode,
             "perf_start": perf[0]["d"],
             "first_open": open_row["d"],
         }
@@ -767,21 +1141,52 @@ class CalendarVolBacktestEngine:
         max_vega_resid = max(self._vega_checks) if self._vega_checks else 0.0
         cfg = self.cfg
         opt_p, fut_p = cfg["product"], cfg["fut_root"]
+        nl, fl = self.near_label, self.far_label
+        side_label = {
+            "both": "Long+Short",
+            "long_only": "Long only (+ close)",
+            "short_only": "Short only (+ close)",
+        }[self.side_mode]
+        spread_label = {
+            "iv": "IV near−far",
+            "iv2": "IV² near−far",
+        }[self.spread_mode]
+        spread_formula = (
+            "IV_near² − IV_far²"
+            if self.spread_mode == "iv2"
+            else "IV_near − IV_far"
+        )
 
         return {
             "strategy_id": cfg["strategy_id"],
-            "strategy_name": cfg["strategy_name"],
+            "strategy_name": (
+                f"{cfg['strategy_name']} ({self.tenor_display}, {side_label}, {spread_label})"
+            ),
             "description": (
-                f"{cfg['index_name']} ({cfg['spot_code']}) 3M−6M ATM CT-IV spread mean-reversion. "
-                f"Signal: rolling quantiles of Spread on prior {self.z_window}d "
-                f"(enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
-                f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}; no look-ahead). "
+                f"{cfg['index_name']} ({cfg['spot_code']}) {self.tenor_display} ATM CT-IV "
+                f"spread ({spread_formula}) mean-reversion · side_mode={self.side_mode} · "
+                f"spread_mode={self.spread_mode}. "
+                f"Signal at t−1 close (rolling quantiles of Spread on prior {self.z_window}d; "
+                f"enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
+                f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}; no look-ahead); "
+                f"execute open/close/resize at t close. "
                 f"Dual ATM straddles ({opt_p}) + daily {fut_p} delta hedge. "
-                "Reverse max hold 20d. NAV/metrics start the day after first open. Costs: none (v1)."
+                "Reverse max hold 20d (short side). "
+                "NAV/metrics start the day after first open. Costs: none (v1)."
             ),
             "legs": [
-                {"id": f"{opt_p}_3M_straddle", "weight": -1.0, "product": opt_p, "tenor": "3M"},
-                {"id": f"{opt_p}_6M_straddle", "weight": 1.0, "product": opt_p, "tenor": "6M"},
+                {
+                    "id": f"{opt_p}_{nl}_straddle",
+                    "weight": -1.0,
+                    "product": opt_p,
+                    "tenor": nl,
+                },
+                {
+                    "id": f"{opt_p}_{fl}_straddle",
+                    "weight": 1.0,
+                    "product": opt_p,
+                    "tenor": fl,
+                },
                 {"id": f"{fut_p}_hedge", "weight": 0.0, "product": fut_p, "tenor": "front"},
             ],
             "params": {
@@ -790,10 +1195,20 @@ class CalendarVolBacktestEngine:
                 "fee_pct": 0.0,
                 "cost_rate": 0.0,
                 "rebalance": "daily close",
-                "signal_lag": "Z at t close → position from t close (PnL t→t+1)",
-                "price": f"option mid / {fut_p} close; CT ATM IV via SVI total-var ACT/365",
-                "sizing": f"dollar vega={VEGA_BUDGET_FRAC*100:.0f}% NAV per vol-pt on 6M; N_3M=-N_6M*ν6/ν3",
-                "ttm_targets": {"3M": T_3M, "6M": T_6M},
+                "signal_lag": "t-1 close signal → t close execution (PnL t→t+1 on held book)",
+                "price": (
+                    f"option close (option_iv.mid_price←S_DQ_CLOSE) / {fut_p} close; "
+                    "no settle fallback; CT ATM IV via SVI total-var ACT/365"
+                ),
+                "sizing": (
+                    f"dollar vega={VEGA_BUDGET_FRAC*100:.0f}% NAV per vol-pt on {fl}; "
+                    f"N_{nl}=-N_{fl}*ν{fl}/ν{nl}"
+                ),
+                "ttm_targets": {nl: self.t_near, fl: self.t_far},
+                "tenor_pair": self.tenor_pair,
+                "side_mode": self.side_mode,
+                "spread_mode": self.spread_mode,
+                "spread_formula": spread_formula,
                 "z_window": self.z_window,
                 "enter_q": self.enter_q,
                 "exit_lo_q": self.exit_lo_q,
@@ -805,6 +1220,7 @@ class CalendarVolBacktestEngine:
                 "m_fut": self.m_fut,
                 "first_open": open_row["d"],
                 "perf_start": perf[0]["d"],
+                "holdings_rows": len(self._holdings_rows),
             },
             "nav": nav_chart,
             "metrics": metrics,
@@ -836,23 +1252,80 @@ def run_calendar_vol(
     universe: str = "300",
     initial_nav: float = 100_000_000.0,
     z_window: int = DEFAULT_Z_WINDOW,
+    export_holdings: bool = False,
+    holdings_path: Optional[Path] = None,
+    tenor_pair: str = DEFAULT_TENOR_PAIR,
+    side_mode: str = DEFAULT_SIDE_MODE,
+    spread_mode: str = DEFAULT_SPREAD_MODE,
 ) -> Dict[str, Any]:
-    return CalendarVolBacktestEngine(
-        universe=universe, initial_nav=initial_nav, z_window=z_window
-    ).run()
+    eng = CalendarVolBacktestEngine(
+        universe=universe,
+        initial_nav=initial_nav,
+        z_window=z_window,
+        tenor_pair=tenor_pair,
+        side_mode=side_mode,
+        spread_mode=spread_mode,
+    )
+    payload = eng.run()
+    if export_holdings:
+        path = eng.write_holdings_excel(holdings_path)
+        payload = {**payload, "holdings_export": str(path)}
+    return payload
 
 
 def run_equity_3_6_calendar_vol_300(
     initial_nav: float = 100_000_000.0, z_window: int = DEFAULT_Z_WINDOW
 ) -> Dict[str, Any]:
-    return run_calendar_vol("300", initial_nav=initial_nav, z_window=z_window)
+    return run_calendar_vol(
+        "300",
+        initial_nav=initial_nav,
+        z_window=z_window,
+        tenor_pair=DEFAULT_TENOR_PAIR,
+        side_mode=DEFAULT_SIDE_MODE,
+        spread_mode=DEFAULT_SPREAD_MODE,
+    )
 
 
 def run_by_strategy_id(
     strategy_id: str,
     initial_nav: float = 100_000_000.0,
     z_window: int = DEFAULT_Z_WINDOW,
+    export_holdings: bool = False,
+    holdings_path: Optional[Path] = None,
+    tenor_pair: str = DEFAULT_TENOR_PAIR,
+    side_mode: str = DEFAULT_SIDE_MODE,
+    spread_mode: str = DEFAULT_SPREAD_MODE,
 ) -> Dict[str, Any]:
     if strategy_id not in STRATEGY_BY_ID:
         raise KeyError(strategy_id)
-    return run_calendar_vol(STRATEGY_BY_ID[strategy_id], initial_nav=initial_nav, z_window=z_window)
+    return run_calendar_vol(
+        STRATEGY_BY_ID[strategy_id],
+        initial_nav=initial_nav,
+        z_window=z_window,
+        export_holdings=export_holdings,
+        holdings_path=holdings_path,
+        tenor_pair=tenor_pair,
+        side_mode=side_mode,
+        spread_mode=spread_mode,
+    )
+
+
+def export_holdings_for_universe(
+    universe: str,
+    initial_nav: float = 100_000_000.0,
+    z_window: int = DEFAULT_Z_WINDOW,
+    path: Optional[Path] = None,
+    tenor_pair: str = DEFAULT_TENOR_PAIR,
+    side_mode: str = DEFAULT_SIDE_MODE,
+    spread_mode: str = DEFAULT_SPREAD_MODE,
+) -> Path:
+    eng = CalendarVolBacktestEngine(
+        universe=universe,
+        initial_nav=initial_nav,
+        z_window=z_window,
+        tenor_pair=tenor_pair,
+        side_mode=side_mode,
+        spread_mode=spread_mode,
+    )
+    eng.run()
+    return eng.write_holdings_excel(path)

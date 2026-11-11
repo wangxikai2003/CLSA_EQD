@@ -1,11 +1,15 @@
 """
 CRN finite-difference Greeks, digital call-spread smoothing, barrier shift.
+Term-structure Greeks delegated to vectorized_engine.compute_greeks_term_structure.
 """
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, Optional
 
 import numpy as np
+
+# Re-export for callers that expect greeks.compute_greeks_term_structure
+from engine.vectorized_engine import compute_greeks_term_structure  # noqa: F401
 
 
 def call_spread_smooth(

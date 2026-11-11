@@ -15,8 +15,12 @@ if str(BACKEND) not in sys.path:
 from engine.black76 import black76_greeks
 from engine.calendar_vol_strategy import (
     CalendarVolBacktestEngine,
+    SIDE_MODES,
+    SPREAD_MODES,
     T_3M,
+    TENOR_PAIRS,
     UNIVERSES,
+    compute_spread,
     rolling_quantile_bands,
     rolling_zscore,
     run_calendar_vol,
@@ -92,15 +96,25 @@ def test_black76_call_put_vega_equal():
 
 
 @pytest.mark.parametrize("universe", list(UNIVERSES.keys()))
-def test_full_backtest_invariants(universe):
-    payload = run_calendar_vol(universe, initial_nav=100_000_000.0, z_window=252)
+@pytest.mark.parametrize("tenor_pair", list(TENOR_PAIRS.keys()))
+def test_full_backtest_invariants(universe, tenor_pair):
+    payload = run_calendar_vol(
+        universe, initial_nav=100_000_000.0, z_window=252, tenor_pair=tenor_pair
+    )
     assert payload["strategy_id"] == UNIVERSES[universe]["strategy_id"]
+    assert payload["params"]["tenor_pair"] == tenor_pair
     assert payload["params"]["enter_q"] == 0.9
     assert payload["params"]["first_open"] < payload["params"]["perf_start"]
+    assert "t-1" in payload["params"]["signal_lag"]
+    assert "close" in payload["params"]["price"].lower()
+    assert "settle" in payload["params"]["price"].lower()  # "no settle fallback"
     sig = payload["signal"]
     assert "enter_hi" in sig and len(sig["enter_hi"]) == len(sig["dates"])
+    assert "signal_next" in sig and len(sig["signal_next"]) == len(sig["dates"])
     # some warm bands exist
     assert any(x is not None for x in sig["enter_hi"])
+    # t−1 signal → t execution: position[t] == signal_next[t−1] on the downsampled series
+    # (exact check on full engine rows via a short re-run below)
 
     c = payload["pnl_contribution"]
     total = c["total_pnl"]
@@ -126,3 +140,100 @@ def test_full_backtest_invariants(universe):
         + de["residual_pnl"][-1]
     )
     assert abs(s - total) < 1.0
+
+
+def test_compute_spread_iv_vs_iv2():
+    assert abs(compute_spread(0.20, 0.18, "iv") - 0.02) < 1e-12
+    assert abs(compute_spread(0.20, 0.18, "iv2") - (0.04 - 0.0324)) < 1e-12
+    assert set(SPREAD_MODES) == {"iv", "iv2"}
+
+
+def test_300_36_nav_regression():
+    """Locked 3M–6M CSI300 final NAV multiple (~1.198563) under default spread_mode=iv."""
+    payload = run_calendar_vol(
+        "300",
+        initial_nav=100_000_000.0,
+        z_window=252,
+        tenor_pair="3M-6M",
+        side_mode="both",
+        spread_mode="iv",
+    )
+    mult = float(payload["summary"]["final_nav_multiple"])
+    assert abs(mult - 1.198563) < 5e-4, mult
+    assert payload["params"]["spread_mode"] == "iv"
+
+
+def test_spread_mode_iv2_differs_from_iv():
+    """iv2 rebuilds Spread from CT-IV squares; NAV path differs from iv."""
+    iv = run_calendar_vol(
+        "300", tenor_pair="3M-6M", side_mode="both", spread_mode="iv"
+    )
+    iv2 = run_calendar_vol(
+        "300", tenor_pair="3M-6M", side_mode="both", spread_mode="iv2"
+    )
+    assert iv2["params"]["spread_mode"] == "iv2"
+    assert iv2["params"]["spread_formula"] == "IV_near² − IV_far²"
+    assert abs(float(iv["summary"]["final_nav_multiple"]) - 1.198563) < 5e-4
+    assert abs(float(iv2["summary"]["final_nav_multiple"]) - 1.266752) < 5e-4
+    # Chart series may downsample differently when position paths diverge.
+    assert any(
+        a is not None and b is not None and abs(a - b) > 1e-12
+        for a, b in zip(iv["signal"]["spread"], iv2["signal"]["spread"])
+    ) or float(iv2["summary"]["final_nav_multiple"]) != float(
+        iv["summary"]["final_nav_multiple"]
+    )
+
+
+def test_side_mode_filters_positions():
+    """long_only never holds −1; short_only never holds +1; both has both sides."""
+    both = run_calendar_vol("300", tenor_pair="3M-6M", side_mode="both")
+    long_o = run_calendar_vol("300", tenor_pair="3M-6M", side_mode="long_only")
+    short_o = run_calendar_vol("300", tenor_pair="3M-6M", side_mode="short_only")
+    assert both["params"]["side_mode"] == "both"
+    assert set(SIDE_MODES) == {"both", "long_only", "short_only"}
+    assert any(p == 1 for p in both["signal"]["position"])
+    assert any(p == -1 for p in both["signal"]["position"])
+    assert any(p == 1 for p in long_o["signal"]["position"])
+    assert all(p != -1 for p in long_o["signal"]["position"])
+    assert any(p == -1 for p in short_o["signal"]["position"])
+    assert all(p != 1 for p in short_o["signal"]["position"])
+    kinds_l = {m["kind"] for m in long_o["signal"].get("trade_markers") or []}
+    kinds_s = {m["kind"] for m in short_o["signal"].get("trade_markers") or []}
+    assert "short" not in kinds_l
+    assert "long" not in kinds_s
+    assert "close" in kinds_l or 0 in long_o["signal"]["position"]
+    assert "close" in kinds_s or 0 in short_o["signal"]["position"]
+    assert float(long_o["summary"]["final_nav_multiple"]) != float(
+        both["summary"]["final_nav_multiple"]
+    ) or float(short_o["summary"]["final_nav_multiple"]) != float(
+        both["summary"]["final_nav_multiple"]
+    )
+
+
+def test_signal_lag_t_minus_1_execution():
+    """Signal emitted on day t-1 must equal position executed on day t."""
+    eng = CalendarVolBacktestEngine(universe="300", z_window=252)
+    # Monkey-patch pack to capture raw rows via a thin wrapper
+    rows_box: list = []
+    orig_pack = eng._pack_payload
+
+    def _capture(rows, first_open_i):
+        rows_box.append(rows)
+        return orig_pack(rows, first_open_i)
+
+    eng._pack_payload = _capture  # type: ignore[method-assign]
+    eng.run()
+    rows = rows_box[0]
+    assert rows[0]["position"] == 0  # day-0 observe only
+    for i in range(1, len(rows)):
+        assert rows[i]["position"] == rows[i - 1]["signal_next"]
+
+
+def test_holdings_excel_export(tmp_path):
+    from engine.calendar_vol_strategy import export_holdings_for_universe
+
+    path = export_holdings_for_universe("300", path=tmp_path / "holdings_300.xlsx")
+    assert path.exists() and path.stat().st_size > 1000
+    df = pd.read_excel(path, sheet_name="holdings")
+    assert {"trade_date", "wind_code", "direction", "qty", "price"}.issubset(df.columns)
+    assert len(df) > 0

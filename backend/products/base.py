@@ -62,6 +62,7 @@ class BaseStructuredProduct(ABC):
         barrier_shift_bps: float = 0.0,
         spread_smoothing_width: float = 0.0,
         apply_desk_shift: bool = False,
+        force_ki: Optional[bool] = None,
         **kwargs: Any,
     ):
         self.tenor = float(tenor)
@@ -75,11 +76,21 @@ class BaseStructuredProduct(ABC):
         self.barrier_shift_bps = float(barrier_shift_bps)
         self.spread_smoothing_width = float(spread_smoothing_width)
         self.apply_desk_shift = bool(apply_desk_shift)
+        # None = path-natural KI; False = pre-KI regime; True = post-KI regime
+        self.force_ki = force_ki
         self.extra = kwargs
         if obs_dates is None:
             self.obs_dates = default_obs_dates(self.tenor, obs_freq)
         else:
             self.obs_dates = np.asarray(obs_dates, dtype=float)
+
+    def resolve_ki_flag(self, natural_ki: np.ndarray) -> np.ndarray:
+        """Apply force_ki regime override for Greeks / scenario pricing."""
+        if self.force_ki is None:
+            return np.asarray(natural_ki, dtype=bool)
+        if self.force_ki:
+            return np.ones(len(natural_ki), dtype=bool)
+        return np.zeros(len(natural_ki), dtype=bool)
 
     def _shift_frac(self) -> float:
         return abs(self.barrier_shift_bps) / 10000.0

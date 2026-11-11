@@ -55,9 +55,10 @@ class SnowballProduct(BaseStructuredProduct):
         # KI american: any day below ki; european/axki: only at maturity obs
         if self.ki_style == "american":
             soft_ki = self.soft_below(perf[:, 1:], ki_h)
-            ki_flag = soft_ki.max(axis=1) >= 0.5
+            natural_ki = soft_ki.max(axis=1) >= 0.5
         else:
-            ki_flag = self.soft_below(perf[:, -1], ki_h) >= 0.5
+            natural_ki = self.soft_below(perf[:, -1], ki_h) >= 0.5
+        ki_flag = self.resolve_ki_flag(natural_ki)
 
         ko_date = np.full(n_paths, -1, dtype=int)
         pv = np.zeros(n_paths)

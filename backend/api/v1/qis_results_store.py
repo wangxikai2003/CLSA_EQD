@@ -5,7 +5,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 ROOT = Path(__file__).resolve().parents[3]  # CLSA_EQD
 REPO = ROOT.parent
@@ -15,15 +15,22 @@ _DB_CANDIDATES = [
     Path("/app/data/qis_results.sqlite"),
 ]
 
+_DEFAULT_TENOR = "3M-6M"
+_DEFAULT_SIDE = "both"
+_DEFAULT_SPREAD = "iv"
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS qis_backtest_cache (
   strategy_id TEXT NOT NULL,
   z_window INTEGER NOT NULL,
   initial_nav REAL NOT NULL,
+  tenor_pair TEXT NOT NULL DEFAULT '3M-6M',
+  side_mode TEXT NOT NULL DEFAULT 'both',
+  spread_mode TEXT NOT NULL DEFAULT 'iv',
   source_key TEXT NOT NULL,
   payload TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (strategy_id, z_window, initial_nav)
+  PRIMARY KEY (strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode)
 );
 CREATE INDEX IF NOT EXISTS idx_qis_cache_src ON qis_backtest_cache(source_key);
 """
@@ -40,12 +47,107 @@ def results_db_path(create_parent: bool = True) -> Path:
     return p
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Evolve PK: add tenor_pair → side_mode → spread_mode when missing."""
+    cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(qis_backtest_cache)").fetchall()
+    }
+    if not cols:
+        return
+    if "tenor_pair" not in cols:
+        conn.executescript(
+            """
+            CREATE TABLE qis_backtest_cache_v2 (
+              strategy_id TEXT NOT NULL,
+              z_window INTEGER NOT NULL,
+              initial_nav REAL NOT NULL,
+              tenor_pair TEXT NOT NULL DEFAULT '3M-6M',
+              source_key TEXT NOT NULL,
+              payload TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (strategy_id, z_window, initial_nav, tenor_pair)
+            );
+            INSERT INTO qis_backtest_cache_v2
+              (strategy_id, z_window, initial_nav, tenor_pair, source_key, payload, updated_at)
+            SELECT strategy_id, z_window, initial_nav, '3M-6M', source_key, payload, updated_at
+              FROM qis_backtest_cache;
+            DROP TABLE qis_backtest_cache;
+            ALTER TABLE qis_backtest_cache_v2 RENAME TO qis_backtest_cache;
+            CREATE INDEX IF NOT EXISTS idx_qis_cache_src ON qis_backtest_cache(source_key);
+            """
+        )
+        conn.commit()
+        cols = {
+            r[1]
+            for r in conn.execute("PRAGMA table_info(qis_backtest_cache)").fetchall()
+        }
+    if "side_mode" not in cols:
+        conn.executescript(
+            """
+            CREATE TABLE qis_backtest_cache_v3 (
+              strategy_id TEXT NOT NULL,
+              z_window INTEGER NOT NULL,
+              initial_nav REAL NOT NULL,
+              tenor_pair TEXT NOT NULL DEFAULT '3M-6M',
+              side_mode TEXT NOT NULL DEFAULT 'both',
+              source_key TEXT NOT NULL,
+              payload TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (strategy_id, z_window, initial_nav, tenor_pair, side_mode)
+            );
+            INSERT INTO qis_backtest_cache_v3
+              (strategy_id, z_window, initial_nav, tenor_pair, side_mode,
+               source_key, payload, updated_at)
+            SELECT strategy_id, z_window, initial_nav, tenor_pair, 'both',
+                   source_key, payload, updated_at
+              FROM qis_backtest_cache;
+            DROP TABLE qis_backtest_cache;
+            ALTER TABLE qis_backtest_cache_v3 RENAME TO qis_backtest_cache;
+            CREATE INDEX IF NOT EXISTS idx_qis_cache_src ON qis_backtest_cache(source_key);
+            """
+        )
+        conn.commit()
+        cols = {
+            r[1]
+            for r in conn.execute("PRAGMA table_info(qis_backtest_cache)").fetchall()
+        }
+    if "spread_mode" in cols:
+        return
+    conn.executescript(
+        """
+        CREATE TABLE qis_backtest_cache_v4 (
+          strategy_id TEXT NOT NULL,
+          z_window INTEGER NOT NULL,
+          initial_nav REAL NOT NULL,
+          tenor_pair TEXT NOT NULL DEFAULT '3M-6M',
+          side_mode TEXT NOT NULL DEFAULT 'both',
+          spread_mode TEXT NOT NULL DEFAULT 'iv',
+          source_key TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode)
+        );
+        INSERT INTO qis_backtest_cache_v4
+          (strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode,
+           source_key, payload, updated_at)
+        SELECT strategy_id, z_window, initial_nav, tenor_pair, side_mode, 'iv',
+               source_key, payload, updated_at
+          FROM qis_backtest_cache;
+        DROP TABLE qis_backtest_cache;
+        ALTER TABLE qis_backtest_cache_v4 RENAME TO qis_backtest_cache;
+        CREATE INDEX IF NOT EXISTS idx_qis_cache_src ON qis_backtest_cache(source_key);
+        """
+    )
+    conn.commit()
+
+
 def connect(create: bool = True) -> sqlite3.Connection:
     path = results_db_path(create_parent=create)
     conn = sqlite3.connect(str(path))
     if create:
         conn.executescript(_SCHEMA)
         conn.commit()
+        _migrate(conn)
     return conn
 
 
@@ -61,6 +163,9 @@ def get_cached(
     z_window: int,
     initial_nav: float,
     src_key: str,
+    tenor_pair: str = _DEFAULT_TENOR,
+    side_mode: str = _DEFAULT_SIDE,
+    spread_mode: str = _DEFAULT_SPREAD,
 ) -> Optional[Dict[str, Any]]:
     path = results_db_path(create_parent=False)
     if not path.exists():
@@ -71,8 +176,16 @@ def get_cached(
             """
             SELECT payload, source_key FROM qis_backtest_cache
              WHERE strategy_id=? AND z_window=? AND initial_nav=?
+               AND tenor_pair=? AND side_mode=? AND spread_mode=?
             """,
-            (strategy_id, int(z_window), float(initial_nav)),
+            (
+                strategy_id,
+                int(z_window),
+                float(initial_nav),
+                str(tenor_pair),
+                str(side_mode),
+                str(spread_mode),
+            ),
         ).fetchone()
         if not row:
             return None
@@ -80,7 +193,14 @@ def get_cached(
         if stored_src != src_key:
             return None
         data = json.loads(payload_s)
-        data["_cache"] = {"hit": True, "source_key": stored_src, "db": str(path)}
+        data["_cache"] = {
+            "hit": True,
+            "source_key": stored_src,
+            "db": str(path),
+            "tenor_pair": tenor_pair,
+            "side_mode": side_mode,
+            "spread_mode": spread_mode,
+        }
         return data
     finally:
         conn.close()
@@ -92,6 +212,9 @@ def put_cached(
     initial_nav: float,
     src_key: str,
     payload: Dict[str, Any],
+    tenor_pair: str = _DEFAULT_TENOR,
+    side_mode: str = _DEFAULT_SIDE,
+    spread_mode: str = _DEFAULT_SPREAD,
 ) -> Path:
     path = results_db_path(create_parent=True)
     conn = connect(create=True)
@@ -100,9 +223,11 @@ def put_cached(
         conn.execute(
             """
             INSERT INTO qis_backtest_cache
-              (strategy_id, z_window, initial_nav, source_key, payload, updated_at)
-            VALUES (?,?,?,?,?,?)
-            ON CONFLICT(strategy_id, z_window, initial_nav) DO UPDATE SET
+              (strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode,
+               source_key, payload, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode)
+            DO UPDATE SET
               source_key=excluded.source_key,
               payload=excluded.payload,
               updated_at=excluded.updated_at
@@ -111,6 +236,9 @@ def put_cached(
                 strategy_id,
                 int(z_window),
                 float(initial_nav),
+                str(tenor_pair),
+                str(side_mode),
+                str(spread_mode),
                 src_key,
                 json.dumps(clean, ensure_ascii=False),
                 datetime.now(timezone.utc).isoformat(),
@@ -130,10 +258,10 @@ def list_cached() -> list:
     try:
         rows = conn.execute(
             """
-            SELECT strategy_id, z_window, initial_nav, source_key, updated_at,
-                   length(payload) AS bytes
+            SELECT strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode,
+                   source_key, updated_at, length(payload) AS bytes
               FROM qis_backtest_cache
-             ORDER BY strategy_id, z_window
+             ORDER BY strategy_id, tenor_pair, side_mode, spread_mode, z_window
             """
         ).fetchall()
         return [
@@ -141,9 +269,12 @@ def list_cached() -> list:
                 "strategy_id": r[0],
                 "z_window": r[1],
                 "initial_nav": r[2],
-                "source_key": r[3],
-                "updated_at": r[4],
-                "bytes": r[5],
+                "tenor_pair": r[3],
+                "side_mode": r[4],
+                "spread_mode": r[5],
+                "source_key": r[6],
+                "updated_at": r[7],
+                "bytes": r[8],
             }
             for r in rows
         ]
