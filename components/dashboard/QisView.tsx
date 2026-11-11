@@ -9,6 +9,7 @@ import {
   qisHoldingsExcelUrl,
   QisBacktestResponse,
   QisSideMode,
+  QisSignalMode,
   QisSpreadMode,
   QisStrategyInfo,
   QisTenorPair,
@@ -29,6 +30,11 @@ const CAL_VOL_SIDES: { key: QisSideMode; label: string }[] = [
 const CAL_VOL_SPREADS: { key: QisSpreadMode; label: string }[] = [
   { key: 'iv', label: 'IV spread' },
   { key: 'iv2', label: 'IV² spread' },
+];
+
+const CAL_VOL_SIGNALS: { key: QisSignalMode; label: string }[] = [
+  { key: 'quantile', label: 'Quantile' },
+  { key: 'garch_z', label: 'GARCH-z' },
 ];
 
 const WINDOW_LABELS: { key: keyof QisBacktestResponse['metrics']; label: string }[] = [
@@ -105,6 +111,7 @@ function markersFromPosition(
 function normalizeTradeMarkers(
   raw: QisTradeMarker[] | undefined,
   fallback: { d: string; y: number; kind: MarkerKind }[],
+  levelScale = 100,
 ): { d: string; y: number; kind: MarkerKind }[] {
   if (!raw?.length) return fallback;
   const out: { d: string; y: number; kind: MarkerKind }[] = [];
@@ -120,7 +127,7 @@ function normalizeTradeMarkers(
       m.sos != null && Number.isFinite(m.sos)
         ? m.sos
         : m.spread != null && Number.isFinite(m.spread)
-          ? m.spread * 100
+          ? m.spread * levelScale
           : null;
     if (y == null) continue;
     out.push({ d: m.d, y, kind });
@@ -147,6 +154,7 @@ const QisView: React.FC = () => {
   const [tenorPair, setTenorPair] = useState<QisTenorPair>('3M-6M');
   const [sideMode, setSideMode] = useState<QisSideMode>('both');
   const [spreadMode, setSpreadMode] = useState<QisSpreadMode>('iv');
+  const [signalMode, setSignalMode] = useState<QisSignalMode>('quantile');
   const [data, setData] = useState<QisBacktestResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadStatus, setLoadStatus] = useState('Running backtest…');
@@ -176,6 +184,7 @@ const QisView: React.FC = () => {
       family === 'calendar_vol' ? tenorPair : '3M-6M',
       family === 'calendar_vol' ? sideMode : 'both',
       family === 'calendar_vol' ? spreadMode : 'iv',
+      family === 'calendar_vol' ? signalMode : 'quantile',
     )
       .then((d) => {
         if (signal?.aborted) return;
@@ -218,7 +227,19 @@ const QisView: React.FC = () => {
     load(false, ac.signal);
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [strategyId, tenorPair, sideMode, spreadMode]);
+  }, [strategyId, tenorPair, sideMode, spreadMode, signalMode]);
+
+  const levelScale = useMemo(() => {
+    const fromSignal = data?.signal?.level_scale;
+    if (typeof fromSignal === 'number' && Number.isFinite(fromSignal)) return fromSignal;
+    const fromParams = data?.params?.level_scale;
+    if (typeof fromParams === 'number' && Number.isFinite(fromParams)) return fromParams;
+    const mode =
+      (typeof data?.params?.signal_mode === 'string'
+        ? data.params.signal_mode
+        : signalMode) as QisSignalMode;
+    return mode === 'garch_z' ? 1 : 100;
+  }, [data, signalMode]);
 
   const decompChart = useMemo(() => {
     const d = data?.pnl_decomposition;
@@ -239,10 +260,10 @@ const QisView: React.FC = () => {
     if (!s?.dates?.length || !s.position?.length) return [] as { d: string; y: number; kind: MarkerKind }[];
     const fallback = markersFromPosition(s.dates, s.position, (i) => {
       const sp = s.spread[i];
-      return sp == null || Number.isNaN(sp) ? null : sp * 100;
+      return sp == null || Number.isNaN(sp) ? null : sp * levelScale;
     });
-    return normalizeTradeMarkers(s.trade_markers, fallback);
-  }, [data]);
+    return normalizeTradeMarkers(s.trade_markers, fallback, levelScale);
+  }, [data, levelScale]);
 
   const byKind = useMemo(() => markerMap(tradeMarkers), [tradeMarkers]);
 
@@ -252,22 +273,22 @@ const QisView: React.FC = () => {
     const hasBands = Array.isArray(s.enter_hi) && s.enter_hi.length === s.dates.length;
     const kindByD = byKind;
     return s.dates.map((dt, i) => {
-      const spreadPts = (s.spread[i] ?? 0) * 100;
+      const spreadPts = (s.spread[i] ?? 0) * levelScale;
       const kind = kindByD.get(dt);
       return {
         d: dt,
         spread_pts: spreadPts,
-        enter_hi: hasBands && s.enter_hi![i] != null ? (s.enter_hi![i] as number) * 100 : null,
-        enter_lo: hasBands && s.enter_lo![i] != null ? (s.enter_lo![i] as number) * 100 : null,
-        exit_hi: hasBands && s.exit_hi![i] != null ? (s.exit_hi![i] as number) * 100 : null,
-        exit_lo: hasBands && s.exit_lo![i] != null ? (s.exit_lo![i] as number) * 100 : null,
+        enter_hi: hasBands && s.enter_hi![i] != null ? (s.enter_hi![i] as number) * levelScale : null,
+        enter_lo: hasBands && s.enter_lo![i] != null ? (s.enter_lo![i] as number) * levelScale : null,
+        exit_hi: hasBands && s.exit_hi![i] != null ? (s.exit_hi![i] as number) * levelScale : null,
+        exit_lo: hasBands && s.exit_lo![i] != null ? (s.exit_lo![i] as number) * levelScale : null,
         position: s.position[i],
         long_pt: kind === 'long' ? spreadPts : null,
         short_pt: kind === 'short' ? spreadPts : null,
         close_pt: kind === 'close' ? spreadPts : null,
       };
     });
-  }, [data, byKind]);
+  }, [data, byKind, levelScale]);
 
   const navChart = useMemo(() => {
     if (!data?.nav?.length) return [];
@@ -291,13 +312,22 @@ const QisView: React.FC = () => {
     (typeof data?.params?.side_mode === 'string' ? data.params.side_mode : sideMode) as QisSideMode;
   const activeSpread =
     (typeof data?.params?.spread_mode === 'string' ? data.params.spread_mode : spreadMode) as QisSpreadMode;
+  const activeSignal =
+    (typeof data?.params?.signal_mode === 'string'
+      ? data.params.signal_mode
+      : typeof data?.signal?.signal_mode === 'string'
+        ? data.signal.signal_mode
+        : signalMode) as QisSignalMode;
   const tenorLabel = CAL_VOL_TENORS.find((t) => t.key === activeTenor)?.label ?? activeTenor;
   const sideLabel = CAL_VOL_SIDES.find((s) => s.key === activeSide)?.label ?? activeSide;
   const spreadLabel = CAL_VOL_SPREADS.find((s) => s.key === activeSpread)?.label ?? activeSpread;
+  const signalLabel = CAL_VOL_SIGNALS.find((s) => s.key === activeSignal)?.label ?? activeSignal;
   const sosLabel = isCalVol
-    ? activeSpread === 'iv2'
-      ? `${tenorLabel} IV² spread (var ×100)`
-      : `${tenorLabel} IV spread (vol pts)`
+    ? activeSignal === 'garch_z'
+      ? `${tenorLabel} GARCH-z`
+      : activeSpread === 'iv2'
+        ? `${tenorLabel} IV² spread (var ×100)`
+        : `${tenorLabel} IV spread (vol pts)`
     : 'SoS (pts)';
 
   const enterPct = data?.signal?.enter_q != null ? `${((1 - data.signal.enter_q) * 100).toFixed(0)}/${(data.signal.enter_q * 100).toFixed(0)}` : '10/90';
@@ -324,6 +354,10 @@ const QisView: React.FC = () => {
       activeSpread === 'iv2'
         ? '先 CT-IV 插值得到近/远端 IV，再平方后相减（IV² spread / variance diff）。'
         : '先 CT-IV 插值得到近/远端 IV，再做水平差（IV spread）。';
+    const signalModeNote =
+      activeSignal === 'garch_z'
+        ? '信号层：对 ΔSpread 做 expanding GARCH(1,1)-t（预热 504 日、每 5 日重估参数，仅用截至当日历史）得到 garch_z；再对 garch_z 做同样的滚动分位入场/出场（无未来数据；t−1 信号 → t close 成交）。'
+        : '信号层：直接对 Spread 做滚动分位入场/出场（无未来数据；t−1 信号 → t close 成交）。';
 
     let sideBlock: { title: string; body: string };
     if (activeSide === 'long_only') {
@@ -363,10 +397,11 @@ const QisView: React.FC = () => {
       zWin,
       spreadFormula,
       spreadModeNote,
+      signalModeNote,
       sideBlock,
       universeLine: uniMap[universe] ?? universe,
     };
-  }, [isCalVol, activeTenor, activeSide, activeSpread, tenorLabel, universe, data?.params?.z_window]);
+  }, [isCalVol, activeTenor, activeSide, activeSpread, activeSignal, tenorLabel, universe, data?.params?.z_window]);
 
   return (
     <div className="space-y-4">
@@ -377,8 +412,8 @@ const QisView: React.FC = () => {
             Systematic Trading Strategies
           </h2>
           <p className="text-[11px] text-slate-500 max-w-3xl mt-1">
-            QIS：期货 carry + Equity Calendar Vol。选指数 / tenor / side / spread 后，下方策略卡会同步中文口径说明（数据、信号、腿向、PnL 希腊）。
-            缓存 <code className="font-mono">qis_results.sqlite</code>（tenor × side × spread 分键）。
+            QIS：期货 carry + Equity Calendar Vol。选指数 / tenor / side / spread / signal 后，下方策略卡会同步中文口径说明（数据、信号、腿向、PnL 希腊）。
+            缓存 <code className="font-mono">qis_results.sqlite</code>（tenor × side × spread × signal 分键）。
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -456,6 +491,22 @@ const QisView: React.FC = () => {
                   </button>
                 ))}
               </div>
+              <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                {CAL_VOL_SIGNALS.map((s) => (
+                  <button
+                    key={s.key}
+                    type="button"
+                    onClick={() => setSignalMode(s.key)}
+                    className={`px-3 py-1.5 text-xs font-bold ${
+                      signalMode === s.key
+                        ? 'bg-[#000066] text-white'
+                        : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
             </>
           )}
           <button
@@ -467,7 +518,7 @@ const QisView: React.FC = () => {
           </button>
           {isCalVol && (
             <a
-              href={qisHoldingsExcelUrl(strategyId, 252, tenorPair, sideMode, spreadMode)}
+              href={qisHoldingsExcelUrl(strategyId, 252, tenorPair, sideMode, spreadMode, signalMode)}
               className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-md border border-slate-200 bg-white text-[#000066] hover:bg-slate-50"
               title="Download concrete holdings Excel (t−1 signal / t close)"
             >
@@ -498,7 +549,7 @@ const QisView: React.FC = () => {
                 {data.summary.first_open ? ` · first open ${data.summary.first_open}` : ''}
                 {typeof data.params.z_window === 'number' ? ` · window=${data.params.z_window}d` : ''}
                 {isCalVol
-                  ? ` · tenor=${tenorLabel} · side=${sideLabel} · spread=${spreadLabel}`
+                  ? ` · tenor=${tenorLabel} · side=${sideLabel} · spread=${spreadLabel} · signal=${signalLabel}`
                   : ''}
               </div>
             </div>
@@ -525,7 +576,8 @@ const QisView: React.FC = () => {
                     {calVolDocs.tFar}（{calVolDocs.far}）。
                     {calVolDocs.spreadModeNote}
                     公式 <code className="font-mono text-[10px]">{calVolDocs.spreadFormula}</code>。
-                    滚动分位窗 {calVolDocs.zWin} 日（不含当日/未来）：入场 {enterPct}（Spread &gt; hi → Normal/+1；
+                    {calVolDocs.signalModeNote}
+                    滚动分位窗 {calVolDocs.zWin} 日（不含当日/未来）：入场 {enterPct}（level &gt; hi → Normal/+1；
                     &lt; lo → Reverse/−1）；出场落入 {exitPct}% 带平仓。Reverse max hold = 20 交易日。
                   </p>
                 </div>
@@ -543,6 +595,7 @@ const QisView: React.FC = () => {
                     tenor_pair=<code className="font-mono text-[10px]">{activeTenor}</code> ·
                     side_mode=<code className="font-mono text-[10px]">{activeSide}</code> ·
                     spread_mode=<code className="font-mono text-[10px]">{activeSpread}</code> ·
+                    signal_mode=<code className="font-mono text-[10px]">{activeSignal}</code> ·
                     z_window={calVolDocs.zWin}。
                     远端美元 Vega 预算 = 1% NAV / vol-pt；
                     N_{calVolDocs.near}=−N_{calVolDocs.far}·ν{calVolDocs.far}/ν{calVolDocs.near}（日频，净美元 Vega≈0）。
@@ -801,7 +854,7 @@ const QisView: React.FC = () => {
                         <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} unit="pt" />
                         <Tooltip contentStyle={{ fontSize: 11 }} />
                         <Legend wrapperStyle={{ fontSize: 10 }} />
-                        <Line type="monotone" dataKey="spread_pts" name="Spread (vol pts)" stroke={CHART.spread} dot={false} strokeWidth={1.5} />
+                        <Line type="monotone" dataKey="spread_pts" name={sosLabel} stroke={CHART.spread} dot={false} strokeWidth={1.5} />
                         <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
                         <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
                         <Line type="monotone" dataKey="exit_hi" name={`Exit hi`} stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />

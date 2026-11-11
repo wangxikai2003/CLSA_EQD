@@ -65,6 +65,12 @@ DEFAULT_SIDE_MODE = "both"
 SPREAD_MODES = ("iv", "iv2")
 DEFAULT_SPREAD_MODE = "iv"
 
+# Signal operator on the chosen spread series.
+# quantile = rolling 10/90 enter & 40/60 exit on raw Spread;
+# garch_z = expanding GARCH(1,1)-t on ΔSpread → z, then same rolling quantiles on z.
+SIGNAL_MODES = ("quantile", "garch_z")
+DEFAULT_SIGNAL_MODE = "quantile"
+
 # option product (DB) → index / futures multipliers
 UNIVERSES: Dict[str, Dict[str, Any]] = {
     "50": {
@@ -155,6 +161,24 @@ def normalize_spread_mode(spread_mode: str) -> str:
     return key
 
 
+def normalize_signal_mode(signal_mode: str) -> str:
+    key = str(signal_mode).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "q": "quantile",
+        "bands": "quantile",
+        "rolling": "quantile",
+        "rolling_q": "quantile",
+        "garch": "garch_z",
+        "gz": "garch_z",
+        "g_z": "garch_z",
+        "z": "garch_z",
+    }
+    key = aliases.get(key, key)
+    if key not in SIGNAL_MODES:
+        raise ValueError(f"unknown signal_mode {signal_mode!r}; choose {list(SIGNAL_MODES)}")
+    return key
+
+
 def compute_spread(iv_near: float, iv_far: float, spread_mode: str = DEFAULT_SPREAD_MODE) -> float:
     """Spread after CT-IV: iv → near−far; iv2 → near²−far²."""
     mode = normalize_spread_mode(spread_mode)
@@ -168,11 +192,13 @@ def default_holdings_export_path(
     tenor_pair: str = DEFAULT_TENOR_PAIR,
     side_mode: str = DEFAULT_SIDE_MODE,
     spread_mode: str = DEFAULT_SPREAD_MODE,
+    signal_mode: str = DEFAULT_SIGNAL_MODE,
 ) -> Path:
     cfg = UNIVERSES[universe]
     tp = normalize_tenor_pair(tenor_pair)
     sm = normalize_side_mode(side_mode)
     spm = normalize_spread_mode(spread_mode)
+    sig = normalize_signal_mode(signal_mode)
     parts = [cfg["strategy_id"]]
     if tp != DEFAULT_TENOR_PAIR:
         parts.append(tp.lower().replace("-", ""))
@@ -180,6 +206,8 @@ def default_holdings_export_path(
         parts.append(sm)
     if spm != DEFAULT_SPREAD_MODE:
         parts.append(spm)
+    if sig != DEFAULT_SIGNAL_MODE:
+        parts.append(sig)
     return EXPORTS_DIR / f"{'_'.join(parts)}_holdings.xlsx"
 
 
@@ -306,6 +334,7 @@ class CalendarVolBacktestEngine:
         tenor_pair: str = DEFAULT_TENOR_PAIR,
         side_mode: str = DEFAULT_SIDE_MODE,
         spread_mode: str = DEFAULT_SPREAD_MODE,
+        signal_mode: str = DEFAULT_SIGNAL_MODE,
     ):
         if universe not in UNIVERSES:
             raise ValueError(f"unknown universe {universe}; choose {list(UNIVERSES)}")
@@ -320,6 +349,9 @@ class CalendarVolBacktestEngine:
         self.tenor_display = str(self.tenor_cfg["display"])
         self.side_mode = normalize_side_mode(side_mode)
         self.spread_mode = normalize_spread_mode(spread_mode)
+        self.signal_mode = normalize_signal_mode(signal_mode)
+        # Chart display: vol pts (*100) for raw spread; unit z (*1) for garch_z.
+        self.level_scale = 1.0 if self.signal_mode == "garch_z" else 100.0
         self.initial_nav = float(initial_nav)
         self.z_window = int(z_window)
         self.enter_q = float(enter_q)
@@ -720,20 +752,32 @@ class CalendarVolBacktestEngine:
             ct_ref = self._daily_ct_iv(svi, t_near=T_3M, t_far=T_6M)
             ct = ct.reindex(ct_ref.index)
         z = rolling_zscore(ct["spread"], self.z_window)
+        if self.signal_mode == "garch_z":
+            from engine.garch_signal import GARCH_WARM, expanding_garch_z
+
+            signal_level, _sigma = expanding_garch_z(ct["spread"])
+            min_hist = GARCH_WARM + self.z_window + 30
+        else:
+            signal_level = ct["spread"].astype(float)
+            min_hist = self.z_window + 30
         bands = rolling_quantile_bands(
-            ct["spread"],
+            signal_level,
             self.z_window,
             enter_q=self.enter_q,
             exit_lo_q=self.exit_lo_q,
             exit_hi_q=self.exit_hi_q,
         )
-        ct = ct.join(z.rename("z"), how="left").join(bands, how="left")
+        ct = (
+            ct.join(z.rename("z"), how="left")
+            .join(signal_level.rename("signal_level"), how="left")
+            .join(bands, how="left")
+        )
 
         dates = sorted(set(ct.index) & set(spot.index) & set(front.index) & set(opt["trade_date"]))
-        if len(dates) < self.z_window + 30:
+        if len(dates) < min_hist:
             raise RuntimeError(
-                f"Insufficient aligned history for {self.universe}/{self.tenor_pair}: "
-                f"{len(dates)} days (need >{self.z_window + 30})"
+                f"Insufficient aligned history for {self.universe}/{self.tenor_pair}"
+                f"/{self.signal_mode}: {len(dates)} days (need >{min_hist})"
             )
 
         opt_by_day = {td: g for td, g in opt.groupby("trade_date")}
@@ -754,6 +798,8 @@ class CalendarVolBacktestEngine:
             day_opts = opt_by_day.get(d, pd.DataFrame())
             sp_raw = ct.loc[d, "spread"]
             spread = float(sp_raw) if pd.notna(sp_raw) else float("nan")
+            sl_raw = ct.loc[d, "signal_level"]
+            signal_level_f = float(sl_raw) if pd.notna(sl_raw) else float("nan")
             zv = ct.loc[d, "z"]
             zv = float(zv) if pd.notna(zv) else float("nan")
             eh = ct.loc[d, "enter_hi"]
@@ -847,9 +893,10 @@ class CalendarVolBacktestEngine:
             state = DayState(position=target, hold_days=hold, opts=opts, n_if=n_if)
 
             # 3) Emit signal for next day from post-trade state + today's close.
-            # NaN spread (missing bracket) → keep position / no new entry via bands_ok=False.
+            # Decision uses signal_level (raw Spread or garch_z) + its rolling bands.
+            # NaN level → keep position / no new entry via bands_ok=False.
             signal_next = self._decide_signal(
-                target, hold, spread, eh_f, el_f, xh_f, xl_f
+                target, hold, signal_level_f, eh_f, el_f, xh_f, xl_f
             )
             pending_signal = signal_next
 
@@ -863,7 +910,9 @@ class CalendarVolBacktestEngine:
                     "d": d,
                     "nav": nav,
                     "ret": (actual / (nav - actual)) if i > 0 and (nav - actual) != 0 else 0.0,
-                    "spread": spread if math.isfinite(spread) else float("nan"),
+                    # CT-IV spread kept for reference; chart/decision use signal_level.
+                    "spread_iv": spread if math.isfinite(spread) else float("nan"),
+                    "spread": signal_level_f if math.isfinite(signal_level_f) else float("nan"),
                     "z": zv if math.isfinite(zv) else None,
                     "enter_hi": eh_f if math.isfinite(eh_f) else None,
                     "enter_lo": el_f if math.isfinite(el_f) else None,
@@ -1016,11 +1065,12 @@ class CalendarVolBacktestEngine:
             metrics[name]["end"] = str(nav_w.index[-1]) if len(nav_w) else None
 
         def _sos_pts(sp: Any) -> Optional[float]:
+            """Scaled level for overlay charts (vol pts or garch_z units)."""
             try:
                 x = float(sp)
             except (TypeError, ValueError):
                 return None
-            return None if not math.isfinite(x) else round(x * 100.0, 4)
+            return None if not math.isfinite(x) else round(x * self.level_scale, 4)
 
         step = max(1, len(perf) // 800)
         nav_idx = list(range(0, len(perf), step))
@@ -1103,7 +1153,8 @@ class CalendarVolBacktestEngine:
 
         signal = {
             "dates": [rows[i]["d"] for i in sig_idx],
-            "spread": [_opt(rows[i]["spread"]) for i in sig_idx],
+            "spread": [_opt(rows[i]["spread"]) for i in sig_idx],  # decision level
+            "spread_iv": [_opt(rows[i].get("spread_iv")) for i in sig_idx],
             "zscore": [None if rows[i]["z"] is None else round(float(rows[i]["z"]), 4) for i in sig_idx],
             "enter_hi": [_opt(rows[i]["enter_hi"]) for i in sig_idx],
             "enter_lo": [_opt(rows[i]["enter_lo"]) for i in sig_idx],
@@ -1119,6 +1170,8 @@ class CalendarVolBacktestEngine:
             "tenor_pair": self.tenor_pair,
             "side_mode": self.side_mode,
             "spread_mode": self.spread_mode,
+            "signal_mode": self.signal_mode,
+            "level_scale": self.level_scale,
             "perf_start": perf[0]["d"],
             "first_open": open_row["d"],
         }
@@ -1151,24 +1204,40 @@ class CalendarVolBacktestEngine:
             "iv": "IV near−far",
             "iv2": "IV² near−far",
         }[self.spread_mode]
+        signal_label = {
+            "quantile": "rolling quantile",
+            "garch_z": "GARCH-z + rolling quantile",
+        }[self.signal_mode]
         spread_formula = (
             "IV_near² − IV_far²"
             if self.spread_mode == "iv2"
             else "IV_near − IV_far"
         )
+        if self.signal_mode == "garch_z":
+            signal_desc = (
+                f"expanding GARCH(1,1)-t on ΔSpread (warm 504d, refit every 5d) → garch_z; "
+                f"then rolling quantiles of garch_z on prior {self.z_window}d "
+                f"(enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
+                f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}; no look-ahead)"
+            )
+        else:
+            signal_desc = (
+                f"rolling quantiles of Spread on prior {self.z_window}d "
+                f"(enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
+                f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}; no look-ahead)"
+            )
 
         return {
             "strategy_id": cfg["strategy_id"],
             "strategy_name": (
-                f"{cfg['strategy_name']} ({self.tenor_display}, {side_label}, {spread_label})"
+                f"{cfg['strategy_name']} ({self.tenor_display}, {side_label}, "
+                f"{spread_label}, {signal_label})"
             ),
             "description": (
                 f"{cfg['index_name']} ({cfg['spot_code']}) {self.tenor_display} ATM CT-IV "
                 f"spread ({spread_formula}) mean-reversion · side_mode={self.side_mode} · "
-                f"spread_mode={self.spread_mode}. "
-                f"Signal at t−1 close (rolling quantiles of Spread on prior {self.z_window}d; "
-                f"enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
-                f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}; no look-ahead); "
+                f"spread_mode={self.spread_mode} · signal_mode={self.signal_mode}. "
+                f"Signal at t−1 close ({signal_desc}); "
                 f"execute open/close/resize at t close. "
                 f"Dual ATM straddles ({opt_p}) + daily {fut_p} delta hedge. "
                 "Reverse max hold 20d (short side). "
@@ -1208,6 +1277,8 @@ class CalendarVolBacktestEngine:
                 "tenor_pair": self.tenor_pair,
                 "side_mode": self.side_mode,
                 "spread_mode": self.spread_mode,
+                "signal_mode": self.signal_mode,
+                "level_scale": self.level_scale,
                 "spread_formula": spread_formula,
                 "z_window": self.z_window,
                 "enter_q": self.enter_q,
@@ -1257,6 +1328,7 @@ def run_calendar_vol(
     tenor_pair: str = DEFAULT_TENOR_PAIR,
     side_mode: str = DEFAULT_SIDE_MODE,
     spread_mode: str = DEFAULT_SPREAD_MODE,
+    signal_mode: str = DEFAULT_SIGNAL_MODE,
 ) -> Dict[str, Any]:
     eng = CalendarVolBacktestEngine(
         universe=universe,
@@ -1265,6 +1337,7 @@ def run_calendar_vol(
         tenor_pair=tenor_pair,
         side_mode=side_mode,
         spread_mode=spread_mode,
+        signal_mode=signal_mode,
     )
     payload = eng.run()
     if export_holdings:
@@ -1283,6 +1356,7 @@ def run_equity_3_6_calendar_vol_300(
         tenor_pair=DEFAULT_TENOR_PAIR,
         side_mode=DEFAULT_SIDE_MODE,
         spread_mode=DEFAULT_SPREAD_MODE,
+        signal_mode=DEFAULT_SIGNAL_MODE,
     )
 
 
@@ -1295,6 +1369,7 @@ def run_by_strategy_id(
     tenor_pair: str = DEFAULT_TENOR_PAIR,
     side_mode: str = DEFAULT_SIDE_MODE,
     spread_mode: str = DEFAULT_SPREAD_MODE,
+    signal_mode: str = DEFAULT_SIGNAL_MODE,
 ) -> Dict[str, Any]:
     if strategy_id not in STRATEGY_BY_ID:
         raise KeyError(strategy_id)
@@ -1307,6 +1382,7 @@ def run_by_strategy_id(
         tenor_pair=tenor_pair,
         side_mode=side_mode,
         spread_mode=spread_mode,
+        signal_mode=signal_mode,
     )
 
 
@@ -1318,6 +1394,7 @@ def export_holdings_for_universe(
     tenor_pair: str = DEFAULT_TENOR_PAIR,
     side_mode: str = DEFAULT_SIDE_MODE,
     spread_mode: str = DEFAULT_SPREAD_MODE,
+    signal_mode: str = DEFAULT_SIGNAL_MODE,
 ) -> Path:
     eng = CalendarVolBacktestEngine(
         universe=universe,
@@ -1326,6 +1403,7 @@ def export_holdings_for_universe(
         tenor_pair=tenor_pair,
         side_mode=side_mode,
         spread_mode=spread_mode,
+        signal_mode=signal_mode,
     )
     eng.run()
     return eng.write_holdings_excel(path)

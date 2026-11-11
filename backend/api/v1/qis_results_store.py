@@ -18,6 +18,7 @@ _DB_CANDIDATES = [
 _DEFAULT_TENOR = "3M-6M"
 _DEFAULT_SIDE = "both"
 _DEFAULT_SPREAD = "iv"
+_DEFAULT_SIGNAL = "quantile"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS qis_backtest_cache (
@@ -27,10 +28,11 @@ CREATE TABLE IF NOT EXISTS qis_backtest_cache (
   tenor_pair TEXT NOT NULL DEFAULT '3M-6M',
   side_mode TEXT NOT NULL DEFAULT 'both',
   spread_mode TEXT NOT NULL DEFAULT 'iv',
+  signal_mode TEXT NOT NULL DEFAULT 'quantile',
   source_key TEXT NOT NULL,
   payload TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode)
+  PRIMARY KEY (strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode, signal_mode)
 );
 CREATE INDEX IF NOT EXISTS idx_qis_cache_src ON qis_backtest_cache(source_key);
 """
@@ -48,7 +50,7 @@ def results_db_path(create_parent: bool = True) -> Path:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Evolve PK: add tenor_pair → side_mode → spread_mode when missing."""
+    """Evolve PK: add tenor_pair → side_mode → spread_mode → signal_mode when missing."""
     cols = {
         r[1] for r in conn.execute("PRAGMA table_info(qis_backtest_cache)").fetchall()
     }
@@ -111,30 +113,62 @@ def _migrate(conn: sqlite3.Connection) -> None:
             r[1]
             for r in conn.execute("PRAGMA table_info(qis_backtest_cache)").fetchall()
         }
-    if "spread_mode" in cols:
+    if "spread_mode" not in cols:
+        conn.executescript(
+            """
+            CREATE TABLE qis_backtest_cache_v4 (
+              strategy_id TEXT NOT NULL,
+              z_window INTEGER NOT NULL,
+              initial_nav REAL NOT NULL,
+              tenor_pair TEXT NOT NULL DEFAULT '3M-6M',
+              side_mode TEXT NOT NULL DEFAULT 'both',
+              spread_mode TEXT NOT NULL DEFAULT 'iv',
+              source_key TEXT NOT NULL,
+              payload TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode)
+            );
+            INSERT INTO qis_backtest_cache_v4
+              (strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode,
+               source_key, payload, updated_at)
+            SELECT strategy_id, z_window, initial_nav, tenor_pair, side_mode, 'iv',
+                   source_key, payload, updated_at
+              FROM qis_backtest_cache;
+            DROP TABLE qis_backtest_cache;
+            ALTER TABLE qis_backtest_cache_v4 RENAME TO qis_backtest_cache;
+            CREATE INDEX IF NOT EXISTS idx_qis_cache_src ON qis_backtest_cache(source_key);
+            """
+        )
+        conn.commit()
+        cols = {
+            r[1]
+            for r in conn.execute("PRAGMA table_info(qis_backtest_cache)").fetchall()
+        }
+    if "signal_mode" in cols:
         return
     conn.executescript(
         """
-        CREATE TABLE qis_backtest_cache_v4 (
+        CREATE TABLE qis_backtest_cache_v5 (
           strategy_id TEXT NOT NULL,
           z_window INTEGER NOT NULL,
           initial_nav REAL NOT NULL,
           tenor_pair TEXT NOT NULL DEFAULT '3M-6M',
           side_mode TEXT NOT NULL DEFAULT 'both',
           spread_mode TEXT NOT NULL DEFAULT 'iv',
+          signal_mode TEXT NOT NULL DEFAULT 'quantile',
           source_key TEXT NOT NULL,
           payload TEXT NOT NULL,
           updated_at TEXT NOT NULL,
-          PRIMARY KEY (strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode)
+          PRIMARY KEY (strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode, signal_mode)
         );
-        INSERT INTO qis_backtest_cache_v4
-          (strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode,
+        INSERT INTO qis_backtest_cache_v5
+          (strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode, signal_mode,
            source_key, payload, updated_at)
-        SELECT strategy_id, z_window, initial_nav, tenor_pair, side_mode, 'iv',
+        SELECT strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode, 'quantile',
                source_key, payload, updated_at
           FROM qis_backtest_cache;
         DROP TABLE qis_backtest_cache;
-        ALTER TABLE qis_backtest_cache_v4 RENAME TO qis_backtest_cache;
+        ALTER TABLE qis_backtest_cache_v5 RENAME TO qis_backtest_cache;
         CREATE INDEX IF NOT EXISTS idx_qis_cache_src ON qis_backtest_cache(source_key);
         """
     )
@@ -166,6 +200,7 @@ def get_cached(
     tenor_pair: str = _DEFAULT_TENOR,
     side_mode: str = _DEFAULT_SIDE,
     spread_mode: str = _DEFAULT_SPREAD,
+    signal_mode: str = _DEFAULT_SIGNAL,
 ) -> Optional[Dict[str, Any]]:
     path = results_db_path(create_parent=False)
     if not path.exists():
@@ -176,7 +211,7 @@ def get_cached(
             """
             SELECT payload, source_key FROM qis_backtest_cache
              WHERE strategy_id=? AND z_window=? AND initial_nav=?
-               AND tenor_pair=? AND side_mode=? AND spread_mode=?
+               AND tenor_pair=? AND side_mode=? AND spread_mode=? AND signal_mode=?
             """,
             (
                 strategy_id,
@@ -185,6 +220,7 @@ def get_cached(
                 str(tenor_pair),
                 str(side_mode),
                 str(spread_mode),
+                str(signal_mode),
             ),
         ).fetchone()
         if not row:
@@ -200,6 +236,7 @@ def get_cached(
             "tenor_pair": tenor_pair,
             "side_mode": side_mode,
             "spread_mode": spread_mode,
+            "signal_mode": signal_mode,
         }
         return data
     finally:
@@ -215,6 +252,7 @@ def put_cached(
     tenor_pair: str = _DEFAULT_TENOR,
     side_mode: str = _DEFAULT_SIDE,
     spread_mode: str = _DEFAULT_SPREAD,
+    signal_mode: str = _DEFAULT_SIGNAL,
 ) -> Path:
     path = results_db_path(create_parent=True)
     conn = connect(create=True)
@@ -223,10 +261,10 @@ def put_cached(
         conn.execute(
             """
             INSERT INTO qis_backtest_cache
-              (strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode,
+              (strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode, signal_mode,
                source_key, payload, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode, signal_mode)
             DO UPDATE SET
               source_key=excluded.source_key,
               payload=excluded.payload,
@@ -239,6 +277,7 @@ def put_cached(
                 str(tenor_pair),
                 str(side_mode),
                 str(spread_mode),
+                str(signal_mode),
                 src_key,
                 json.dumps(clean, ensure_ascii=False),
                 datetime.now(timezone.utc).isoformat(),
@@ -258,10 +297,10 @@ def list_cached() -> list:
     try:
         rows = conn.execute(
             """
-            SELECT strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode,
+            SELECT strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode, signal_mode,
                    source_key, updated_at, length(payload) AS bytes
               FROM qis_backtest_cache
-             ORDER BY strategy_id, tenor_pair, side_mode, spread_mode, z_window
+             ORDER BY strategy_id, tenor_pair, side_mode, spread_mode, signal_mode, z_window
             """
         ).fetchall()
         return [
@@ -272,9 +311,10 @@ def list_cached() -> list:
                 "tenor_pair": r[3],
                 "side_mode": r[4],
                 "spread_mode": r[5],
-                "source_key": r[6],
-                "updated_at": r[7],
-                "bytes": r[8],
+                "signal_mode": r[6],
+                "source_key": r[7],
+                "updated_at": r[8],
+                "bytes": r[9],
             }
             for r in rows
         ]

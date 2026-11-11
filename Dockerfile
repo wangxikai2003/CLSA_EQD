@@ -26,9 +26,11 @@ COPY data/vol_spread_levels.parquet /app/data/vol_spread_levels.parquet
 COPY data/qis_results.sqlite /app/data/qis_results.sqlite
 # Pre-bake synth-tenors JSON so first Spread request is near-instant
 RUN cd /app/backend && PYTHONPATH=/app/backend python -c "from api.v1.synth_tenors import get_cached_payload, write_disk_cache; p=get_cached_payload(refresh=True); write_disk_cache(p, __import__('pathlib').Path('/app/data/synth_tenors_cache.json.gz')); print('synth cache', len(p.get('products',[])))"
-# Refresh QIS calendar-vol cache against image data mtimes (50/300/1000)
+# Refresh QIS calendar-vol cache against image data mtimes
+# (universes × tenor × side × spread × signal_mode quantile|garch_z)
 COPY scripts/build_qis_results.py /app/scripts/build_qis_results.py
-RUN cd /app && PYTHONPATH=/app/backend python scripts/build_qis_results.py
+RUN cd /app && PYTHONPATH=/app/backend python scripts/build_qis_results.py quantile
+RUN cd /app && PYTHONPATH=/app/backend python scripts/build_qis_results.py garch_z
 COPY --from=frontend /app/dist /app/dist
 ENV PORT=8080
 EXPOSE 8080

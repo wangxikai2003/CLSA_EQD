@@ -412,6 +412,11 @@ export interface QisPnLDecomposition {
   residual_pnl: number[];
 }
 
+export type QisTenorPair = '3M-6M' | '1M-3M';
+export type QisSideMode = 'both' | 'long_only' | 'short_only';
+export type QisSpreadMode = 'iv' | 'iv2';
+export type QisSignalMode = 'quantile' | 'garch_z';
+
 export interface QisTradeMarker {
   d: string;
   kind: 'long' | 'short' | 'close' | string;
@@ -423,7 +428,9 @@ export interface QisTradeMarker {
 
 export interface QisSignalSeries {
   dates: string[];
+  /** Decision level: raw CT-IV spread or garch_z (see signal_mode / level_scale). */
   spread: number[];
+  spread_iv?: (number | null)[];
   zscore: (number | null)[];
   position: number[];
   signal_next?: number[];
@@ -440,6 +447,9 @@ export interface QisSignalSeries {
   exit_lo_q?: number;
   exit_hi_q?: number;
   window?: number;
+  signal_mode?: QisSignalMode | string;
+  /** Multiply spread/bands for chart: 100 = vol pts, 1 = garch_z units. */
+  level_scale?: number;
   perf_start?: string;
   first_open?: string;
 }
@@ -494,10 +504,6 @@ export function fetchQisStrategies(opts?: AbortSignal | FetchRetryOpts) {
   );
 }
 
-export type QisTenorPair = '3M-6M' | '1M-3M';
-export type QisSideMode = 'both' | 'long_only' | 'short_only';
-export type QisSpreadMode = 'iv' | 'iv2';
-
 export function fetchQisBacktest(
   strategyId: string,
   refresh = false,
@@ -506,6 +512,7 @@ export function fetchQisBacktest(
   tenorPair: QisTenorPair = '3M-6M',
   sideMode: QisSideMode = 'both',
   spreadMode: QisSpreadMode = 'iv',
+  signalMode: QisSignalMode = 'quantile',
 ) {
   const q = new URLSearchParams();
   if (refresh) q.set('refresh', 'true');
@@ -513,6 +520,7 @@ export function fetchQisBacktest(
   q.set('tenor_pair', tenorPair);
   q.set('side_mode', sideMode);
   q.set('spread_mode', spreadMode);
+  q.set('signal_mode', signalMode);
   const qs = q.toString();
   return getJsonWithRetry<QisBacktestResponse>(
     `/api/v1/qis/backtest/${strategyId}?${qs}`,
@@ -527,12 +535,14 @@ export function qisHoldingsExcelUrl(
   tenorPair: QisTenorPair = '3M-6M',
   sideMode: QisSideMode = 'both',
   spreadMode: QisSpreadMode = 'iv',
+  signalMode: QisSignalMode = 'quantile',
 ) {
   const q = new URLSearchParams();
   q.set('z_window', String(zWindow));
   q.set('tenor_pair', tenorPair);
   q.set('side_mode', sideMode);
   q.set('spread_mode', spreadMode);
+  q.set('signal_mode', signalMode);
   q.set('persist', 'true');
   return `/api/v1/qis/backtest/${encodeURIComponent(strategyId)}/holdings.xlsx?${q}`;
 }

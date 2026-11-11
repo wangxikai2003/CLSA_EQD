@@ -308,6 +308,7 @@ def run_cross_calendar_carry(
 def list_strategies():
     from engine.calendar_vol_strategy import (
         SIDE_MODES,
+        SIGNAL_MODES,
         SPREAD_MODES,
         TENOR_PAIRS,
         UNIVERSES,
@@ -321,6 +322,7 @@ def list_strategies():
             "blurb": (
                 f"{u['index_name']} Calendar Vol ATM CT-IV; tenor 3M−6M | 1M−3M; "
                 f"side both | long_only | short_only; spread iv | iv2; "
+                f"signal quantile | garch_z; "
                 f"t−1 signal / t close; {u['product']} straddles + {u['fut_root']} hedge"
             ),
             "family": "calendar_vol",
@@ -328,6 +330,7 @@ def list_strategies():
             "tenor_pairs": list(TENOR_PAIRS.keys()),
             "side_modes": list(SIDE_MODES),
             "spread_modes": list(SPREAD_MODES),
+            "signal_modes": list(SIGNAL_MODES),
         }
         for key, u in UNIVERSES.items()
     ]
@@ -345,6 +348,7 @@ def list_strategies():
         "tenor_pairs": list(TENOR_PAIRS.keys()),
         "side_modes": list(SIDE_MODES),
         "spread_modes": list(SPREAD_MODES),
+        "signal_modes": list(SIGNAL_MODES),
     }
 
 
@@ -370,6 +374,10 @@ def backtest(
         "iv",
         description="Spread construction: iv (IV_near−IV_far) | iv2 (IV_near²−IV_far²)",
     ),
+    signal_mode: str = Query(
+        "quantile",
+        description="Signal: quantile (rolling bands on Spread) | garch_z (GARCH-z + same bands)",
+    ),
 ):
     db = st._equity_db()
 
@@ -385,6 +393,7 @@ def backtest(
     from engine.calendar_vol_strategy import (
         STRATEGY_BY_ID,
         normalize_side_mode,
+        normalize_signal_mode,
         normalize_spread_mode,
         normalize_tenor_pair,
         run_by_strategy_id,
@@ -396,6 +405,7 @@ def backtest(
             tp = normalize_tenor_pair(tenor_pair)
             sm = normalize_side_mode(side_mode)
             spm = normalize_spread_mode(spread_mode)
+            sig = normalize_signal_mode(signal_mode)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         spot = next((p for p in st._SPOT_CANDIDATES if p.exists()), None)
@@ -409,11 +419,12 @@ def backtest(
                 tenor_pair=tp,
                 side_mode=sm,
                 spread_mode=spm,
+                signal_mode=sig,
             )
             if hit is not None:
                 return hit
         # in-process short cache
-        mem_key = (strategy_id, z_window, src, _INITIAL_NAV, tp, sm, spm)
+        mem_key = (strategy_id, z_window, src, _INITIAL_NAV, tp, sm, spm, sig)
         mem = _cache.get("cal_vol_map") or {}
         if not refresh and mem_key in mem:
             return mem[mem_key]
@@ -425,6 +436,7 @@ def backtest(
             tenor_pair=tp,
             side_mode=sm,
             spread_mode=spm,
+            signal_mode=sig,
         )
         qrs.put_cached(
             strategy_id,
@@ -435,6 +447,7 @@ def backtest(
             tenor_pair=tp,
             side_mode=sm,
             spread_mode=spm,
+            signal_mode=sig,
         )
         mem[mem_key] = payload
         _cache["cal_vol_map"] = mem
@@ -447,6 +460,7 @@ def backtest(
                 "tenor_pair": tp,
                 "side_mode": sm,
                 "spread_mode": spm,
+                "signal_mode": sig,
             },
         }
         return payload
@@ -472,6 +486,10 @@ def download_holdings(
     spread_mode: str = Query(
         "iv", description="Spread: iv (IV_near−IV_far) | iv2 (IV_near²−IV_far²)"
     ),
+    signal_mode: str = Query(
+        "quantile",
+        description="Signal: quantile | garch_z",
+    ),
     persist: bool = Query(
         True,
         description="Also write Excel under data/exports/ on the server/local disk",
@@ -483,6 +501,7 @@ def download_holdings(
         CalendarVolBacktestEngine,
         default_holdings_export_path,
         normalize_side_mode,
+        normalize_signal_mode,
         normalize_spread_mode,
         normalize_tenor_pair,
     )
@@ -496,6 +515,7 @@ def download_holdings(
         tp = normalize_tenor_pair(tenor_pair)
         sm = normalize_side_mode(side_mode)
         spm = normalize_spread_mode(spread_mode)
+        sig = normalize_signal_mode(signal_mode)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     universe = STRATEGY_BY_ID[strategy_id]
@@ -506,11 +526,12 @@ def download_holdings(
         tenor_pair=tp,
         side_mode=sm,
         spread_mode=spm,
+        signal_mode=sig,
     )
     eng.run()
     if persist:
         disk = eng.write_holdings_excel(
-            default_holdings_export_path(universe, tp, sm, spm)
+            default_holdings_export_path(universe, tp, sm, spm, sig)
         )
     else:
         disk = None
@@ -526,6 +547,7 @@ def download_holdings(
                 {"key": "tenor_pair", "value": tp},
                 {"key": "side_mode", "value": sm},
                 {"key": "spread_mode", "value": spm},
+                {"key": "signal_mode", "value": sig},
                 {"key": "signal_lag", "value": "t-1 signal → t close execution"},
                 {"key": "price", "value": "option/futures close (no settle)"},
                 {"key": "n_rows", "value": len(df)},
@@ -541,6 +563,8 @@ def download_holdings(
         slug_parts.append(sm)
     if spm != "iv":
         slug_parts.append(spm)
+    if sig != "quantile":
+        slug_parts.append(sig)
     slug = ("_" + "_".join(slug_parts)) if slug_parts else ""
     filename = f"{strategy_id}{slug}_holdings.xlsx"
     headers = {
