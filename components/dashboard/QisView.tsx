@@ -9,6 +9,7 @@ import {
   qisHoldingsExcelUrl,
   QisBacktestResponse,
   QisSideMode,
+  QisSpreadMode,
   QisStrategyInfo,
   QisTenorPair,
   QisTradeMarker,
@@ -23,6 +24,11 @@ const CAL_VOL_SIDES: { key: QisSideMode; label: string }[] = [
   { key: 'both', label: 'Long+Short' },
   { key: 'long_only', label: 'Only Long+Close' },
   { key: 'short_only', label: 'Only Short+Close' },
+];
+
+const CAL_VOL_SPREADS: { key: QisSpreadMode; label: string }[] = [
+  { key: 'iv', label: 'IV spread' },
+  { key: 'iv2', label: 'IV² spread' },
 ];
 
 const WINDOW_LABELS: { key: keyof QisBacktestResponse['metrics']; label: string }[] = [
@@ -140,6 +146,7 @@ const QisView: React.FC = () => {
   const [universe, setUniverse] = useState<'50' | '300' | '1000'>('300');
   const [tenorPair, setTenorPair] = useState<QisTenorPair>('3M-6M');
   const [sideMode, setSideMode] = useState<QisSideMode>('both');
+  const [spreadMode, setSpreadMode] = useState<QisSpreadMode>('iv');
   const [data, setData] = useState<QisBacktestResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadStatus, setLoadStatus] = useState('Running backtest…');
@@ -168,6 +175,7 @@ const QisView: React.FC = () => {
       252,
       family === 'calendar_vol' ? tenorPair : '3M-6M',
       family === 'calendar_vol' ? sideMode : 'both',
+      family === 'calendar_vol' ? spreadMode : 'iv',
     )
       .then((d) => {
         if (signal?.aborted) return;
@@ -210,7 +218,7 @@ const QisView: React.FC = () => {
     load(false, ac.signal);
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [strategyId, tenorPair, sideMode]);
+  }, [strategyId, tenorPair, sideMode, spreadMode]);
 
   const decompChart = useMemo(() => {
     const d = data?.pnl_decomposition;
@@ -281,9 +289,16 @@ const QisView: React.FC = () => {
     (typeof data?.params?.tenor_pair === 'string' ? data.params.tenor_pair : tenorPair) as QisTenorPair;
   const activeSide =
     (typeof data?.params?.side_mode === 'string' ? data.params.side_mode : sideMode) as QisSideMode;
+  const activeSpread =
+    (typeof data?.params?.spread_mode === 'string' ? data.params.spread_mode : spreadMode) as QisSpreadMode;
   const tenorLabel = CAL_VOL_TENORS.find((t) => t.key === activeTenor)?.label ?? activeTenor;
   const sideLabel = CAL_VOL_SIDES.find((s) => s.key === activeSide)?.label ?? activeSide;
-  const sosLabel = isCalVol ? `${tenorLabel} IV spread (vol pts)` : 'SoS (pts)';
+  const spreadLabel = CAL_VOL_SPREADS.find((s) => s.key === activeSpread)?.label ?? activeSpread;
+  const sosLabel = isCalVol
+    ? activeSpread === 'iv2'
+      ? `${tenorLabel} IV² spread (var ×100)`
+      : `${tenorLabel} IV spread (vol pts)`
+    : 'SoS (pts)';
 
   const enterPct = data?.signal?.enter_q != null ? `${((1 - data.signal.enter_q) * 100).toFixed(0)}/${(data.signal.enter_q * 100).toFixed(0)}` : '10/90';
   const exitPct =
@@ -300,8 +315,8 @@ const QisView: React.FC = () => {
             Systematic Trading Strategies
           </h2>
           <p className="text-[11px] text-slate-500 max-w-3xl mt-1">
-            QIS：期货 carry + Equity Calendar Vol。一级选策略族，二级选 50 / 300 / 1000，tenor 对 3M–6M / 1M–3M，以及 Long+Short / Only Long+Close / Only Short+Close。
-            结果缓存在 <code className="font-mono">qis_results.sqlite</code>（按 tenor × side 分键）；入场/出场为滚动分位数带（仅用历史窗口）。
+            QIS：期货 carry + Equity Calendar Vol。一级选策略族，二级选 50 / 300 / 1000，tenor 对 3M–6M / 1M–3M，side，以及 IV / IV² spread。
+            结果缓存在 <code className="font-mono">qis_results.sqlite</code>（按 tenor × side × spread 分键）；入场/出场为滚动分位数带（仅用历史窗口）。
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -363,6 +378,22 @@ const QisView: React.FC = () => {
                   </button>
                 ))}
               </div>
+              <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                {CAL_VOL_SPREADS.map((s) => (
+                  <button
+                    key={s.key}
+                    type="button"
+                    onClick={() => setSpreadMode(s.key)}
+                    className={`px-3 py-1.5 text-xs font-bold ${
+                      spreadMode === s.key
+                        ? 'bg-[#000066] text-white'
+                        : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
             </>
           )}
           <button
@@ -374,7 +405,7 @@ const QisView: React.FC = () => {
           </button>
           {isCalVol && (
             <a
-              href={qisHoldingsExcelUrl(strategyId, 252, tenorPair, sideMode)}
+              href={qisHoldingsExcelUrl(strategyId, 252, tenorPair, sideMode, spreadMode)}
               className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-md border border-slate-200 bg-white text-[#000066] hover:bg-slate-50"
               title="Download concrete holdings Excel (t−1 signal / t close)"
             >
@@ -404,7 +435,9 @@ const QisView: React.FC = () => {
                 NAV {data.summary.final_nav.toLocaleString('en-CN', { maximumFractionDigits: 0 })}
                 {data.summary.first_open ? ` · first open ${data.summary.first_open}` : ''}
                 {typeof data.params.z_window === 'number' ? ` · window=${data.params.z_window}d` : ''}
-                {isCalVol ? ` · tenor=${tenorLabel} · side=${sideLabel}` : ''}
+                {isCalVol
+                  ? ` · tenor=${tenorLabel} · side=${sideLabel} · spread=${spreadLabel}`
+                  : ''}
               </div>
             </div>
             <p className="text-[11px] text-slate-600 leading-relaxed">{data.description}</p>

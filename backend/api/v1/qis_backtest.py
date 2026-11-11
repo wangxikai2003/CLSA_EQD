@@ -306,7 +306,12 @@ def run_cross_calendar_carry(
 
 @router.get("/strategies")
 def list_strategies():
-    from engine.calendar_vol_strategy import SIDE_MODES, TENOR_PAIRS, UNIVERSES
+    from engine.calendar_vol_strategy import (
+        SIDE_MODES,
+        SPREAD_MODES,
+        TENOR_PAIRS,
+        UNIVERSES,
+    )
 
     cal = [
         {
@@ -315,13 +320,14 @@ def list_strategies():
             "status": "live",
             "blurb": (
                 f"{u['index_name']} Calendar Vol ATM CT-IV; tenor 3M−6M | 1M−3M; "
-                f"side both | long_only | short_only; "
+                f"side both | long_only | short_only; spread iv | iv2; "
                 f"t−1 signal / t close; {u['product']} straddles + {u['fut_root']} hedge"
             ),
             "family": "calendar_vol",
             "universe": key,
             "tenor_pairs": list(TENOR_PAIRS.keys()),
             "side_modes": list(SIDE_MODES),
+            "spread_modes": list(SPREAD_MODES),
         }
         for key, u in UNIVERSES.items()
     ]
@@ -338,6 +344,7 @@ def list_strategies():
         ],
         "tenor_pairs": list(TENOR_PAIRS.keys()),
         "side_modes": list(SIDE_MODES),
+        "spread_modes": list(SPREAD_MODES),
     }
 
 
@@ -359,6 +366,10 @@ def backtest(
         "both",
         description="Position side: both | long_only | short_only",
     ),
+    spread_mode: str = Query(
+        "iv",
+        description="Spread construction: iv (IV_near−IV_far) | iv2 (IV_near²−IV_far²)",
+    ),
 ):
     db = st._equity_db()
 
@@ -374,6 +385,7 @@ def backtest(
     from engine.calendar_vol_strategy import (
         STRATEGY_BY_ID,
         normalize_side_mode,
+        normalize_spread_mode,
         normalize_tenor_pair,
         run_by_strategy_id,
     )
@@ -383,18 +395,25 @@ def backtest(
         try:
             tp = normalize_tenor_pair(tenor_pair)
             sm = normalize_side_mode(side_mode)
+            spm = normalize_spread_mode(spread_mode)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         spot = next((p for p in st._SPOT_CANDIDATES if p.exists()), None)
         src = qrs.source_key(db, spot)
         if not refresh:
             hit = qrs.get_cached(
-                strategy_id, z_window, _INITIAL_NAV, src, tenor_pair=tp, side_mode=sm
+                strategy_id,
+                z_window,
+                _INITIAL_NAV,
+                src,
+                tenor_pair=tp,
+                side_mode=sm,
+                spread_mode=spm,
             )
             if hit is not None:
                 return hit
         # in-process short cache
-        mem_key = (strategy_id, z_window, src, _INITIAL_NAV, tp, sm)
+        mem_key = (strategy_id, z_window, src, _INITIAL_NAV, tp, sm, spm)
         mem = _cache.get("cal_vol_map") or {}
         if not refresh and mem_key in mem:
             return mem[mem_key]
@@ -405,6 +424,7 @@ def backtest(
             z_window=z_window,
             tenor_pair=tp,
             side_mode=sm,
+            spread_mode=spm,
         )
         qrs.put_cached(
             strategy_id,
@@ -414,6 +434,7 @@ def backtest(
             payload,
             tenor_pair=tp,
             side_mode=sm,
+            spread_mode=spm,
         )
         mem[mem_key] = payload
         _cache["cal_vol_map"] = mem
@@ -425,6 +446,7 @@ def backtest(
                 "persisted": True,
                 "tenor_pair": tp,
                 "side_mode": sm,
+                "spread_mode": spm,
             },
         }
         return payload
@@ -447,6 +469,9 @@ def download_holdings(
     side_mode: str = Query(
         "both", description="Position side: both | long_only | short_only"
     ),
+    spread_mode: str = Query(
+        "iv", description="Spread: iv (IV_near−IV_far) | iv2 (IV_near²−IV_far²)"
+    ),
     persist: bool = Query(
         True,
         description="Also write Excel under data/exports/ on the server/local disk",
@@ -458,6 +483,7 @@ def download_holdings(
         CalendarVolBacktestEngine,
         default_holdings_export_path,
         normalize_side_mode,
+        normalize_spread_mode,
         normalize_tenor_pair,
     )
 
@@ -469,6 +495,7 @@ def download_holdings(
     try:
         tp = normalize_tenor_pair(tenor_pair)
         sm = normalize_side_mode(side_mode)
+        spm = normalize_spread_mode(spread_mode)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     universe = STRATEGY_BY_ID[strategy_id]
@@ -478,11 +505,12 @@ def download_holdings(
         z_window=z_window,
         tenor_pair=tp,
         side_mode=sm,
+        spread_mode=spm,
     )
     eng.run()
     if persist:
         disk = eng.write_holdings_excel(
-            default_holdings_export_path(universe, tp, sm)
+            default_holdings_export_path(universe, tp, sm, spm)
         )
     else:
         disk = None
@@ -497,6 +525,7 @@ def download_holdings(
                 {"key": "universe", "value": universe},
                 {"key": "tenor_pair", "value": tp},
                 {"key": "side_mode", "value": sm},
+                {"key": "spread_mode", "value": spm},
                 {"key": "signal_lag", "value": "t-1 signal → t close execution"},
                 {"key": "price", "value": "option/futures close (no settle)"},
                 {"key": "n_rows", "value": len(df)},
@@ -510,6 +539,8 @@ def download_holdings(
         slug_parts.append(tp.lower().replace("-", ""))
     if sm != "both":
         slug_parts.append(sm)
+    if spm != "iv":
+        slug_parts.append(spm)
     slug = ("_" + "_".join(slug_parts)) if slug_parts else ""
     filename = f"{strategy_id}{slug}_holdings.xlsx"
     headers = {

@@ -496,6 +496,7 @@ export function fetchQisStrategies(opts?: AbortSignal | FetchRetryOpts) {
 
 export type QisTenorPair = '3M-6M' | '1M-3M';
 export type QisSideMode = 'both' | 'long_only' | 'short_only';
+export type QisSpreadMode = 'iv' | 'iv2';
 
 export function fetchQisBacktest(
   strategyId: string,
@@ -504,12 +505,14 @@ export function fetchQisBacktest(
   zWindow = 252,
   tenorPair: QisTenorPair = '3M-6M',
   sideMode: QisSideMode = 'both',
+  spreadMode: QisSpreadMode = 'iv',
 ) {
   const q = new URLSearchParams();
   if (refresh) q.set('refresh', 'true');
   q.set('z_window', String(zWindow));
   q.set('tenor_pair', tenorPair);
   q.set('side_mode', sideMode);
+  q.set('spread_mode', spreadMode);
   const qs = q.toString();
   return getJsonWithRetry<QisBacktestResponse>(
     `/api/v1/qis/backtest/${strategyId}?${qs}`,
@@ -523,11 +526,13 @@ export function qisHoldingsExcelUrl(
   zWindow = 252,
   tenorPair: QisTenorPair = '3M-6M',
   sideMode: QisSideMode = 'both',
+  spreadMode: QisSpreadMode = 'iv',
 ) {
   const q = new URLSearchParams();
   q.set('z_window', String(zWindow));
   q.set('tenor_pair', tenorPair);
   q.set('side_mode', sideMode);
+  q.set('spread_mode', spreadMode);
   q.set('persist', 'true');
   return `/api/v1/qis/backtest/${encodeURIComponent(strategyId)}/holdings.xlsx?${q}`;
 }

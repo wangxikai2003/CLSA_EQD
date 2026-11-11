@@ -37,7 +37,8 @@ EXIT_HI_Q = 0.60
 MAX_HOLD_REVERSE = 20
 VEGA_BUDGET_FRAC = 0.01
 
-# Locked tenor pairs (framework): Spread = IV_near − IV_far; far leg holds vega budget.
+# Locked tenor pairs (framework): far leg holds vega budget.
+# Spread definition depends on spread_mode (iv | iv2); see compute_spread.
 TENOR_PAIRS: Dict[str, Dict[str, Any]] = {
     "3M-6M": {
         "near_label": "3M",
@@ -59,6 +60,10 @@ DEFAULT_TENOR_PAIR = "3M-6M"
 # Position-side filter: both = Normal(+1) & Reverse(−1); long/short_only keep flat+close.
 SIDE_MODES = ("both", "long_only", "short_only")
 DEFAULT_SIDE_MODE = "both"
+
+# Spread construction after CT-IV interpolation: level diff vs variance diff.
+SPREAD_MODES = ("iv", "iv2")
+DEFAULT_SPREAD_MODE = "iv"
 
 # option product (DB) → index / futures multipliers
 UNIVERSES: Dict[str, Dict[str, Any]] = {
@@ -131,19 +136,50 @@ def normalize_side_mode(side_mode: str) -> str:
     return key
 
 
+def normalize_spread_mode(spread_mode: str) -> str:
+    key = str(spread_mode).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "level": "iv",
+        "diff": "iv",
+        "iv_diff": "iv",
+        "var": "iv2",
+        "variance": "iv2",
+        "iv_sq": "iv2",
+        "iv_squared": "iv2",
+        "square": "iv2",
+        "sq": "iv2",
+    }
+    key = aliases.get(key, key)
+    if key not in SPREAD_MODES:
+        raise ValueError(f"unknown spread_mode {spread_mode!r}; choose {list(SPREAD_MODES)}")
+    return key
+
+
+def compute_spread(iv_near: float, iv_far: float, spread_mode: str = DEFAULT_SPREAD_MODE) -> float:
+    """Spread after CT-IV: iv → near−far; iv2 → near²−far²."""
+    mode = normalize_spread_mode(spread_mode)
+    if mode == "iv2":
+        return float(iv_near) * float(iv_near) - float(iv_far) * float(iv_far)
+    return float(iv_near) - float(iv_far)
+
+
 def default_holdings_export_path(
     universe: str,
     tenor_pair: str = DEFAULT_TENOR_PAIR,
     side_mode: str = DEFAULT_SIDE_MODE,
+    spread_mode: str = DEFAULT_SPREAD_MODE,
 ) -> Path:
     cfg = UNIVERSES[universe]
     tp = normalize_tenor_pair(tenor_pair)
     sm = normalize_side_mode(side_mode)
+    spm = normalize_spread_mode(spread_mode)
     parts = [cfg["strategy_id"]]
     if tp != DEFAULT_TENOR_PAIR:
         parts.append(tp.lower().replace("-", ""))
     if sm != DEFAULT_SIDE_MODE:
         parts.append(sm)
+    if spm != DEFAULT_SPREAD_MODE:
+        parts.append(spm)
     return EXPORTS_DIR / f"{'_'.join(parts)}_holdings.xlsx"
 
 
@@ -269,6 +305,7 @@ class CalendarVolBacktestEngine:
         exit_hi_q: float = EXIT_HI_Q,
         tenor_pair: str = DEFAULT_TENOR_PAIR,
         side_mode: str = DEFAULT_SIDE_MODE,
+        spread_mode: str = DEFAULT_SPREAD_MODE,
     ):
         if universe not in UNIVERSES:
             raise ValueError(f"unknown universe {universe}; choose {list(UNIVERSES)}")
@@ -282,6 +319,7 @@ class CalendarVolBacktestEngine:
         self.t_far = float(self.tenor_cfg["t_far"])
         self.tenor_display = str(self.tenor_cfg["display"])
         self.side_mode = normalize_side_mode(side_mode)
+        self.spread_mode = normalize_spread_mode(spread_mode)
         self.initial_nav = float(initial_nav)
         self.z_window = int(z_window)
         self.enter_q = float(enter_q)
@@ -357,7 +395,7 @@ class CalendarVolBacktestEngine:
     def _daily_ct_iv(
         self, svi: pd.DataFrame, t_near: Optional[float] = None, t_far: Optional[float] = None
     ) -> pd.DataFrame:
-        """ATM CT-IV near/far and Spread=near−far. Days missing either bracket are omitted."""
+        """ATM CT-IV near/far + Spread (iv or iv2). Days missing either bracket omitted."""
         tn = float(self.t_near if t_near is None else t_near)
         tf = float(self.t_far if t_far is None else t_far)
         rows = []
@@ -380,7 +418,7 @@ class CalendarVolBacktestEngine:
                         "d": td,
                         "iv_near": iv_near,
                         "iv_far": iv_far,
-                        "spread": iv_near - iv_far,
+                        "spread": compute_spread(iv_near, iv_far, self.spread_mode),
                     }
                 )
         return pd.DataFrame(rows).set_index("d").sort_index()
@@ -644,7 +682,7 @@ class CalendarVolBacktestEngine:
             Path(path)
             if path
             else default_holdings_export_path(
-                self.universe, self.tenor_pair, self.side_mode
+                self.universe, self.tenor_pair, self.side_mode, self.spread_mode
             )
         )
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -657,6 +695,7 @@ class CalendarVolBacktestEngine:
                     {"key": "universe", "value": self.universe},
                     {"key": "tenor_pair", "value": self.tenor_pair},
                     {"key": "side_mode", "value": self.side_mode},
+                    {"key": "spread_mode", "value": self.spread_mode},
                     {"key": "signal_lag", "value": "t-1 signal → t close execution"},
                     {
                         "key": "price",
@@ -1079,6 +1118,7 @@ class CalendarVolBacktestEngine:
             "window": self.z_window,
             "tenor_pair": self.tenor_pair,
             "side_mode": self.side_mode,
+            "spread_mode": self.spread_mode,
             "perf_start": perf[0]["d"],
             "first_open": open_row["d"],
         }
@@ -1107,15 +1147,25 @@ class CalendarVolBacktestEngine:
             "long_only": "Long only (+ close)",
             "short_only": "Short only (+ close)",
         }[self.side_mode]
+        spread_label = {
+            "iv": "IV near−far",
+            "iv2": "IV² near−far",
+        }[self.spread_mode]
+        spread_formula = (
+            "IV_near² − IV_far²"
+            if self.spread_mode == "iv2"
+            else "IV_near − IV_far"
+        )
 
         return {
             "strategy_id": cfg["strategy_id"],
             "strategy_name": (
-                f"{cfg['strategy_name']} ({self.tenor_display}, {side_label})"
+                f"{cfg['strategy_name']} ({self.tenor_display}, {side_label}, {spread_label})"
             ),
             "description": (
                 f"{cfg['index_name']} ({cfg['spot_code']}) {self.tenor_display} ATM CT-IV "
-                f"spread mean-reversion · side_mode={self.side_mode}. "
+                f"spread ({spread_formula}) mean-reversion · side_mode={self.side_mode} · "
+                f"spread_mode={self.spread_mode}. "
                 f"Signal at t−1 close (rolling quantiles of Spread on prior {self.z_window}d; "
                 f"enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
                 f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}; no look-ahead); "
@@ -1157,6 +1207,8 @@ class CalendarVolBacktestEngine:
                 "ttm_targets": {nl: self.t_near, fl: self.t_far},
                 "tenor_pair": self.tenor_pair,
                 "side_mode": self.side_mode,
+                "spread_mode": self.spread_mode,
+                "spread_formula": spread_formula,
                 "z_window": self.z_window,
                 "enter_q": self.enter_q,
                 "exit_lo_q": self.exit_lo_q,
@@ -1204,6 +1256,7 @@ def run_calendar_vol(
     holdings_path: Optional[Path] = None,
     tenor_pair: str = DEFAULT_TENOR_PAIR,
     side_mode: str = DEFAULT_SIDE_MODE,
+    spread_mode: str = DEFAULT_SPREAD_MODE,
 ) -> Dict[str, Any]:
     eng = CalendarVolBacktestEngine(
         universe=universe,
@@ -1211,6 +1264,7 @@ def run_calendar_vol(
         z_window=z_window,
         tenor_pair=tenor_pair,
         side_mode=side_mode,
+        spread_mode=spread_mode,
     )
     payload = eng.run()
     if export_holdings:
@@ -1228,6 +1282,7 @@ def run_equity_3_6_calendar_vol_300(
         z_window=z_window,
         tenor_pair=DEFAULT_TENOR_PAIR,
         side_mode=DEFAULT_SIDE_MODE,
+        spread_mode=DEFAULT_SPREAD_MODE,
     )
 
 
@@ -1239,6 +1294,7 @@ def run_by_strategy_id(
     holdings_path: Optional[Path] = None,
     tenor_pair: str = DEFAULT_TENOR_PAIR,
     side_mode: str = DEFAULT_SIDE_MODE,
+    spread_mode: str = DEFAULT_SPREAD_MODE,
 ) -> Dict[str, Any]:
     if strategy_id not in STRATEGY_BY_ID:
         raise KeyError(strategy_id)
@@ -1250,6 +1306,7 @@ def run_by_strategy_id(
         holdings_path=holdings_path,
         tenor_pair=tenor_pair,
         side_mode=side_mode,
+        spread_mode=spread_mode,
     )
 
 
@@ -1260,6 +1317,7 @@ def export_holdings_for_universe(
     path: Optional[Path] = None,
     tenor_pair: str = DEFAULT_TENOR_PAIR,
     side_mode: str = DEFAULT_SIDE_MODE,
+    spread_mode: str = DEFAULT_SPREAD_MODE,
 ) -> Path:
     eng = CalendarVolBacktestEngine(
         universe=universe,
@@ -1267,6 +1325,7 @@ def export_holdings_for_universe(
         z_window=z_window,
         tenor_pair=tenor_pair,
         side_mode=side_mode,
+        spread_mode=spread_mode,
     )
     eng.run()
     return eng.write_holdings_excel(path)

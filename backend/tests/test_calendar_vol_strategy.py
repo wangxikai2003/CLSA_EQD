@@ -16,9 +16,11 @@ from engine.black76 import black76_greeks
 from engine.calendar_vol_strategy import (
     CalendarVolBacktestEngine,
     SIDE_MODES,
+    SPREAD_MODES,
     T_3M,
     TENOR_PAIRS,
     UNIVERSES,
+    compute_spread,
     rolling_quantile_bands,
     rolling_zscore,
     run_calendar_vol,
@@ -140,17 +142,48 @@ def test_full_backtest_invariants(universe, tenor_pair):
     assert abs(s - total) < 1.0
 
 
+def test_compute_spread_iv_vs_iv2():
+    assert abs(compute_spread(0.20, 0.18, "iv") - 0.02) < 1e-12
+    assert abs(compute_spread(0.20, 0.18, "iv2") - (0.04 - 0.0324)) < 1e-12
+    assert set(SPREAD_MODES) == {"iv", "iv2"}
+
+
 def test_300_36_nav_regression():
-    """Locked 3M–6M CSI300 final NAV multiple (~1.198563)."""
+    """Locked 3M–6M CSI300 final NAV multiple (~1.198563) under default spread_mode=iv."""
     payload = run_calendar_vol(
         "300",
         initial_nav=100_000_000.0,
         z_window=252,
         tenor_pair="3M-6M",
         side_mode="both",
+        spread_mode="iv",
     )
     mult = float(payload["summary"]["final_nav_multiple"])
     assert abs(mult - 1.198563) < 5e-4, mult
+    assert payload["params"]["spread_mode"] == "iv"
+
+
+def test_spread_mode_iv2_differs_from_iv():
+    """iv2 rebuilds Spread from CT-IV squares; NAV path differs from iv."""
+    iv = run_calendar_vol(
+        "300", tenor_pair="3M-6M", side_mode="both", spread_mode="iv"
+    )
+    iv2 = run_calendar_vol(
+        "300", tenor_pair="3M-6M", side_mode="both", spread_mode="iv2"
+    )
+    assert iv2["params"]["spread_mode"] == "iv2"
+    assert iv2["params"]["spread_formula"] == "IV_near² − IV_far²"
+    assert float(iv2["summary"]["final_nav_multiple"]) != float(
+        iv["summary"]["final_nav_multiple"]
+    )
+    # Same CT-IV days → spread series length equal; values differ.
+    assert len(iv["signal"]["spread"]) == len(iv2["signal"]["spread"])
+    diffs = [
+        (a, b)
+        for a, b in zip(iv["signal"]["spread"], iv2["signal"]["spread"])
+        if a is not None and b is not None and abs(a - b) > 1e-12
+    ]
+    assert len(diffs) > 0
 
 
 def test_side_mode_filters_positions():
