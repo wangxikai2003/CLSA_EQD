@@ -306,6 +306,68 @@ const QisView: React.FC = () => {
       ? `${(data.signal.exit_lo_q * 100).toFixed(0)}–${(data.signal.exit_hi_q * 100).toFixed(0)}`
       : '40–60';
 
+  const calVolDocs = useMemo(() => {
+    if (!isCalVol) return null;
+    const near = activeTenor === '1M-3M' ? '1M' : '3M';
+    const far = activeTenor === '1M-3M' ? '3M' : '6M';
+    const tNear = activeTenor === '1M-3M' ? '30/365' : '90/365';
+    const tFar = activeTenor === '1M-3M' ? '90/365' : '180/365';
+    const zWin =
+      typeof data?.params?.z_window === 'number'
+        ? data.params.z_window
+        : 252;
+    const spreadFormula =
+      activeSpread === 'iv2'
+        ? `Spread = IV_${near}² − IV_${far}²`
+        : `Spread = IV_${near} − IV_${far}`;
+    const spreadModeNote =
+      activeSpread === 'iv2'
+        ? '先 CT-IV 插值得到近/远端 IV，再平方后相减（IV² spread / variance diff）。'
+        : '先 CT-IV 插值得到近/远端 IV，再做水平差（IV spread）。';
+
+    let sideBlock: { title: string; body: string };
+    if (activeSide === 'long_only') {
+      sideBlock = {
+        title: 'side_mode = long_only（Only Long+Close）',
+        body:
+          `只做 Normal(+1) = 空近端 / 多远端（${tenorLabel}：空${near}多${far}），整体偏 short gamma / short front vol；` +
+          '忽略所有 Reverse(−1) 开仓，平仓（exit 带 → 0）始终允许。Reverse max_hold 在此模式下不触发。',
+      };
+    } else if (activeSide === 'short_only') {
+      sideBlock = {
+        title: 'side_mode = short_only（Only Short+Close）',
+        body:
+          `只做 Reverse(−1) = 多近端 / 空远端（${tenorLabel}：多${near}空${far}），腿向与 Normal 相反；` +
+          '忽略 +1；平仓始终允许；Reverse 最长 20 交易日强制平。',
+      };
+    } else {
+      sideBlock = {
+        title: 'side_mode = both（Long+Short）',
+        body:
+          `两侧都做：Normal(+1)=空${near}/多${far}；Reverse(−1)=多${near}/空${far}。` +
+          'Reverse 最长 20 交易日；不是事后把 both 的 NAV 切片，而是信号层过滤后整段回测。',
+      };
+    }
+
+    const uniMap: Record<string, string> = {
+      '50': '上证50 · HO / IH / 000016 · 乘数 300',
+      '300': '沪深300 · IO / IF / 000300 · 乘数 300',
+      '1000': '中证1000 · MO / IM / 000852 · 乘数 200',
+    };
+
+    return {
+      near,
+      far,
+      tNear,
+      tFar,
+      zWin,
+      spreadFormula,
+      spreadModeNote,
+      sideBlock,
+      universeLine: uniMap[universe] ?? universe,
+    };
+  }, [isCalVol, activeTenor, activeSide, activeSpread, tenorLabel, universe, data?.params?.z_window]);
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -315,8 +377,8 @@ const QisView: React.FC = () => {
             Systematic Trading Strategies
           </h2>
           <p className="text-[11px] text-slate-500 max-w-3xl mt-1">
-            QIS：期货 carry + Equity Calendar Vol。一级选策略族，二级选 50 / 300 / 1000，tenor 对 3M–6M / 1M–3M，side，以及 IV / IV² spread。
-            结果缓存在 <code className="font-mono">qis_results.sqlite</code>（按 tenor × side × spread 分键）；入场/出场为滚动分位数带（仅用历史窗口）。
+            QIS：期货 carry + Equity Calendar Vol。选指数 / tenor / side / spread 后，下方策略卡会同步中文口径说明（数据、信号、腿向、PnL 希腊）。
+            缓存 <code className="font-mono">qis_results.sqlite</code>（tenor × side × spread 分键）。
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -440,7 +502,73 @@ const QisView: React.FC = () => {
                   : ''}
               </div>
             </div>
-            <p className="text-[11px] text-slate-600 leading-relaxed">{data.description}</p>
+            {calVolDocs ? (
+              <div className="text-[11px] text-slate-700 leading-relaxed space-y-2.5 border-t border-slate-100 pt-3">
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
+                    回测数据
+                  </div>
+                  <p>
+                    Wind close 库：期权 <code className="font-mono text-[10px]">mid_price←close</code>
+                    （S_DQ_CLOSE，无 settle fallback）；期货只用 close。
+                    执行时序：t−1 close 算信号 → t close 成交；持仓按次日 mid 差价 + 期货对冲 mark-to-market。
+                    标的：{calVolDocs.universeLine}。成本 v1 不计；初始 NAV ¥
+                    {(data.params.initial_nav / 1e8).toFixed(0)}亿。
+                  </p>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
+                    信号算子
+                  </div>
+                  <p>
+                    CT-IV：SVI otm，总方差对 T 插值（ACT/365），目标 T={calVolDocs.tNear}（{calVolDocs.near}）/
+                    {calVolDocs.tFar}（{calVolDocs.far}）。
+                    {calVolDocs.spreadModeNote}
+                    公式 <code className="font-mono text-[10px]">{calVolDocs.spreadFormula}</code>。
+                    滚动分位窗 {calVolDocs.zWin} 日（不含当日/未来）：入场 {enterPct}（Spread &gt; hi → Normal/+1；
+                    &lt; lo → Reverse/−1）；出场落入 {exitPct}% 带平仓。Reverse max hold = 20 交易日。
+                  </p>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
+                    {calVolDocs.sideBlock.title}
+                  </div>
+                  <p>{calVolDocs.sideBlock.body}</p>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
+                    仓位 / 参数
+                  </div>
+                  <p>
+                    tenor_pair=<code className="font-mono text-[10px]">{activeTenor}</code> ·
+                    side_mode=<code className="font-mono text-[10px]">{activeSide}</code> ·
+                    spread_mode=<code className="font-mono text-[10px]">{activeSpread}</code> ·
+                    z_window={calVolDocs.zWin}。
+                    远端美元 Vega 预算 = 1% NAV / vol-pt；
+                    N_{calVolDocs.near}=−N_{calVolDocs.far}·ν{calVolDocs.far}/ν{calVolDocs.near}（日频，净美元 Vega≈0）。
+                    双腿 ATM straddle + 日频期货 delta hedge。绩效自首次开仓次日起算。
+                  </p>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
+                    PnL / 希腊分解
+                  </div>
+                  <p>
+                    实际 PnL = 期权 mid 差价 + 期货对冲差价（数据源同上 close）。
+                    另有 Black-76 希腊分解面板（见下方 Cumulative Greeks）：
+                    ΔPnL≈(m_opt·ΣnΔ + m_fut·n_fut)·dS；
+                    Γ≈½ m_opt·ΣnΓ·(dS)²；
+                    Vega≈m_opt·Σ n·vega_pt·ΔIV·100；
+                    Theta≈m_opt·ΣnΘ·(1/365)；
+                    Basis≈m_fut·n_fut·Δ(F−S)；
+                    Residual = actual − (Δ+Γ+Vega+Θ+Basis)。
+                    实现：<code className="font-mono text-[10px]">backend/engine/calendar_vol_strategy.py</code>。
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <p className="text-[11px] text-slate-600 leading-relaxed">{data.description}</p>
+            )}
             <div className="flex flex-wrap gap-2">
               {data.legs.map((l) => (
                 <span
@@ -613,6 +741,9 @@ const QisView: React.FC = () => {
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
+                <p className="text-[9px] text-slate-400 mt-1">
+                  累积曲线对应上方口径中的 Black-76 分解；账面 NAV 仍以 mid MTM + 期货对冲为准，Residual 吸收模型与 MTM 之差。
+                </p>
               </div>
 
               {data.pnl_contribution && (
