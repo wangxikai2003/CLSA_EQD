@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import { Download, Layers, RefreshCw } from 'lucide-react';
 import {
@@ -255,6 +255,17 @@ const QisView: React.FC = () => {
     }));
   }, [data]);
 
+  const dailyGreeksChart = useMemo(() => {
+    const d = data?.pnl_daily_greeks;
+    if (!d?.dates?.length) return [];
+    return d.dates.map((dt, i) => ({
+      d: dt,
+      vega: d.vega_pnl[i],
+      theta: d.theta_pnl[i],
+      gamma: d.gamma_pnl[i],
+    }));
+  }, [data]);
+
   const tradeMarkers = useMemo(() => {
     const s = data?.signal;
     if (!s?.dates?.length || !s.position?.length) return [] as { d: string; y: number; kind: MarkerKind }[];
@@ -265,7 +276,39 @@ const QisView: React.FC = () => {
     return normalizeTradeMarkers(s.trade_markers, fallback, levelScale);
   }, [data, levelScale]);
 
+  /** Markers placed on CT-IV spread scale (vol pts) for the IV reference chart. */
+  const tradeMarkersIv = useMemo(() => {
+    const s = data?.signal;
+    if (!s?.dates?.length || !s.position?.length) return [] as { d: string; y: number; kind: MarkerKind }[];
+    const fallback = markersFromPosition(s.dates, s.position, (i) => {
+      const sp = s.spread_iv?.[i] ?? (levelScale === 100 ? s.spread[i] : null);
+      return sp == null || Number.isNaN(sp) ? null : sp * 100;
+    });
+    const raw = s.trade_markers;
+    if (!raw?.length) return fallback;
+    const out: { d: string; y: number; kind: MarkerKind }[] = [];
+    for (const m of raw) {
+      const kind = (m.kind === 'long' || m.kind === 'short' || m.kind === 'close'
+        ? m.kind
+        : m.position === 1
+          ? 'long'
+          : m.position === -1
+            ? 'short'
+            : 'close') as MarkerKind;
+      const y =
+        m.sos_iv != null && Number.isFinite(m.sos_iv)
+          ? m.sos_iv
+          : m.spread_iv != null && Number.isFinite(m.spread_iv)
+            ? m.spread_iv * 100
+            : null;
+      if (y == null) continue;
+      out.push({ d: m.d, y, kind });
+    }
+    return out.length ? out : fallback;
+  }, [data, levelScale]);
+
   const byKind = useMemo(() => markerMap(tradeMarkers), [tradeMarkers]);
+  const byKindIv = useMemo(() => markerMap(tradeMarkersIv), [tradeMarkersIv]);
 
   const signalChart = useMemo(() => {
     const s = data?.signal;
@@ -289,6 +332,39 @@ const QisView: React.FC = () => {
       };
     });
   }, [data, byKind, levelScale]);
+
+  /** CT-IV spread + its own rolling quantile bands (always vol-pt scale). */
+  const ivSpreadChart = useMemo(() => {
+    const s = data?.signal;
+    if (!s?.dates?.length) return [];
+    const ivSeries = s.spread_iv ?? (levelScale === 100 ? s.spread : null);
+    if (!ivSeries?.length) return [];
+    const useIvBands =
+      Array.isArray(s.iv_enter_hi) && s.iv_enter_hi.length === s.dates.length;
+    const useDecBands =
+      !useIvBands && Array.isArray(s.enter_hi) && s.enter_hi.length === s.dates.length && levelScale === 100;
+    const kindByD = byKindIv;
+    return s.dates.map((dt, i) => {
+      const raw = ivSeries[i];
+      const spreadPts = raw == null || Number.isNaN(raw) ? 0 : raw * 100;
+      const kind = kindByD.get(dt);
+      const eh = useIvBands ? s.iv_enter_hi![i] : useDecBands ? s.enter_hi![i] : null;
+      const el = useIvBands ? s.iv_enter_lo![i] : useDecBands ? s.enter_lo![i] : null;
+      const xh = useIvBands ? s.iv_exit_hi![i] : useDecBands ? s.exit_hi![i] : null;
+      const xl = useIvBands ? s.iv_exit_lo![i] : useDecBands ? s.exit_lo![i] : null;
+      return {
+        d: dt,
+        spread_pts: spreadPts,
+        enter_hi: eh != null ? (eh as number) * 100 : null,
+        enter_lo: el != null ? (el as number) * 100 : null,
+        exit_hi: xh != null ? (xh as number) * 100 : null,
+        exit_lo: xl != null ? (xl as number) * 100 : null,
+        long_pt: kind === 'long' ? spreadPts : null,
+        short_pt: kind === 'short' ? spreadPts : null,
+        close_pt: kind === 'close' ? spreadPts : null,
+      };
+    });
+  }, [data, byKindIv, levelScale]);
 
   const navChart = useMemo(() => {
     if (!data?.nav?.length) return [];
@@ -329,6 +405,12 @@ const QisView: React.FC = () => {
         ? `${tenorLabel} IV² spread (var ×100)`
         : `${tenorLabel} IV spread (vol pts)`
     : 'SoS (pts)';
+  const ivSpreadLabel = isCalVol
+    ? activeSpread === 'iv2'
+      ? `${tenorLabel} IV² spread (var ×100)`
+      : `${tenorLabel} IV spread (vol pts)`
+    : 'Spread (pts)';
+  const showGarchSignalChart = isCalVol && activeSignal === 'garch_z';
 
   const enterPct = data?.signal?.enter_q != null ? `${((1 - data.signal.enter_q) * 100).toFixed(0)}/${(data.signal.enter_q * 100).toFixed(0)}` : '10/90';
   const exitPct =
@@ -799,6 +881,29 @@ const QisView: React.FC = () => {
                 </p>
               </div>
 
+              {dailyGreeksChart.length > 0 && (
+                <div className="bg-white rounded-lg border border-slate-200 p-4">
+                  <h3 className="font-bold text-[#000066] text-sm mb-3">Daily Greeks PnL</h3>
+                  <div className="h-[280px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={dailyGreeksChart}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
+                        <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
+                        <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => fmtMoney(v)} />
+                        <Legend wrapperStyle={{ fontSize: 10 }} />
+                        <Bar dataKey="vega" name="Vega" fill={DECOMP_COLORS.vega} maxBarSize={6} />
+                        <Bar dataKey="gamma" name="Gamma" fill={DECOMP_COLORS.gamma} maxBarSize={6} />
+                        <Bar dataKey="theta" name="Theta" fill={DECOMP_COLORS.theta} maxBarSize={6} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <p className="text-[9px] text-slate-400 mt-1">
+                    日度（非累积）Vega / Gamma / Theta 分解 PnL；与上方累计曲线同源，仅展示未累加的日贡献。
+                  </p>
+                </div>
+              )}
+
               {data.pnl_contribution && (
                 <div className="bg-white rounded-lg border border-slate-200 p-4 overflow-x-auto">
                   <h3 className="font-bold text-[#000066] text-sm mb-3">PnL Risk Contribution</h3>
@@ -841,67 +946,73 @@ const QisView: React.FC = () => {
                 </div>
               )}
 
-              {data.signal && signalChart.length > 0 && (
+              {showGarchSignalChart && signalChart.length > 0 && (
                 <div className="bg-white rounded-lg border border-slate-200 p-4">
                   <h3 className="font-bold text-[#000066] text-sm mb-3">
-                    {tenorLabel} Spread & Rolling Quantile Bands
+                    {tenorLabel} GARCH-z & Rolling Quantile Bands
                   </h3>
                   <div className="h-[300px]">
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={signalChart}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                         <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
-                        <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} unit="pt" />
+                        <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
                         <Tooltip contentStyle={{ fontSize: 11 }} />
                         <Legend wrapperStyle={{ fontSize: 10 }} />
                         <Line type="monotone" dataKey="spread_pts" name={sosLabel} stroke={CHART.spread} dot={false} strokeWidth={1.5} />
                         <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
                         <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                        <Line type="monotone" dataKey="exit_hi" name={`Exit hi`} stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
-                        <Line type="monotone" dataKey="exit_lo" name={`Exit lo`} stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
-                        <Line
-                          type="monotone"
-                          dataKey="long_pt"
-                          name="Long"
-                          stroke={CHART.long}
-                          strokeWidth={0}
-                          dot={markerDot(CHART.long)}
-                          activeDot={false}
-                          legendType="circle"
-                          connectNulls={false}
-                          isAnimationActive={false}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="short_pt"
-                          name="Short"
-                          stroke={CHART.short}
-                          strokeWidth={0}
-                          dot={markerDot(CHART.short)}
-                          activeDot={false}
-                          legendType="circle"
-                          connectNulls={false}
-                          isAnimationActive={false}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="close_pt"
-                          name="Close"
-                          stroke={CHART.close}
-                          strokeWidth={0}
-                          dot={markerDot(CHART.close)}
-                          activeDot={false}
-                          legendType="circle"
-                          connectNulls={false}
-                          isAnimationActive={false}
-                        />
+                        <Line type="monotone" dataKey="exit_hi" name="Exit hi" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                        <Line type="monotone" dataKey="exit_lo" name="Exit lo" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                        <Line type="monotone" dataKey="long_pt" name="Long" stroke={CHART.long} strokeWidth={0} dot={markerDot(CHART.long)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                        <Line type="monotone" dataKey="short_pt" name="Short" stroke={CHART.short} strokeWidth={0} dot={markerDot(CHART.short)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                        <Line type="monotone" dataKey="close_pt" name="Close" stroke={CHART.close} strokeWidth={0} dot={markerDot(CHART.close)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
                   <p className="text-[9px] text-slate-400 mt-1">
-                    黄线：Spread。紫虚线：滚动入场分位（Spread &gt; hi → Normal/Long；&lt; lo → Reverse/Short）；灰虚线：出场带（落入 {exitPct}% 区间平仓）。
-                    散点：Long 红 · Short 绿 · 平仓蓝。分位仅用过去 {data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。
-                    {strategies.length ? '' : ''}
+                    黄线：garch_z（决策变量）。紫/灰虚线：对 garch_z 的滚动分位入场/出场带（与 Spread 策略同口径 10/90·40/60）。
+                    散点为实际成交：Long 红 · Short 绿 · 平仓蓝。
+                  </p>
+                </div>
+              )}
+
+              {data.signal && (showGarchSignalChart ? ivSpreadChart : signalChart).length > 0 && (
+                <div className="bg-white rounded-lg border border-slate-200 p-4">
+                  <h3 className="font-bold text-[#000066] text-sm mb-3">
+                    {tenorLabel} Spread & Rolling Quantile Bands
+                  </h3>
+                  <div className="h-[300px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={showGarchSignalChart ? ivSpreadChart : signalChart}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
+                        <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} unit="pt" />
+                        <Tooltip contentStyle={{ fontSize: 11 }} />
+                        <Legend wrapperStyle={{ fontSize: 10 }} />
+                        <Line
+                          type="monotone"
+                          dataKey="spread_pts"
+                          name={showGarchSignalChart ? ivSpreadLabel : sosLabel}
+                          stroke={CHART.spread}
+                          dot={false}
+                          strokeWidth={1.5}
+                        />
+                        <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                        <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                        <Line type="monotone" dataKey="exit_hi" name="Exit hi" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                        <Line type="monotone" dataKey="exit_lo" name="Exit lo" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                        <Line type="monotone" dataKey="long_pt" name="Long" stroke={CHART.long} strokeWidth={0} dot={markerDot(CHART.long)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                        <Line type="monotone" dataKey="short_pt" name="Short" stroke={CHART.short} strokeWidth={0} dot={markerDot(CHART.short)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                        <Line type="monotone" dataKey="close_pt" name="Close" stroke={CHART.close} strokeWidth={0} dot={markerDot(CHART.close)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <p className="text-[9px] text-slate-400 mt-1">
+                    黄线：CT-IV Spread（vol pts）。紫虚线：对 Spread 水平的滚动入场分位；灰虚线：出场带（落入 {exitPct}% 区间）。
+                    {showGarchSignalChart
+                      ? ' 本图为对照：GARCH-z 模式下实际开平仓由上方 garch_z 分位决定，散点仍标在成交日对应的 Spread 水平。'
+                      : ` 散点：Long 红 · Short 绿 · 平仓蓝。分位仅用过去 ${data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。`}
                   </p>
                 </div>
               )}

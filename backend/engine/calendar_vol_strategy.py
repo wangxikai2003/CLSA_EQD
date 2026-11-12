@@ -752,25 +752,50 @@ class CalendarVolBacktestEngine:
             ct_ref = self._daily_ct_iv(svi, t_near=T_3M, t_far=T_6M)
             ct = ct.reindex(ct_ref.index)
         z = rolling_zscore(ct["spread"], self.z_window)
+        # Always keep CT-IV spread quantile bands for the reference chart (even under garch_z).
+        spread_bands = rolling_quantile_bands(
+            ct["spread"],
+            self.z_window,
+            enter_q=self.enter_q,
+            exit_lo_q=self.exit_lo_q,
+            exit_hi_q=self.exit_hi_q,
+        ).rename(
+            columns={
+                "enter_hi": "iv_enter_hi",
+                "enter_lo": "iv_enter_lo",
+                "exit_hi": "iv_exit_hi",
+                "exit_lo": "iv_exit_lo",
+            }
+        )
         if self.signal_mode == "garch_z":
             from engine.garch_signal import GARCH_WARM, expanding_garch_z
 
             signal_level, _sigma = expanding_garch_z(ct["spread"])
             min_hist = GARCH_WARM + self.z_window + 30
+            bands = rolling_quantile_bands(
+                signal_level,
+                self.z_window,
+                enter_q=self.enter_q,
+                exit_lo_q=self.exit_lo_q,
+                exit_hi_q=self.exit_hi_q,
+            )
         else:
             signal_level = ct["spread"].astype(float)
             min_hist = self.z_window + 30
-        bands = rolling_quantile_bands(
-            signal_level,
-            self.z_window,
-            enter_q=self.enter_q,
-            exit_lo_q=self.exit_lo_q,
-            exit_hi_q=self.exit_hi_q,
-        )
+            # Decision bands == IV-spread bands.
+            bands = spread_bands.rename(
+                columns={
+                    "iv_enter_hi": "enter_hi",
+                    "iv_enter_lo": "enter_lo",
+                    "iv_exit_hi": "exit_hi",
+                    "iv_exit_lo": "exit_lo",
+                }
+            )
         ct = (
             ct.join(z.rename("z"), how="left")
             .join(signal_level.rename("signal_level"), how="left")
             .join(bands, how="left")
+            .join(spread_bands, how="left")
         )
 
         dates = sorted(set(ct.index) & set(spot.index) & set(front.index) & set(opt["trade_date"]))
@@ -810,6 +835,14 @@ class CalendarVolBacktestEngine:
             el_f = float(el) if pd.notna(el) else float("nan")
             xh_f = float(xh) if pd.notna(xh) else float("nan")
             xl_f = float(xl) if pd.notna(xl) else float("nan")
+            iv_eh = ct.loc[d, "iv_enter_hi"]
+            iv_el = ct.loc[d, "iv_enter_lo"]
+            iv_xh = ct.loc[d, "iv_exit_hi"]
+            iv_xl = ct.loc[d, "iv_exit_lo"]
+            iv_eh_f = float(iv_eh) if pd.notna(iv_eh) else float("nan")
+            iv_el_f = float(iv_el) if pd.notna(iv_el) else float("nan")
+            iv_xh_f = float(iv_xh) if pd.notna(iv_xh) else float("nan")
+            iv_xl_f = float(iv_xl) if pd.notna(iv_xl) else float("nan")
             iv_near_raw = ct.loc[d, "iv_near"]
             iv_far_raw = ct.loc[d, "iv_far"]
             iv_near_f = float(iv_near_raw) if pd.notna(iv_near_raw) else float("nan")
@@ -918,6 +951,10 @@ class CalendarVolBacktestEngine:
                     "enter_lo": el_f if math.isfinite(el_f) else None,
                     "exit_hi": xh_f if math.isfinite(xh_f) else None,
                     "exit_lo": xl_f if math.isfinite(xl_f) else None,
+                    "iv_enter_hi": iv_eh_f if math.isfinite(iv_eh_f) else None,
+                    "iv_enter_lo": iv_el_f if math.isfinite(iv_el_f) else None,
+                    "iv_exit_hi": iv_xh_f if math.isfinite(iv_xh_f) else None,
+                    "iv_exit_lo": iv_xl_f if math.isfinite(iv_xl_f) else None,
                     "position": target,  # executed / held after t close
                     "signal_next": signal_next,  # to be traded at t+1 close
                     "n_near": n_near,
@@ -1064,13 +1101,14 @@ class CalendarVolBacktestEngine:
             metrics[name]["start"] = str(nav_w.index[0]) if len(nav_w) else None
             metrics[name]["end"] = str(nav_w.index[-1]) if len(nav_w) else None
 
-        def _sos_pts(sp: Any) -> Optional[float]:
+        def _sos_pts(sp: Any, scale: Optional[float] = None) -> Optional[float]:
             """Scaled level for overlay charts (vol pts or garch_z units)."""
+            sc = self.level_scale if scale is None else float(scale)
             try:
                 x = float(sp)
             except (TypeError, ValueError):
                 return None
-            return None if not math.isfinite(x) else round(x * self.level_scale, 4)
+            return None if not math.isfinite(x) else round(x * sc, 4)
 
         step = max(1, len(perf) // 800)
         nav_idx = list(range(0, len(perf), step))
@@ -1105,6 +1143,13 @@ class CalendarVolBacktestEngine:
             "basis_pnl": _col("cum_basis"),
             "net_delta_pnl": _col("cum_delta"),
             "residual_pnl": _col("cum_resid"),
+        }
+        # Daily (non-cumulative) greek PnL for bar chart under the cumulative panel.
+        pnl_daily_greeks = {
+            "dates": [perf[i]["d"] for i in dec_idx],
+            "vega_pnl": [round(float(perf[i]["vega_pnl"]), 4) for i in dec_idx],
+            "theta_pnl": [round(float(perf[i]["theta_pnl"]), 4) for i in dec_idx],
+            "gamma_pnl": [round(float(perf[i]["gamma_pnl"]), 4) for i in dec_idx],
         }
 
         # signal chart: include warm-up history for Z context, but mark performance start
@@ -1146,6 +1191,8 @@ class CalendarVolBacktestEngine:
                     "kind": kind,
                     "spread": _opt(rows[i]["spread"]),
                     "sos": _sos_pts(rows[i]["spread"]),
+                    "spread_iv": _opt(rows[i].get("spread_iv")),
+                    "sos_iv": _sos_pts(rows[i].get("spread_iv"), scale=100.0),
                     "position": curr_p,
                     "prev_position": prev_p,
                 }
@@ -1160,6 +1207,11 @@ class CalendarVolBacktestEngine:
             "enter_lo": [_opt(rows[i]["enter_lo"]) for i in sig_idx],
             "exit_hi": [_opt(rows[i]["exit_hi"]) for i in sig_idx],
             "exit_lo": [_opt(rows[i]["exit_lo"]) for i in sig_idx],
+            # CT-IV spread rolling bands (reference chart; = decision bands when quantile mode)
+            "iv_enter_hi": [_opt(rows[i].get("iv_enter_hi")) for i in sig_idx],
+            "iv_enter_lo": [_opt(rows[i].get("iv_enter_lo")) for i in sig_idx],
+            "iv_exit_hi": [_opt(rows[i].get("iv_exit_hi")) for i in sig_idx],
+            "iv_exit_lo": [_opt(rows[i].get("iv_exit_lo")) for i in sig_idx],
             "position": [rows[i]["position"] for i in sig_idx],  # executed at t close
             "signal_next": [rows[i]["signal_next"] for i in sig_idx],  # for t+1 trade
             "trade_markers": trade_markers,
@@ -1306,6 +1358,7 @@ class CalendarVolBacktestEngine:
                 "first_open": open_row["d"],
             },
             "pnl_decomposition": pnl_decomposition,
+            "pnl_daily_greeks": pnl_daily_greeks,
             "signal": signal,
             "pnl_contribution": {
                 "total_pnl": round(total_pnl, 2),

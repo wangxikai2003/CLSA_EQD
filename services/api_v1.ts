@@ -412,6 +412,14 @@ export interface QisPnLDecomposition {
   residual_pnl: number[];
 }
 
+/** Daily (non-cumulative) greek PnL for bar charts. */
+export interface QisDailyGreeks {
+  dates: string[];
+  vega_pnl: number[];
+  theta_pnl: number[];
+  gamma_pnl: number[];
+}
+
 export type QisTenorPair = '3M-6M' | '1M-3M';
 export type QisSideMode = 'both' | 'long_only' | 'short_only';
 export type QisSpreadMode = 'iv' | 'iv2';
@@ -422,6 +430,9 @@ export interface QisTradeMarker {
   kind: 'long' | 'short' | 'close' | string;
   spread?: number | null;
   sos?: number | null;
+  /** CT-IV spread level (for IV reference chart under garch_z). */
+  spread_iv?: number | null;
+  sos_iv?: number | null;
   position?: number;
   prev_position?: number;
 }
@@ -443,6 +454,11 @@ export interface QisSignalSeries {
   enter_lo?: (number | null)[];
   exit_hi?: (number | null)[];
   exit_lo?: (number | null)[];
+  /** CT-IV spread rolling bands (reference; equals enter_* when signal_mode=quantile). */
+  iv_enter_hi?: (number | null)[];
+  iv_enter_lo?: (number | null)[];
+  iv_exit_hi?: (number | null)[];
+  iv_exit_lo?: (number | null)[];
   enter_q?: number;
   exit_lo_q?: number;
   exit_hi_q?: number;
@@ -493,6 +509,8 @@ export interface QisBacktestResponse {
     first_open?: string;
   };
   pnl_decomposition?: QisPnLDecomposition;
+  /** Daily greek PnL bars (calendar-vol). */
+  pnl_daily_greeks?: QisDailyGreeks;
   signal?: QisSignalSeries;
   pnl_contribution?: QisPnLContribution;
 }
