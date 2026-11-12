@@ -15,6 +15,7 @@ import {
   QisTenorPair,
   QisTradeMarker,
 } from '../../services/api_v1';
+import ChartZoomFrame from './ChartZoomFrame';
 
 const CAL_VOL_TENORS: { key: QisTenorPair; label: string }[] = [
   { key: '3M-6M', label: '3M–6M' },
@@ -733,79 +734,33 @@ const QisView: React.FC = () => {
 
           <div className="bg-white rounded-lg border border-slate-200 p-4">
             <h3 className="font-bold text-[#000066] text-sm mb-3">净值曲线 (NAV / initial)</h3>
-            <div className="h-[340px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={navChart}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
-                  <YAxis yAxisId="nav" tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
-                  <YAxis yAxisId="sos" orientation="right" tick={{ fontSize: 9 }} domain={['auto', 'auto']} />
-                  <Tooltip contentStyle={{ fontSize: 11 }} />
-                  <Legend wrapperStyle={{ fontSize: 10 }} />
-                  <Line
-                    yAxisId="nav"
-                    type="monotone"
-                    dataKey="nav"
-                    name="NAV multiple"
-                    stroke={CHART.nav}
-                    dot={false}
-                    strokeWidth={2}
-                  />
-                  <Line
-                    yAxisId="sos"
-                    type="monotone"
-                    dataKey="sos"
-                    name={sosLabel}
-                    stroke={CHART.spread}
-                    dot={false}
-                    strokeWidth={1}
-                    strokeOpacity={0.55}
-                  />
-                  <Line
-                    yAxisId="sos"
-                    type="monotone"
-                    dataKey="long_pt"
-                    name="Long"
-                    stroke={CHART.long}
-                    strokeWidth={0}
-                    dot={markerDot(CHART.long)}
-                    activeDot={false}
-                    legendType="circle"
-                    connectNulls={false}
-                    isAnimationActive={false}
-                  />
-                  <Line
-                    yAxisId="sos"
-                    type="monotone"
-                    dataKey="short_pt"
-                    name="Short"
-                    stroke={CHART.short}
-                    strokeWidth={0}
-                    dot={markerDot(CHART.short)}
-                    activeDot={false}
-                    legendType="circle"
-                    connectNulls={false}
-                    isAnimationActive={false}
-                  />
-                  <Line
-                    yAxisId="sos"
-                    type="monotone"
-                    dataKey="close_pt"
-                    name="Close"
-                    stroke={CHART.close}
-                    strokeWidth={0}
-                    dot={markerDot(CHART.close)}
-                    activeDot={false}
-                    legendType="circle"
-                    connectNulls={false}
-                    isAnimationActive={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
+            <ChartZoomFrame data={navChart} yKeys={['nav', 'sos']} height={340}>
+              {(win) => (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={win.data}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                    <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
+                    <YAxis
+                      yAxisId="nav"
+                      tick={{ fontSize: 10 }}
+                      domain={win.yDomain ?? ['auto', 'auto']}
+                      allowDataOverflow={!!win.yDomain}
+                    />
+                    <YAxis yAxisId="sos" orientation="right" tick={{ fontSize: 9 }} domain={['auto', 'auto']} />
+                    <Tooltip contentStyle={{ fontSize: 11 }} />
+                    <Legend wrapperStyle={{ fontSize: 10 }} />
+                    <Line yAxisId="nav" type="monotone" dataKey="nav" name="NAV multiple" stroke={CHART.nav} dot={false} strokeWidth={2} />
+                    <Line yAxisId="sos" type="monotone" dataKey="sos" name={sosLabel} stroke={CHART.spread} dot={false} strokeWidth={1} strokeOpacity={0.55} />
+                    <Line yAxisId="sos" type="monotone" dataKey="long_pt" name="Long" stroke={CHART.long} strokeWidth={0} dot={markerDot(CHART.long)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                    <Line yAxisId="sos" type="monotone" dataKey="short_pt" name="Short" stroke={CHART.short} strokeWidth={0} dot={markerDot(CHART.short)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                    <Line yAxisId="sos" type="monotone" dataKey="close_pt" name="Close" stroke={CHART.close} strokeWidth={0} dot={markerDot(CHART.close)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </ChartZoomFrame>
             <p className="text-[9px] text-slate-400 mt-1">
               黄线：净值（粗）与 IV spread（细）。点落在 spread 轴上：Long/Normal 红 · Short/Reverse 绿 · 平仓蓝
-              （由 executed position 变化推导）。
+              （由 executed position 变化推导）。贴边滑条：横向/纵向缩放与平移。
             </p>
           </div>
 
@@ -859,23 +814,33 @@ const QisView: React.FC = () => {
             <>
               <div className="bg-white rounded-lg border border-slate-200 p-4">
                 <h3 className="font-bold text-[#000066] text-sm mb-3">Cumulative Greeks & Basis PnL</h3>
-                <div className="h-[320px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={decompChart}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
-                      <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
-                      <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => fmtMoney(v)} />
-                      <Legend wrapperStyle={{ fontSize: 10 }} />
-                      <Line type="monotone" dataKey="vega" name="Vega" stroke={DECOMP_COLORS.vega} dot={false} strokeWidth={1.5} />
-                      <Line type="monotone" dataKey="theta" name="Theta" stroke={DECOMP_COLORS.theta} dot={false} strokeWidth={1.5} />
-                      <Line type="monotone" dataKey="gamma" name="Gamma" stroke={DECOMP_COLORS.gamma} dot={false} strokeWidth={1.5} />
-                      <Line type="monotone" dataKey="basis" name="Basis" stroke={DECOMP_COLORS.basis} dot={false} strokeWidth={1.5} />
-                      <Line type="monotone" dataKey="net_delta" name="Net Delta" stroke={DECOMP_COLORS.net_delta} dot={false} strokeWidth={1.5} />
-                      <Line type="monotone" dataKey="residual" name="Residual" stroke={DECOMP_COLORS.residual} dot={false} strokeWidth={1} strokeDasharray="4 3" />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
+                <ChartZoomFrame
+                  data={decompChart}
+                  yKeys={['vega', 'theta', 'gamma', 'basis', 'net_delta', 'residual']}
+                  height={320}
+                >
+                  {(win) => (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={win.data}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
+                        <YAxis
+                          tick={{ fontSize: 10 }}
+                          domain={win.yDomain ?? ['auto', 'auto']}
+                          allowDataOverflow={!!win.yDomain}
+                        />
+                        <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => fmtMoney(v)} />
+                        <Legend wrapperStyle={{ fontSize: 10 }} />
+                        <Line type="monotone" dataKey="vega" name="Vega" stroke={DECOMP_COLORS.vega} dot={false} strokeWidth={1.5} />
+                        <Line type="monotone" dataKey="theta" name="Theta" stroke={DECOMP_COLORS.theta} dot={false} strokeWidth={1.5} />
+                        <Line type="monotone" dataKey="gamma" name="Gamma" stroke={DECOMP_COLORS.gamma} dot={false} strokeWidth={1.5} />
+                        <Line type="monotone" dataKey="basis" name="Basis" stroke={DECOMP_COLORS.basis} dot={false} strokeWidth={1.5} />
+                        <Line type="monotone" dataKey="net_delta" name="Net Delta" stroke={DECOMP_COLORS.net_delta} dot={false} strokeWidth={1.5} />
+                        <Line type="monotone" dataKey="residual" name="Residual" stroke={DECOMP_COLORS.residual} dot={false} strokeWidth={1} strokeDasharray="4 3" />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
+                </ChartZoomFrame>
                 <p className="text-[9px] text-slate-400 mt-1">
                   累积曲线对应上方口径中的 Black-76 分解；账面 NAV 仍以 mid MTM + 期货对冲为准，Residual 吸收模型与 MTM 之差。
                 </p>
@@ -884,22 +849,36 @@ const QisView: React.FC = () => {
               {dailyGreeksChart.length > 0 && (
                 <div className="bg-white rounded-lg border border-slate-200 p-4">
                   <h3 className="font-bold text-[#000066] text-sm mb-3">Daily Greeks PnL</h3>
-                  <div className="h-[280px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={dailyGreeksChart}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                        <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
-                        <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
-                        <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => fmtMoney(v)} />
-                        <Legend wrapperStyle={{ fontSize: 10 }} />
-                        <Bar dataKey="vega" name="Vega" fill={DECOMP_COLORS.vega} maxBarSize={6} />
-                        <Bar dataKey="gamma" name="Gamma" fill={DECOMP_COLORS.gamma} maxBarSize={6} />
-                        <Bar dataKey="theta" name="Theta" fill={DECOMP_COLORS.theta} maxBarSize={6} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
+                  <ChartZoomFrame data={dailyGreeksChart} yKeys={['vega', 'gamma', 'theta']} height={280}>
+                    {(win) => (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={win.data}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                          <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
+                          <YAxis
+                            yAxisId="vega"
+                            tick={{ fontSize: 10 }}
+                            domain={['auto', 'auto']}
+                            stroke={DECOMP_COLORS.vega}
+                          />
+                          <YAxis
+                            yAxisId="gt"
+                            orientation="right"
+                            tick={{ fontSize: 10 }}
+                            domain={['auto', 'auto']}
+                            stroke={DECOMP_COLORS.gamma}
+                          />
+                          <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => fmtMoney(v)} />
+                          <Legend wrapperStyle={{ fontSize: 10 }} />
+                          <Bar yAxisId="vega" dataKey="vega" name="Vega (左轴)" fill={DECOMP_COLORS.vega} maxBarSize={6} />
+                          <Bar yAxisId="gt" dataKey="gamma" name="Gamma (右轴)" fill={DECOMP_COLORS.gamma} maxBarSize={6} />
+                          <Bar yAxisId="gt" dataKey="theta" name="Theta (右轴)" fill={DECOMP_COLORS.theta} maxBarSize={6} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    )}
+                  </ChartZoomFrame>
                   <p className="text-[9px] text-slate-400 mt-1">
-                    日度（非累积）Vega / Gamma / Theta 分解 PnL；与上方累计曲线同源，仅展示未累加的日贡献。
+                    日度（非累积）分解：Vega 用左轴；Gamma / Theta 用右轴（量级通常更小）。贴边滑条可缩放/平移。
                   </p>
                 </div>
               )}
@@ -951,25 +930,35 @@ const QisView: React.FC = () => {
                   <h3 className="font-bold text-[#000066] text-sm mb-3">
                     {tenorLabel} GARCH-z & Rolling Quantile Bands
                   </h3>
-                  <div className="h-[300px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={signalChart}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                        <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
-                        <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
-                        <Tooltip contentStyle={{ fontSize: 11 }} />
-                        <Legend wrapperStyle={{ fontSize: 10 }} />
-                        <Line type="monotone" dataKey="spread_pts" name={sosLabel} stroke={CHART.spread} dot={false} strokeWidth={1.5} />
-                        <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                        <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                        <Line type="monotone" dataKey="exit_hi" name="Exit hi" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
-                        <Line type="monotone" dataKey="exit_lo" name="Exit lo" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
-                        <Line type="monotone" dataKey="long_pt" name="Long" stroke={CHART.long} strokeWidth={0} dot={markerDot(CHART.long)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
-                        <Line type="monotone" dataKey="short_pt" name="Short" stroke={CHART.short} strokeWidth={0} dot={markerDot(CHART.short)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
-                        <Line type="monotone" dataKey="close_pt" name="Close" stroke={CHART.close} strokeWidth={0} dot={markerDot(CHART.close)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
+                  <ChartZoomFrame
+                    data={signalChart}
+                    yKeys={['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']}
+                    height={300}
+                  >
+                    {(win) => (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={win.data}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                          <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
+                          <YAxis
+                            tick={{ fontSize: 10 }}
+                            domain={win.yDomain ?? ['auto', 'auto']}
+                            allowDataOverflow={!!win.yDomain}
+                          />
+                          <Tooltip contentStyle={{ fontSize: 11 }} />
+                          <Legend wrapperStyle={{ fontSize: 10 }} />
+                          <Line type="monotone" dataKey="spread_pts" name={sosLabel} stroke={CHART.spread} dot={false} strokeWidth={1.5} />
+                          <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                          <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                          <Line type="monotone" dataKey="exit_hi" name="Exit hi" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                          <Line type="monotone" dataKey="exit_lo" name="Exit lo" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                          <Line type="monotone" dataKey="long_pt" name="Long" stroke={CHART.long} strokeWidth={0} dot={markerDot(CHART.long)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                          <Line type="monotone" dataKey="short_pt" name="Short" stroke={CHART.short} strokeWidth={0} dot={markerDot(CHART.short)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                          <Line type="monotone" dataKey="close_pt" name="Close" stroke={CHART.close} strokeWidth={0} dot={markerDot(CHART.close)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    )}
+                  </ChartZoomFrame>
                   <p className="text-[9px] text-slate-400 mt-1">
                     黄线：garch_z（决策变量）。紫/灰虚线：对 garch_z 的滚动分位入场/出场带（与 Spread 策略同口径 10/90·40/60）。
                     散点为实际成交：Long 红 · Short 绿 · 平仓蓝。
@@ -982,32 +971,43 @@ const QisView: React.FC = () => {
                   <h3 className="font-bold text-[#000066] text-sm mb-3">
                     {tenorLabel} Spread & Rolling Quantile Bands
                   </h3>
-                  <div className="h-[300px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={showGarchSignalChart ? ivSpreadChart : signalChart}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                        <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
-                        <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} unit="pt" />
-                        <Tooltip contentStyle={{ fontSize: 11 }} />
-                        <Legend wrapperStyle={{ fontSize: 10 }} />
-                        <Line
-                          type="monotone"
-                          dataKey="spread_pts"
-                          name={showGarchSignalChart ? ivSpreadLabel : sosLabel}
-                          stroke={CHART.spread}
-                          dot={false}
-                          strokeWidth={1.5}
-                        />
-                        <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                        <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                        <Line type="monotone" dataKey="exit_hi" name="Exit hi" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
-                        <Line type="monotone" dataKey="exit_lo" name="Exit lo" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
-                        <Line type="monotone" dataKey="long_pt" name="Long" stroke={CHART.long} strokeWidth={0} dot={markerDot(CHART.long)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
-                        <Line type="monotone" dataKey="short_pt" name="Short" stroke={CHART.short} strokeWidth={0} dot={markerDot(CHART.short)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
-                        <Line type="monotone" dataKey="close_pt" name="Close" stroke={CHART.close} strokeWidth={0} dot={markerDot(CHART.close)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
+                  <ChartZoomFrame
+                    data={showGarchSignalChart ? ivSpreadChart : signalChart}
+                    yKeys={['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']}
+                    height={300}
+                  >
+                    {(win) => (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={win.data}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                          <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
+                          <YAxis
+                            tick={{ fontSize: 10 }}
+                            domain={win.yDomain ?? ['auto', 'auto']}
+                            allowDataOverflow={!!win.yDomain}
+                            unit="pt"
+                          />
+                          <Tooltip contentStyle={{ fontSize: 11 }} />
+                          <Legend wrapperStyle={{ fontSize: 10 }} />
+                          <Line
+                            type="monotone"
+                            dataKey="spread_pts"
+                            name={showGarchSignalChart ? ivSpreadLabel : sosLabel}
+                            stroke={CHART.spread}
+                            dot={false}
+                            strokeWidth={1.5}
+                          />
+                          <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                          <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                          <Line type="monotone" dataKey="exit_hi" name="Exit hi" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                          <Line type="monotone" dataKey="exit_lo" name="Exit lo" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                          <Line type="monotone" dataKey="long_pt" name="Long" stroke={CHART.long} strokeWidth={0} dot={markerDot(CHART.long)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                          <Line type="monotone" dataKey="short_pt" name="Short" stroke={CHART.short} strokeWidth={0} dot={markerDot(CHART.short)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                          <Line type="monotone" dataKey="close_pt" name="Close" stroke={CHART.close} strokeWidth={0} dot={markerDot(CHART.close)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    )}
+                  </ChartZoomFrame>
                   <p className="text-[9px] text-slate-400 mt-1">
                     黄线：CT-IV Spread（vol pts）。紫虚线：对 Spread 水平的滚动入场分位；灰虚线：出场带（落入 {exitPct}% 区间）。
                     {showGarchSignalChart
