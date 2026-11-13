@@ -857,13 +857,21 @@ const App: React.FC = () => {
         {/* --- TAB 2: EXOTICS WORKBENCH (mount only when active — avoids API stampede) --- */}
         {activeTab === ActiveTab.EXOTIC && (
         <div className="space-y-6">
-             <ExoticWorkbench spot={spotPrice} r={riskFreeRate} vol={flatVol} />
+             <ExoticWorkbench
+               spot={spotPrice}
+               r={riskFreeRate}
+               vol={flatVol}
+               computePaused={showLegacyExotic}
+             />
              <details
                className="bg-white rounded-lg border border-slate-200 shadow-sm"
                onToggle={(e) => setShowLegacyExotic((e.target as HTMLDetailsElement).open)}
              >
                <summary className="cursor-pointer px-4 py-3 text-sm font-bold text-slate-500">
                  Legacy Exotic Pricer (Snowball / FCN charts)
+                 <span className="ml-2 font-normal text-slate-400">
+                   (pauses Workbench GTS while open — avoids Cloud Run overload)
+                 </span>
                </summary>
                {showLegacyExotic && (
                <div className="p-2 border-t border-slate-100">

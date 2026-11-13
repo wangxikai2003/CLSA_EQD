@@ -5,17 +5,18 @@ import { generateExoticAnalysis, priceExoticBackend, USE_LOCAL_MC } from '../ser
 import { generateMockHistory, runRollingBacktest } from '../services/backtestService';
 import { Play, TrendingUp, Activity, Settings, ChevronRight, Maximize2, History, Calendar, RotateCcw, RefreshCw } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, ReferenceArea } from 'recharts';
-import { GreeksChart } from './Charts';
 import { JwParams } from '../services/api';
 import JwParamPanel from './JwParamPanel';
 import ProgressBar from './ProgressBar';
 import { useExoticPricing } from '../hooks/useExoticPricing';
 import GreeksTermStructureView from './GreeksTermStructureView';
+import ExoticDeskCharts from './ExoticDeskCharts';
 import {
   abortGreeksTermStructure,
   fetchGreeksTermStructure,
   type GreeksTermStructureResponse,
 } from '../services/api_v1';
+import type { ExpiryPayoffParams } from '../utils/exoticExpiryPayoff';
 
 interface Props {
   spot: number;
@@ -96,15 +97,12 @@ const ExoticPricer: React.FC<Props> = ({
   const [deskOpen, setDeskOpen] = useState(false);
   const [barrierShiftBps, setBarrierShiftBps] = useState(0);
   const [smoothingPct, setSmoothingPct] = useState(2.0); // percent → width
-  const [showNominal, setShowNominal] = useState(true);
-  const [showDesk, setShowDesk] = useState(true);
-  const [showPreKI, setShowPreKI] = useState(true);
-  const [showPostKI, setShowPostKI] = useState(true);
   const [reserveInfo, setReserveInfo] = useState<{ reserve: number; pv_shifted: number } | null>(null);
   const [kiSpread, setKiSpread] = useState<number | null>(null);
   const priceAbortRef = useRef<AbortController | null>(null);
   const gtsAbortRef = useRef<AbortController | null>(null);
   const [gtsData, setGtsData] = useState<GreeksTermStructureResponse | null>(null);
+  const [gtsVariants, setGtsVariants] = useState<Partial<Record<'baseline' | 'shift' | 'smooth' | 'desk', GreeksTermStructureResponse | null>>>({});
   const [gtsLoading, setGtsLoading] = useState(false);
   const [kiMonitoring, setKiMonitoring] = useState<'DAILY' | 'EUROPEAN'>('DAILY');
   const { progress, cancel: cancelStream, loading: streamLoading } = useExoticPricing();
@@ -135,6 +133,34 @@ const ExoticPricer: React.FC<Props> = ({
       return manualVol;
   }, [pricingVolType, volModel, spot, maturity, manualVol]);
 
+  const expiryPayoffParams: ExpiryPayoffParams | null = useMemo(() => {
+    if (productType === ExoticType.SNOWBALL) {
+      return {
+        kind: 'snowball',
+        ko: koLevel,
+        ki: kiLevel,
+        putStrike: 1.0,
+        couponAtT: koCoupon * maturity,
+        bonusAtT: divCoupon * maturity,
+        barrierShiftBps,
+        smoothingWidth: smoothingPct / 100,
+      };
+    }
+    if (productType === ExoticType.FCN) {
+      return {
+        kind: 'fcn',
+        ko: koLevel,
+        ki: strikePct,
+        putStrike: strikePct,
+        couponAtT: 0,
+        bonusAtT: 0,
+        barrierShiftBps,
+        smoothingWidth: smoothingPct / 100,
+      };
+    }
+    return null;
+  }, [productType, koLevel, kiLevel, strikePct, koCoupon, divCoupon, maturity, barrierShiftBps, smoothingPct]);
+
   const product: ExoticProduct = useMemo(() => ({
     type: productType,
     spotRef: spot,
@@ -157,10 +183,11 @@ const ExoticPricer: React.FC<Props> = ({
     rebate: rebatePct,
   }), [productType, spot, maturity, effectiveVol, r, notional, kiLevel, koLevel, koCoupon, divCoupon, stepDown, obsFreq, strikePct, barrierPct, rebatePct, fixedCouponPa]);
 
-  // Greeks term-structure (AbortController + debounce)
+  // Greeks term-structure: sequential desk variants (parallel 4× crashes Cloud Run / 503)
   useEffect(() => {
     if (productType === ExoticType.SHARKFIN) {
       setGtsData(null);
+      setGtsVariants({});
       return;
     }
     gtsAbortRef.current?.abort();
@@ -169,49 +196,90 @@ const ExoticPricer: React.FC<Props> = ({
     gtsAbortRef.current = ctrl;
     const timer = window.setTimeout(async () => {
       setGtsLoading(true);
+      const softW = smoothingPct / 100;
+      type Vid = 'baseline' | 'shift' | 'smooth' | 'desk';
+      const wanted: { id: Vid; bps: number; w: number }[] = [
+        { id: 'baseline', bps: 0, w: 0 },
+        { id: 'shift', bps: barrierShiftBps, w: 0 },
+        { id: 'smooth', bps: 0, w: softW },
+        { id: 'desk', bps: barrierShiftBps, w: softW },
+      ];
+      // Dedupe identical (bps, width) so shift=0 does not re-hit the API 4×
+      const groups = new Map<string, { bps: number; w: number; ids: Vid[] }>();
+      for (const c of wanted) {
+        const key = `${c.bps}|${c.w}`;
+        const g = groups.get(key);
+        if (g) g.ids.push(c.id);
+        else groups.set(key, { bps: c.bps, w: c.w, ids: [c.id] });
+      }
+      const order = Array.from(groups.values()).sort((a, b) => {
+        // baseline first so the chart can paint ASAP
+        const score = (g: { bps: number; w: number }) => (g.bps === 0 && g.w === 0 ? 0 : g.bps === 0 ? 1 : g.w === 0 ? 2 : 3);
+        return score(a) - score(b);
+      });
+
+      const ptype = productType === ExoticType.FCN ? 'fcn' : 'snowball';
+      const baseReq = {
+        product_type: ptype,
+        product: {
+          tenor: maturity,
+          ko_barrier: koLevel,
+          ki_barrier: productType === ExoticType.FCN ? strikePct : kiLevel,
+          strike: productType === ExoticType.FCN ? strikePct : 1.0,
+          coupon: productType === ExoticType.FCN ? fixedCouponPa : koCoupon,
+          bonus_coupon: divCoupon,
+          step_down: stepDown,
+          obs_freq: obsFreq.toLowerCase(),
+          fixed_coupon_pa: fixedCouponPa,
+          snowball_coupon_pa: koCoupon,
+        },
+        market: {
+          spots: [spot],
+          r,
+          q: [0],
+          flat_vols: [effectiveVol],
+          vol_mode: 'flat' as const,
+        },
+        spot_range: [spot * (1 - viewRange * 1.5), spot * (1 + viewRange * 1.5)],
+        spot_steps: 25,
+        ki_monitoring_type: kiMonitoring,
+        ko_monitoring_type: 'EUROPEAN',
+        include_greeks: ['pv', 'delta', 'gamma'],
+        n_paths: 2000,
+      };
+
+      const next: Partial<Record<Vid, GreeksTermStructureResponse | null>> = {};
+      let painted = false;
       try {
-        const ptype = productType === ExoticType.FCN ? 'fcn' : 'snowball';
-        const res = await fetchGreeksTermStructure(
-          {
-            product_type: ptype,
-            product: {
-              tenor: maturity,
-              ko_barrier: koLevel,
-              ki_barrier: productType === ExoticType.FCN ? strikePct : kiLevel,
-              strike: productType === ExoticType.FCN ? strikePct : 1.0,
-              coupon: productType === ExoticType.FCN ? fixedCouponPa : koCoupon,
-              bonus_coupon: divCoupon,
-              step_down: stepDown,
-              obs_freq: obsFreq.toLowerCase(),
-              fixed_coupon_pa: fixedCouponPa,
-              snowball_coupon_pa: koCoupon,
-            },
-            market: {
-              spots: [spot],
-              r,
-              q: [0],
-              flat_vols: [effectiveVol],
-              vol_mode: 'flat',
-            },
-            spot_range: [spot * (1 - viewRange * 1.5), spot * (1 + viewRange * 1.5)],
-            spot_steps: 41,
-            ki_monitoring_type: kiMonitoring,
-            ko_monitoring_type: 'EUROPEAN',
-            include_greeks: ['pv', 'delta', 'gamma'],
-            n_paths: 4000,
-            barrier_shift_bps: barrierShiftBps,
-            spread_smoothing_width: smoothingPct / 100,
-          },
-          ctrl.signal,
-        );
-        if (!ctrl.signal.aborted) setGtsData(res);
-      } catch (e) {
-        if ((e as Error)?.name === 'AbortError') return;
-        console.warn('greeks-term-structure', e);
+        for (const g of order) {
+          if (ctrl.signal.aborted) return;
+          try {
+            const res = await fetchGreeksTermStructure(
+              {
+                ...baseReq,
+                barrier_shift_bps: g.bps,
+                spread_smoothing_width: g.w,
+              },
+              ctrl.signal,
+            );
+            if (ctrl.signal.aborted) return;
+            for (const id of g.ids) next[id] = res;
+            setGtsVariants({ ...next });
+            if (!painted) {
+              setGtsData(res);
+              painted = true;
+              setGtsLoading(false); // show chart while remaining variants load
+            }
+          } catch (e) {
+            if ((e as Error)?.name === 'AbortError') return;
+            console.warn('greeks-term-structure variant', g.ids.join(','), e);
+          }
+        }
+        if (!painted) setGtsData(null);
       } finally {
         if (!ctrl.signal.aborted) setGtsLoading(false);
       }
-    }, 280);
+    }, 320);
     return () => {
       window.clearTimeout(timer);
       ctrl.abort();
@@ -634,23 +702,9 @@ const ExoticPricer: React.FC<Props> = ({
                                             className="w-full accent-[#EAB308]"
                                         />
                                     </div>
-                                    <div className="flex flex-wrap gap-3 text-slate-600">
-                                        <label className="flex items-center gap-1">
-                                            <input type="checkbox" checked={showPreKI} onChange={(e) => setShowPreKI(e.target.checked)} />
-                                            Pre-KI Greeks
-                                        </label>
-                                        <label className="flex items-center gap-1">
-                                            <input type="checkbox" checked={showPostKI} onChange={(e) => setShowPostKI(e.target.checked)} />
-                                            Post-KI Greeks
-                                        </label>
-                                        <label className="flex items-center gap-1">
-                                            <input type="checkbox" checked={showNominal} onChange={(e) => setShowNominal(e.target.checked)} />
-                                            Contract Nominal
-                                        </label>
-                                        <label className="flex items-center gap-1">
-                                            <input type="checkbox" checked={showDesk} onChange={(e) => setShowDesk(e.target.checked)} />
-                                            Desk Shifted
-                                        </label>
+                                    <div className="text-[10px] text-slate-500 leading-relaxed">
+                                      Charts compare Before/After Barrier Shift and Before/After Smoothing
+                                      on expiry payoff, delta and gamma (solid = Before KI, dashed = After KI).
                                     </div>
                                     {kiSpread != null && (
                                         <div className="bg-slate-50 border border-slate-100 rounded px-2 py-1 font-mono text-[10px]">
@@ -707,98 +761,28 @@ const ExoticPricer: React.FC<Props> = ({
                         }}
                       />
                     )}
-                    <div className="h-[300px] w-full">
-                        <h4 className="text-xs font-bold text-slate-400 mb-2 uppercase flex items-center gap-2">Payoff Profile</h4>
-                        <ResponsiveContainer width="100%" height="90%">
-                            <AreaChart data={simData}>
-                                <CartesianGrid strokeDasharray="3 3" opacity={0.5} />
-                                <XAxis 
-                                    dataKey="moneyness" 
-                                    type="number" 
-                                    domain={['auto', 'auto']} 
-                                    tickFormatter={v => `${v.toFixed(0)}%`} 
-                                    tick={{fontSize: 10}}
-                                />
-                                {/* Updated YAxis to Percent of Notional */}
-                                <YAxis 
-                                    domain={['auto', 'auto']} 
-                                    tickFormatter={v => `${((v / notional) * 100).toFixed(1)}%`} 
-                                    tick={{fontSize: 10}} 
-                                    width={40} 
-                                />
-                                <Tooltip 
-                                    labelFormatter={v => {
-                                        const s = (Number(v) / 100) * spot;
-                                        return `Moneyness: ${Number(v).toFixed(0)}% (Spot: ${s.toFixed(2)})`;
-                                    }} 
-                                    // Updated Tooltip to Percent of Notional
-                                    formatter={v => [
-                                        `${((Number(v) / notional) * 100).toFixed(2)}% ($${Number(v).toLocaleString(undefined, {maximumFractionDigits: 0})})`,
-                                        'Price'
-                                    ]} 
-                                    contentStyle={{fontSize: '12px'}}
-                                />
-                                <ReferenceLine x={100} stroke="#EAB308" strokeDasharray="3 3" />
-                                {showNominal && (
-                                  <Area type="monotone" dataKey="price" stroke="#000066" fill="#000066" fillOpacity={0.1} name="Blended / Nominal" />
-                                )}
-                                {showPreKI && simData.some((d) => d.price_pre_ki != null) && (
-                                  <Area type="monotone" dataKey="price_pre_ki" stroke="#16a34a" fill="#16a34a" fillOpacity={0.06} name="Pre-KI" />
-                                )}
-                                {showPostKI && simData.some((d) => d.price_post_ki != null) && (
-                                  <Area type="monotone" dataKey="price_post_ki" stroke="#E20000" fill="#E20000" fillOpacity={0.06} name="Post-KI" />
-                                )}
-                                {showDesk && simData.some((d) => d.price_desk != null) && (
-                                  <Area type="monotone" dataKey="price_desk" stroke="#EAB308" fill="#EAB308" fillOpacity={0.08} name="Desk Shifted" />
-                                )}
-                            </AreaChart>
-                        </ResponsiveContainer>
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-4 h-[200px]">
-                        <div className="bg-white rounded border border-slate-100 p-2">
-                            <h4 className="text-[10px] font-bold mb-1 text-center" style={{color: COLORS.CITIC_RED}}>
-                              Delta · Pre-KI vs Post-KI
-                            </h4>
-                            <GreeksChart
-                              data={simData}
-                              marketSpot={spot}
-                              dataKey={simData.some((d) => d.delta_pre_ki != null) ? 'delta_pre_ki' : 'delta'}
-                              color="#16a34a"
-                              name="Pre-KI"
-                              altDataKey={simData.some((d) => d.delta_post_ki != null) ? 'delta_post_ki' : (showDesk ? 'delta_desk' : undefined)}
-                              altColor="#E20000"
-                              altName="Post-KI"
-                              showPrimary={showPreKI || showNominal}
-                              showAlt={showPostKI || showDesk}
-                              yScale={1.1}
-                            />
-                        </div>
-                        <div className="bg-white rounded border border-slate-100 p-2">
-                            <h4 className="text-[10px] font-bold mb-1 text-center text-purple-700">
-                              Gamma · Pre-KI vs Post-KI
-                            </h4>
-                            <GreeksChart
-                              data={simData}
-                              marketSpot={spot}
-                              dataKey={simData.some((d) => d.gamma_pre_ki != null) ? 'gamma_pre_ki' : 'gamma'}
-                              color="#16a34a"
-                              name="Pre-KI"
-                              altDataKey={simData.some((d) => d.gamma_post_ki != null) ? 'gamma_post_ki' : (showDesk ? 'gamma_desk' : undefined)}
-                              altColor="#E20000"
-                              altName="Post-KI"
-                              showPrimary={showPreKI || showNominal}
-                              showAlt={showPostKI || showDesk}
-                              yScale={1.1}
-                            />
-                        </div>
-                    </div>
+                    {expiryPayoffParams ? (
+                      <ExoticDeskCharts
+                        params={expiryPayoffParams}
+                        spot={spot}
+                        notional={notional}
+                        viewRange={viewRange}
+                        dailyKi={kiMonitoring === 'DAILY'}
+                      />
+                    ) : (
+                      <div className="h-[200px] flex items-center justify-center text-xs text-slate-400 border border-dashed border-slate-200 rounded">
+                        Expiry desk charts available for Snowball / FCN
+                      </div>
+                    )}
 
                     {(productType === ExoticType.SNOWBALL || productType === ExoticType.FCN) && (
                       <GreeksTermStructureView
                         data={gtsData}
+                        variants={gtsVariants}
                         loading={gtsLoading}
                         spot={spot}
+                        barrierShiftBps={barrierShiftBps}
+                        smoothingPct={smoothingPct}
                       />
                     )}
                 </div>

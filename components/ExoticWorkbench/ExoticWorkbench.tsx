@@ -17,6 +17,8 @@ interface Props {
   spot: number;
   r: number;
   vol: number;
+  /** When true, stop Workbench GTS / heavy refresh so Legacy Pricer can use Cloud Run alone. */
+  computePaused?: boolean;
 }
 
 const DEFAULT_PRODUCT: UniversalExoticProductDTO = {
@@ -50,7 +52,7 @@ const DEFAULT_PRODUCT: UniversalExoticProductDTO = {
   },
 };
 
-const ExoticWorkbench: React.FC<Props> = ({ spot, r, vol }) => {
+const ExoticWorkbench: React.FC<Props> = ({ spot, r, vol, computePaused = false }) => {
   const [product, setProduct] = useState<UniversalExoticProductDTO>(DEFAULT_PRODUCT);
   const [mode, setMode] = useState<'price' | 'solve'>('price');
   const [solveFor, setSolveFor] = useState<'cpn_rate' | 'ko_rebate' | 'ki_level' | 'put_strike'>(
@@ -91,6 +93,10 @@ const ExoticWorkbench: React.FC<Props> = ({ spot, r, vol }) => {
   }, []);
 
   const runPriceOrSolve = useCallback(async () => {
+    if (computePaused) {
+      setError('Workbench pricing paused while Legacy Exotic Pricer is open. Close Legacy to resume.');
+      return;
+    }
     abortRef.current?.abort();
     abortExoticWorkbench();
     const ctrl = new AbortController();
@@ -148,10 +154,14 @@ const ExoticWorkbench: React.FC<Props> = ({ spot, r, vol }) => {
     } finally {
       if (!ctrl.signal.aborted) setLoading(false);
     }
-  }, [mode, product, market, solveFor, targetPrice]);
+  }, [mode, product, market, solveFor, targetPrice, computePaused]);
 
-  // Debounced GTS
+  // Debounced GTS — paused while Legacy Pricer is open (same Cloud Run; concurrent GTS → 503)
   useEffect(() => {
+    if (computePaused) {
+      setGtsLoading(false);
+      return;
+    }
     const ctrl = new AbortController();
     const t = window.setTimeout(async () => {
       setGtsLoading(true);
@@ -179,7 +189,7 @@ const ExoticWorkbench: React.FC<Props> = ({ spot, r, vol }) => {
       clearTimeout(t);
       ctrl.abort();
     };
-  }, [product, market, spot]);
+  }, [product, market, spot, computePaused]);
 
   useEffect(() => {
     loadPreset('Snowball Classic').then(() => {
@@ -188,10 +198,19 @@ const ExoticWorkbench: React.FC<Props> = ({ spot, r, vol }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // If Legacy opens mid-flight, cancel Workbench price/solve immediately
+  useEffect(() => {
+    if (!computePaused) return;
+    abortRef.current?.abort();
+    abortExoticWorkbench();
+    setLoading(false);
+    setGtsLoading(false);
+  }, [computePaused]);
+
   const priceDisplay = risk?.price != null ? Number(risk.price) : null;
 
   return (
-    <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+    <div className={`bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden ${computePaused ? 'opacity-90' : ''}`}>
       <div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex items-center justify-between">
         <div>
           <h3 className="font-bold text-[#000066] text-lg">Universal Exotic Workbench</h3>
@@ -202,13 +221,19 @@ const ExoticWorkbench: React.FC<Props> = ({ spot, r, vol }) => {
         <button
           type="button"
           onClick={runPriceOrSolve}
-          disabled={loading}
+          disabled={loading || computePaused}
           className="flex items-center gap-2 bg-[#000066] hover:bg-[#000088] text-white px-4 py-2 rounded text-sm font-bold disabled:opacity-60"
         >
           {loading ? <RefreshCw size={14} className="animate-spin" /> : <Play size={14} />}
           {mode === 'solve' ? 'Solve' : 'Price'}
         </button>
       </div>
+      {computePaused && (
+        <div className="px-4 py-2 bg-amber-50 border-b border-amber-100 text-[11px] text-amber-900">
+          Workbench GTS / Price paused — Legacy Exotic Pricer is open. Close the Legacy panel to resume
+          (avoids concurrent exotic MC crashing Cloud Run).
+        </div>
+      )}
 
       <div className="grid lg:grid-cols-12 gap-4 p-4">
         <div className="lg:col-span-3 max-h-[78vh] overflow-y-auto pr-1">
