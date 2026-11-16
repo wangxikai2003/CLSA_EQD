@@ -608,7 +608,7 @@ const QisView: React.FC = () => {
             bullets: [
               '状态变量：S = Spread；z = expanding GARCH(1,1)-t 标准化残差（garch_z）；z_{t−1} = 前日 z。',
               'Momentum 开仓（优先）：上侧 q75 < S ≤ q92 且 z > q90 → Reverse(−1)；下侧 q08 ≤ S < q25 且 z < q10 → Normal(+1)。',
-              'Momentum 平仓（任一触发）：S 回到 [q40, q60] 均值带衰竭；冲击反向穿过极端 q10/q90；空间止盈 S 出 q01/q99；最长持有 12 日 → 冷却 3 日。',
+              'Momentum 平仓（任一触发）：持仓≥2 日后 S 回到 [q40, q60] 均值带衰竭；冲击反向穿过极端 q10/q90；空间止盈 S 出 q01/q99；最长持有 12 日 → 冷却 3 日。',
               'Fade 开仓：S > q90 且 z≤q80 且 z_{t−1}≤q80 → Normal(+1)；S < q10 且 z≥q20 且 z_{t−1}≥q20 → Reverse(−1)（双日冲击收敛，避免硬抗突破）。',
               'Fade 平仓：S 回到 [q40, q60]；危机熔断（持仓方向继续恶化且冲击极端）；Reverse 最长 20 日 → 冷却 3 日。',
               '预算：Fade 远端美元 Vega = 1% NAV；Momentum = 0.8% NAV（按成交日 regime_mode 选预算）。',

@@ -64,9 +64,13 @@ def test_momentum_accel_zone():
 
 
 def test_momentum_exhaust_mean_band_q40_q60():
-    """Mom exhausts inside [q40, q60]; wing levels can still hold."""
+    """Mom exhausts inside [q40, q60] only after min hold; wings can still hold."""
     level, shock = _bands()
-    st = RegimeState(position=-1, hold_days=1, regime_mode="momentum", entry_spread=0.8)
+    # hold_days=1 < MIN_HOLD_MOMENTUM_EXHAUST → no exhaust yet
+    st_early = RegimeState(position=-1, hold_days=1, regime_mode="momentum", entry_spread=0.8)
+    dec0 = decide_regime_signal(st_early, S_t=0.0, z_t=0.0, level_q=level, shock_q=shock)
+    assert dec0.signal == -1 and dec0.reason == "momentum_hold"
+    st = RegimeState(position=-1, hold_days=2, regime_mode="momentum", entry_spread=0.8)
     # S=0.0 is inside [q40,q60] → exhaust
     dec = decide_regime_signal(st, S_t=0.0, z_t=0.0, level_q=level, shock_q=shock)
     assert dec.signal == 0 and dec.reason == "momentum_exhaust"

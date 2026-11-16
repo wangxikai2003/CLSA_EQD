@@ -24,6 +24,8 @@ DEFAULT_Z_WINDOW = 252
 COOLDOWN_DAYS = 3
 MAX_HOLD_FADE_REVERSE = 20
 MAX_HOLD_MOMENTUM = 12
+# Don't exhaust Mom on day-0/1 noise; require this many held days first.
+MIN_HOLD_MOMENTUM_EXHAUST = 2
 
 RegimeMode = Optional[str]  # None | "fade" | "momentum"
 
@@ -166,10 +168,11 @@ def decide_regime_signal(
                 return RegimeDecision(0, None, COOLDOWN_DAYS, "fade_reverse_max_hold", None)
             return RegimeDecision(pos, "fade", 0, "fade_hold", entry)
 
-        # Momentum exits: mean-band exhaust [q40,q60], extreme adverse 10/90, space 1/99, max 12d
+        # Momentum exits: mean-band exhaust [q40,q60] after min hold, extreme adverse 10/90,
+        # space 1/99, max 12d.
         if hold >= MAX_HOLD_MOMENTUM:
             return RegimeDecision(0, None, COOLDOWN_DAYS, "momentum_max_hold", None)
-        if q40_l <= S <= q60_l:
+        if hold >= MIN_HOLD_MOMENTUM_EXHAUST and q40_l <= S <= q60_l:
             return RegimeDecision(0, None, COOLDOWN_DAYS, "momentum_exhaust", None)
         if pos == -1 and S > q99_l:
             return RegimeDecision(0, None, COOLDOWN_DAYS, "momentum_space_tp", None)

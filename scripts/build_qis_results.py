@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Precompute Equity Calendar Vol QIS results into data/qis_results.sqlite."""
+"""Precompute QIS results into data/qis_results.sqlite (Calendar Vol + Carry)."""
 from __future__ import annotations
 
 import sys
@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ROOT / "backend"
 sys.path.insert(0, str(BACKEND))
 
+from api.v1 import qis_backtest as qb  # noqa: E402
 from api.v1 import qis_results_store as qrs  # noqa: E402
 from api.v1 import synth_tenors as st  # noqa: E402
 from engine.calendar_vol_strategy import (  # noqa: E402
@@ -27,9 +28,12 @@ INITIAL_NAV = 100_000_000.0
 def main() -> None:
     z_window = DEFAULT_Z_WINDOW
     only_signal = None
+    skip_carry = False
     args = [a for a in sys.argv[1:] if a]
     for a in args:
-        if a in SIGNAL_MODES:
+        if a == "--no-carry":
+            skip_carry = True
+        elif a in SIGNAL_MODES:
             only_signal = a
         else:
             z_window = int(a)
@@ -38,6 +42,28 @@ def main() -> None:
     src = qrs.source_key(db, spot)
     modes = (only_signal,) if only_signal else SIGNAL_MODES
     print(f"source_key={src} z_window={z_window} signal_modes={list(modes)}")
+
+    if not skip_carry:
+        print("=== cross_calendar_carry ===", flush=True)
+        carry = qb.run_cross_calendar_carry()
+        cs = qrs.cost_sig(qb._SLIPPAGE, qb._FEE)
+        path = qrs.put_cached(
+            "cross_calendar_carry",
+            qrs.CROSS_Z_WINDOW,
+            INITIAL_NAV,
+            src,
+            carry,
+            tenor_pair=qrs.CROSS_TENOR,
+            side_mode=qrs.CROSS_SIDE,
+            spread_mode=qrs.CROSS_SPREAD,
+            signal_mode=cs,
+        )
+        print(
+            f"  start={carry['summary']['start']} end={carry['summary']['end']} "
+            f"mult={carry['summary']['final_nav_multiple']} → {path}",
+            flush=True,
+        )
+
     for key, u in UNIVERSES.items():
         for tp in TENOR_PAIRS:
             for sm in SIDE_MODES:

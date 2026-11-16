@@ -1630,7 +1630,8 @@ class CalendarVolBacktestEngine:
             signal_desc = (
                 f"regime on prior {self.z_window}d: Momentum in accel zone "
                 f"(q75–q92 / q08–q25) with garch_z beyond 90/10; "
-                f"mom exits: mean-band exhaust 40–60, adverse z 10/90, space 1/99, max 12d; "
+                f"mom exits: mean-band exhaust 40–60 after ≥2d hold, adverse z 10/90, "
+                f"space 1/99, max 12d; "
                 f"Fade outside 10/90 when z≤q80/≥q20 and z_prev≤q80/≥q20; "
                 f"exit 40–60 + crisis fuse; cooldown 3d; "
                 f"budget fade={self.budget_fade:.1%} momentum={self.budget_momentum:.1%} NAV"
