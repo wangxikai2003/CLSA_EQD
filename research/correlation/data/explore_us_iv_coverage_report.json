@@ -1,0 +1,671 @@
+{
+  "cffex_vol.sqlite": {
+    "path": "/Users/wangxikai/Desktop/CITICS CLSA/vol_trading/CLSA_EQD/data/cffex_vol.sqlite",
+    "exists": true,
+    "tables": {
+      "products": {
+        "n": 3,
+        "cols": [
+          "product",
+          "name",
+          "fut_prefix"
+        ],
+        "products_sample": [
+          "HO",
+          "IO",
+          "MO"
+        ]
+      },
+      "futures_eod": {
+        "n": 14464,
+        "cols": [
+          "product",
+          "trade_date",
+          "wind_code",
+          "contract_ym",
+          "settle",
+          "close",
+          "oi",
+          "volume"
+        ],
+        "products_sample": [
+          "HO",
+          "IO",
+          "MO"
+        ]
+      },
+      "rates_eod": {
+        "n": 5006,
+        "cols": [
+          "wind_code",
+          "trade_date",
+          "rate"
+        ]
+      },
+      "option_iv": {
+        "n": 778297,
+        "cols": [
+          "product",
+          "trade_date",
+          "wind_code",
+          "expiry",
+          "ttm",
+          "strike",
+          "cp",
+          "forward",
+          "mid_price",
+          "iv",
+          "log_moneyness",
+          "r"
+        ],
+        "products_sample": [
+          "HO",
+          "IO",
+          "MO"
+        ]
+      },
+      "svi_slices": {
+        "n": 62215,
+        "cols": [
+          "product",
+          "trade_date",
+          "side",
+          "expiry",
+          "ttm",
+          "forward",
+          "n_quotes",
+          "a",
+          "b",
+          "rho",
+          "m",
+          "sigma",
+          "jw_v",
+          "jw_psi",
+          "jw_p",
+          "jw_c",
+          "jw_vtild",
+          "w_atm",
+          "rmse"
+        ],
+        "products_sample": [
+          "HO",
+          "IO",
+          "MO"
+        ]
+      },
+      "surface_meta": {
+        "n": 10839,
+        "cols": [
+          "product",
+          "trade_date",
+          "side",
+          "spot_proxy",
+          "n_slices",
+          "n_iv",
+          "r",
+          "rate_code"
+        ],
+        "products_sample": [
+          "HO",
+          "IO",
+          "MO"
+        ]
+      },
+      "svi_matrices": {
+        "n": 10839,
+        "cols": [
+          "product",
+          "trade_date",
+          "side",
+          "spot",
+          "n_rows",
+          "n_cols",
+          "matrix_json"
+        ],
+        "products_sample": [
+          "HO",
+          "IO",
+          "MO"
+        ]
+      }
+    },
+    "us_like_hits_in_option_iv": []
+  },
+  "commodity_vol.sqlite": {
+    "path": "/Users/wangxikai/Desktop/CITICS CLSA/vol_trading/data/commodity_vol.sqlite",
+    "exists": true,
+    "tables": {
+      "products": {
+        "n": 12,
+        "cols": [
+          "product",
+          "name",
+          "fut_prefix"
+        ],
+        "products_sample": [
+          "AG",
+          "AU",
+          "C",
+          "CF",
+          "CU",
+          "I",
+          "M",
+          "MA",
+          "RU",
+          "SC",
+          "SR",
+          "TA"
+        ]
+      },
+      "futures_eod": {
+        "n": 208065,
+        "cols": [
+          "product",
+          "trade_date",
+          "wind_code",
+          "contract_ym",
+          "settle",
+          "close",
+          "oi",
+          "volume"
+        ],
+        "products_sample": [
+          "AG",
+          "AU",
+          "C",
+          "CF",
+          "CU",
+          "I",
+          "M",
+          "MA",
+          "RU",
+          "SC",
+          "SR",
+          "TA"
+        ]
+      },
+      "rates_eod": {
+        "n": 5006,
+        "cols": [
+          "wind_code",
+          "trade_date",
+          "rate"
+        ]
+      },
+      "option_iv": {
+        "n": 7049118,
+        "cols": [
+          "product",
+          "trade_date",
+          "wind_code",
+          "expiry",
+          "ttm",
+          "strike",
+          "cp",
+          "forward",
+          "mid_price",
+          "iv",
+          "log_moneyness",
+          "r"
+        ],
+        "products_sample": [
+          "AG",
+          "AU",
+          "C",
+          "CF",
+          "CU",
+          "I",
+          "M",
+          "MA",
+          "RU",
+          "SC",
+          "SR",
+          "TA"
+        ]
+      },
+      "svi_slices": {
+        "n": 377113,
+        "cols": [
+          "product",
+          "trade_date",
+          "side",
+          "expiry",
+          "ttm",
+          "forward",
+          "n_quotes",
+          "a",
+          "b",
+          "rho",
+          "m",
+          "sigma",
+          "jw_v",
+          "jw_psi",
+          "jw_p",
+          "jw_c",
+          "jw_vtild",
+          "w_atm",
+          "rmse"
+        ],
+        "products_sample": [
+          "AG",
+          "AU",
+          "C",
+          "CF",
+          "CU",
+          "I",
+          "M",
+          "MA",
+          "RU",
+          "SC",
+          "SR",
+          "TA"
+        ]
+      },
+      "surface_meta": {
+        "n": 63249,
+        "cols": [
+          "product",
+          "trade_date",
+          "side",
+          "spot_proxy",
+          "n_slices",
+          "n_iv",
+          "r",
+          "rate_code"
+        ],
+        "products_sample": [
+          "AG",
+          "AU",
+          "C",
+          "CF",
+          "CU",
+          "I",
+          "M",
+          "MA",
+          "RU",
+          "SC",
+          "SR",
+          "TA"
+        ]
+      }
+    },
+    "us_like_hits_in_option_iv": []
+  },
+  "spx_options_parquet": {
+    "path": "/Users/wangxikai/Desktop/CITICS CLSA/vol_trading/archive/spx_options.parquet",
+    "exists": true,
+    "columns": [
+      "as_of_date",
+      "ticker",
+      "contract_type",
+      "strike_price",
+      "expiration_date",
+      "days_to_strike",
+      "SPX_close",
+      "close",
+      "delta",
+      "open",
+      "high",
+      "low",
+      "volume"
+    ],
+    "has_iv_column": false,
+    "n_rows": 9853548,
+    "dmin": "2024-06-03",
+    "dmax": "2026-05-01",
+    "n_dates": 500,
+    "close_nonnull_pct": 0.3818065330376429,
+    "delta_nonnull_pct": 0.3818065330376429,
+    "tenor_1M_priced_rows": 879742,
+    "tenor_1M_n_dates": 480,
+    "tenor_3M_priced_rows": 568839,
+    "tenor_3M_n_dates": 480,
+    "tenor_6M_priced_rows": 261909,
+    "tenor_6M_n_dates": 480,
+    "tenor_1Y_priced_rows": 0,
+    "tenor_1Y_n_dates": 0
+  },
+  "corr_data": {
+    "path": "/Users/wangxikai/Desktop/CITICS CLSA/\u8bfe\u9898\uff1acorrelation/data",
+    "exists": true,
+    "files": {
+      "cmds_price_panel.parquet": {
+        "size_mb": 0.517,
+        "rows": 35186,
+        "cols": [
+          "symbol",
+          "asset_type",
+          "bb_ticker",
+          "wind_code",
+          "trade_date",
+          "open",
+          "close"
+        ],
+        "dmin": "20190101",
+        "dmax": "20261113",
+        "has_SPX": true,
+        "has_NDX": false,
+        "spdr_hits": []
+      },
+      "corr_matrix_local.csv": {
+        "size_mb": 0.004
+      },
+      "corr_matrix_local_matrix.csv": {
+        "size_mb": 0.001
+      },
+      "spx_iv_atm_cmds_opra.parquet": {
+        "size_mb": 0.011,
+        "rows": 402,
+        "cols": [
+          "trade_date",
+          "iv_last_avg",
+          "n_quotes",
+          "source"
+        ],
+        "dmin": "20240801",
+        "dmax": "20261112"
+      },
+      "spx_iv_computed.parquet": {
+        "size_mb": 0.03,
+        "rows": 480,
+        "cols": [
+          "trade_date",
+          "spot",
+          "iv_atm",
+          "iv_mean",
+          "iv_p25",
+          "iv_p75",
+          "n_quotes",
+          "source"
+        ],
+        "dmin": "20240603",
+        "dmax": "20260501"
+      },
+      "spx_iv_proxy_vix.parquet": {
+        "size_mb": 0.039,
+        "rows": 1757,
+        "cols": [
+          "trade_date",
+          "vix_close",
+          "vix_open",
+          "iv_proxy",
+          "source"
+        ],
+        "dmin": "20200102",
+        "dmax": "20261112"
+      },
+      "spx_weights_approx.parquet": {
+        "size_mb": 0.388,
+        "rows": 9549,
+        "cols": [
+          "trade_date",
+          "bb_ticker",
+          "wind_code",
+          "sec_name",
+          "constituent_sec_id",
+          "fmc",
+          "weight",
+          "S_DQ_CLOSE_TODAY",
+          "FLOAT_A_SHR_TODAY",
+          "TOT_SHR_TODAY"
+        ],
+        "dmin": "20230831",
+        "dmax": "20261030"
+      }
+    }
+  },
+  "scorecard": [
+    {
+      "ticker": "SPX",
+      "bucket": "index",
+      "spot_local": 1,
+      "option_chain_local": 1,
+      "atm_iv_ts_local": 1,
+      "full_surface_local": 0,
+      "notes": "ATM IV TS from price inversion; no local tenor\u00d7delta grid DB"
+    },
+    {
+      "ticker": "NDX",
+      "bucket": "index",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "spot may exist in CMDS; no local NDX option surface parquet"
+    },
+    {
+      "ticker": "XLK",
+      "bucket": "spdr",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "XLF",
+      "bucket": "spdr",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "XLE",
+      "bucket": "spdr",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "XLV",
+      "bucket": "spdr",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "XLI",
+      "bucket": "spdr",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "XLY",
+      "bucket": "spdr",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "XLP",
+      "bucket": "spdr",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "XLU",
+      "bucket": "spdr",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "XLB",
+      "bucket": "spdr",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "XLRE",
+      "bucket": "spdr",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "XLC",
+      "bucket": "spdr",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "AAPL",
+      "bucket": "top50_proxy",
+      "spot_local": 1,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "MSFT",
+      "bucket": "top50_proxy",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "NVDA",
+      "bucket": "top50_proxy",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "AMZN",
+      "bucket": "top50_proxy",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "META",
+      "bucket": "top50_proxy",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "GOOGL",
+      "bucket": "top50_proxy",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "GOOG",
+      "bucket": "top50_proxy",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "BRK/B",
+      "bucket": "top50_proxy",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "AVGO",
+      "bucket": "top50_proxy",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "TSLA",
+      "bucket": "top50_proxy",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "LLY",
+      "bucket": "top50_proxy",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "JPM",
+      "bucket": "top50_proxy",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "V",
+      "bucket": "top50_proxy",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "UNH",
+      "bucket": "top50_proxy",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    },
+    {
+      "ticker": "XOM",
+      "bucket": "top50_proxy",
+      "spot_local": 0,
+      "option_chain_local": 0,
+      "atm_iv_ts_local": 0,
+      "full_surface_local": 0,
+      "notes": "no local US single-name/ETF IV surface sqlite"
+    }
+  ]
+}

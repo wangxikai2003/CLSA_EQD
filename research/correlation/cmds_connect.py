@@ -1,0 +1,82 @@
+"""CMDS Oracle helper via JDBC (thin oracledb hits DPY-3010 on this server)."""
+
+from __future__ import annotations
+
+import os
+import re
+import zipfile
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import jaydebeapi
+import pandas as pd
+
+DEFAULT_DSN_HOST = os.environ.get("CMDS_HOST", "10.23.129.18")
+DEFAULT_DSN_PORT = int(os.environ.get("CMDS_PORT", "21010"))
+DEFAULT_SERVICE = os.environ.get("CMDS_SERVICE", "cmds")
+DEFAULT_JAR = Path(__file__).resolve().parent / "lib" / "ojdbc8.jar"
+
+
+def _creds_from_docx(docx: Path) -> tuple[str, str]:
+    with zipfile.ZipFile(docx) as z:
+        root = ET.fromstring(z.read("word/document.xml"))
+    texts = [
+        t.text or ""
+        for t in root.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t")
+    ]
+    full = "".join(texts)
+    m_user = re.search(r"(?:用户名|账号|user)\s*[：:]\s*(\S+)", full, re.I)
+    m_pwd = re.search(r"密码[：:]\s*(\S+)", full)
+    if not m_user or not m_pwd:
+        raise RuntimeError(f"Cannot parse CMDS creds from {docx}")
+    return m_user.group(1), m_pwd.group(1)
+
+
+def get_cmds_creds() -> tuple[str, str]:
+    user = os.environ.get("CMDS_USER")
+    pwd = os.environ.get("CMDS_PASSWORD")
+    if user and pwd:
+        return user, pwd
+    docx = os.environ.get("CMDS_CREDS_DOCX")
+    if docx:
+        return _creds_from_docx(Path(docx))
+    raise RuntimeError(
+        "Set CMDS_USER/CMDS_PASSWORD (or CMDS_CREDS_DOCX) before connecting"
+    )
+
+
+def connect(
+    host: str = DEFAULT_DSN_HOST,
+    port: int = DEFAULT_DSN_PORT,
+    service: str = DEFAULT_SERVICE,
+    jar: Path | str = DEFAULT_JAR,
+):
+    jar = Path(jar)
+    if not jar.exists():
+        raise FileNotFoundError(f"ojdbc jar missing: {jar}")
+    user, pwd = get_cmds_creds()
+    url = f"jdbc:oracle:thin:@{host}:{port}/{service}"
+    return jaydebeapi.connect("oracle.jdbc.OracleDriver", url, [user, pwd], str(jar))
+
+
+def read_sql(sql: str, params=None) -> pd.DataFrame:
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        if params is None:
+            cur.execute(sql)
+        else:
+            cur.execute(sql, params)
+        cols = [d[0] for d in cur.description]
+        rows = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
+    df = pd.DataFrame(rows, columns=cols)
+    for c in df.columns:
+        df[c] = df[c].map(
+            lambda v: None
+            if v is None
+            else (float(v) if hasattr(v, "doubleValue") else v)
+        )
+    return df

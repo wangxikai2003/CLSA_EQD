@@ -1,0 +1,9 @@
+lib/*.jar
+lib/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+# full panels stay local; keep small reports if force-added
+data/*.parquet
+data/*_panel.*
