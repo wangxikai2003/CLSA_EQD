@@ -434,11 +434,14 @@ export interface QisTradeMarker {
   kind: 'long' | 'short' | 'close' | string;
   spread?: number | null;
   sos?: number | null;
-  /** CT-IV spread level (for IV reference chart under garch_z). */
+  /** CT-IV spread level (for IV reference chart under garch_z / regime). */
   spread_iv?: number | null;
   sos_iv?: number | null;
+  /** garch_z at trade date (for GARCH-z chart markers under regime). */
+  garch_z?: number | null;
   position?: number;
   prev_position?: number;
+  regime_mode?: string | null;
 }
 
 export interface QisSignalSeries {
@@ -446,6 +449,8 @@ export interface QisSignalSeries {
   /** Decision level: raw CT-IV spread or garch_z (see signal_mode / level_scale). */
   spread: number[];
   spread_iv?: (number | null)[];
+  /** Expanding GARCH-z (regime / garch_z modes). */
+  garch_z?: (number | null)[];
   zscore: (number | null)[];
   position: number[];
   signal_next?: number[];
@@ -463,6 +468,11 @@ export interface QisSignalSeries {
   iv_enter_lo?: (number | null)[];
   iv_exit_hi?: (number | null)[];
   iv_exit_lo?: (number | null)[];
+  /** Rolling 10/90·40/60 bands on garch_z (regime chart reference). */
+  gz_enter_hi?: (number | null)[];
+  gz_enter_lo?: (number | null)[];
+  gz_exit_hi?: (number | null)[];
+  gz_exit_lo?: (number | null)[];
   enter_q?: number;
   exit_lo_q?: number;
   exit_hi_q?: number;

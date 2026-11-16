@@ -247,6 +247,8 @@ def test_normalize_signal_mode_regime():
     assert normalize_signal_mode("fade_momentum") == "regime"
     assert normalize_signal_mode("rs") == "regime"
     assert normalize_signal_mode("regime_v1") == "regime"
+    assert normalize_signal_mode("regime_v2") == "regime"
+    assert normalize_signal_mode("v2") == "regime"
 
 
 def test_regime_signal_mode_smoke():
@@ -262,7 +264,7 @@ def test_regime_signal_mode_smoke():
     )
     assert payload["params"]["signal_mode"] == "regime"
     assert payload["params"]["budget_fade"] == 0.01
-    assert payload["params"]["budget_momentum"] == 0.007
+    assert payload["params"]["budget_momentum"] == 0.008
     assert payload["params"]["first_open"] < payload["params"]["perf_start"]
     sig = payload["signal"]
     assert sig["signal_mode"] == "regime"
@@ -272,3 +274,32 @@ def test_regime_signal_mode_smoke():
     assert "garch_z" in sig and len(sig["garch_z"]) == len(sig["dates"])
     assert any(m in ("fade", "momentum") for m in sig["regime_mode"] if m)
     assert float(payload["summary"]["final_nav_multiple"]) > 0
+
+
+def test_regime_button_matrix_smoke():
+    """Regime v2 runs across other Calendar Vol buttons (universe/tenor/side/spread)."""
+    combos = [
+        ("50", "3M-6M", "both", "iv"),
+        ("300", "1M-3M", "both", "iv2"),
+        ("300", "3M-6M", "long_only", "iv"),
+        ("300", "3M-6M", "short_only", "iv"),
+        ("1000", "1M-3M", "both", "iv"),
+    ]
+    for uni, tenor, side, spread in combos:
+        payload = run_calendar_vol(
+            uni,
+            initial_nav=100_000_000.0,
+            z_window=252,
+            tenor_pair=tenor,
+            side_mode=side,
+            spread_mode=spread,
+            signal_mode="regime",
+        )
+        assert payload["params"]["signal_mode"] == "regime", (uni, tenor, side, spread)
+        assert payload["params"]["tenor_pair"] == tenor
+        assert payload["params"]["side_mode"] == side
+        assert payload["params"]["spread_mode"] == spread
+        assert payload["params"]["budget_momentum"] == 0.008
+        assert payload["summary"]["first_open"]
+        assert float(payload["summary"]["final_nav_multiple"]) > 0
+        assert "regime_mode" in payload["signal"]

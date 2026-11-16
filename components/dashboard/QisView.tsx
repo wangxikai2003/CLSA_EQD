@@ -36,7 +36,7 @@ const CAL_VOL_SPREADS: { key: QisSpreadMode; label: string }[] = [
 const CAL_VOL_SIGNALS: { key: QisSignalMode; label: string }[] = [
   { key: 'quantile', label: 'Quantile' },
   { key: 'garch_z', label: 'GARCH-z' },
-  { key: 'regime', label: 'Regime' },
+  { key: 'regime', label: 'Regime v2' },
 ];
 
 const WINDOW_LABELS: { key: keyof QisBacktestResponse['metrics']; label: string }[] = [
@@ -312,6 +312,43 @@ const QisView: React.FC = () => {
   const byKind = useMemo(() => markerMap(tradeMarkers), [tradeMarkers]);
   const byKindIv = useMemo(() => markerMap(tradeMarkersIv), [tradeMarkersIv]);
 
+  /** Markers on garch_z scale (regime / garch_z charts). */
+  const tradeMarkersGz = useMemo(() => {
+    const s = data?.signal;
+    if (!s?.dates?.length || !s.position?.length) return [] as { d: string; y: number; kind: MarkerKind }[];
+    const gz = s.garch_z;
+    const fallback = markersFromPosition(s.dates, s.position, (i) => {
+      if (gz?.[i] != null && Number.isFinite(gz[i] as number)) return gz[i] as number;
+      // garch_z mode: decision level IS garch_z
+      if (levelScale === 1) {
+        const sp = s.spread[i];
+        return sp == null || Number.isNaN(sp) ? null : sp;
+      }
+      return null;
+    });
+    const raw = s.trade_markers;
+    if (!raw?.length) return fallback;
+    const out: { d: string; y: number; kind: MarkerKind }[] = [];
+    for (const m of raw) {
+      const kind = (m.kind === 'long' || m.kind === 'short' || m.kind === 'close'
+        ? m.kind
+        : m.position === 1
+          ? 'long'
+          : m.position === -1
+            ? 'short'
+            : 'close') as MarkerKind;
+      const y =
+        m.garch_z != null && Number.isFinite(m.garch_z)
+          ? m.garch_z
+          : null;
+      if (y == null) continue;
+      out.push({ d: m.d, y, kind });
+    }
+    return out.length ? out : fallback;
+  }, [data, levelScale]);
+
+  const byKindGz = useMemo(() => markerMap(tradeMarkersGz), [tradeMarkersGz]);
+
   const signalChart = useMemo(() => {
     const s = data?.signal;
     if (!s?.dates?.length) return [];
@@ -334,6 +371,55 @@ const QisView: React.FC = () => {
       };
     });
   }, [data, byKind, levelScale]);
+
+  /** GARCH-z + rolling 10/90·40/60 bands (garch_z mode decision chart; regime reference). */
+  const garchZChart = useMemo(() => {
+    const s = data?.signal;
+    if (!s?.dates?.length) return [];
+    const mode =
+      (typeof s.signal_mode === 'string' ? s.signal_mode : null) ??
+      (typeof data?.params?.signal_mode === 'string' ? data.params.signal_mode : null);
+    const kindByD = byKindGz;
+    // garch_z mode: decision series is s.spread with enter_* bands
+    if (mode === 'garch_z') {
+      const hasBands = Array.isArray(s.enter_hi) && s.enter_hi.length === s.dates.length;
+      return s.dates.map((dt, i) => {
+        const z = s.spread[i] ?? 0;
+        const kind = kindByD.get(dt);
+        return {
+          d: dt,
+          spread_pts: z,
+          enter_hi: hasBands && s.enter_hi![i] != null ? (s.enter_hi![i] as number) : null,
+          enter_lo: hasBands && s.enter_lo![i] != null ? (s.enter_lo![i] as number) : null,
+          exit_hi: hasBands && s.exit_hi![i] != null ? (s.exit_hi![i] as number) : null,
+          exit_lo: hasBands && s.exit_lo![i] != null ? (s.exit_lo![i] as number) : null,
+          long_pt: kind === 'long' ? z : null,
+          short_pt: kind === 'short' ? z : null,
+          close_pt: kind === 'close' ? z : null,
+        };
+      });
+    }
+    // regime: dedicated garch_z series + gz_* chart bands
+    if (!s.garch_z?.length) return [];
+    const useGzBands =
+      Array.isArray(s.gz_enter_hi) && s.gz_enter_hi.length === s.dates.length;
+    return s.dates.map((dt, i) => {
+      const zRaw = s.garch_z![i];
+      const z = zRaw == null || Number.isNaN(zRaw) ? 0 : (zRaw as number);
+      const kind = kindByD.get(dt);
+      return {
+        d: dt,
+        spread_pts: z,
+        enter_hi: useGzBands && s.gz_enter_hi![i] != null ? (s.gz_enter_hi![i] as number) : null,
+        enter_lo: useGzBands && s.gz_enter_lo![i] != null ? (s.gz_enter_lo![i] as number) : null,
+        exit_hi: useGzBands && s.gz_exit_hi![i] != null ? (s.gz_exit_hi![i] as number) : null,
+        exit_lo: useGzBands && s.gz_exit_lo![i] != null ? (s.gz_exit_lo![i] as number) : null,
+        long_pt: kind === 'long' ? z : null,
+        short_pt: kind === 'short' ? z : null,
+        close_pt: kind === 'close' ? z : null,
+      };
+    });
+  }, [data, byKindGz]);
 
   /** CT-IV spread + its own rolling quantile bands (always vol-pt scale). */
   const ivSpreadChart = useMemo(() => {
@@ -403,16 +489,26 @@ const QisView: React.FC = () => {
   const sosLabel = isCalVol
     ? activeSignal === 'garch_z'
       ? `${tenorLabel} GARCH-z`
-      : activeSpread === 'iv2'
-        ? `${tenorLabel} IV² spread (var ×100)`
-        : `${tenorLabel} IV spread (vol pts)`
+      : activeSignal === 'regime'
+        ? activeSpread === 'iv2'
+          ? `${tenorLabel} IV² · Regime v2`
+          : `${tenorLabel} IV · Regime v2`
+        : activeSpread === 'iv2'
+          ? `${tenorLabel} IV² spread (var ×100)`
+          : `${tenorLabel} IV spread (vol pts)`
     : 'SoS (pts)';
   const ivSpreadLabel = isCalVol
     ? activeSpread === 'iv2'
       ? `${tenorLabel} IV² spread (var ×100)`
       : `${tenorLabel} IV spread (vol pts)`
     : 'Spread (pts)';
-  const showGarchSignalChart = isCalVol && activeSignal === 'garch_z';
+  const showGarchSignalChart =
+    isCalVol && (activeSignal === 'garch_z' || activeSignal === 'regime');
+  const showSpreadBandChart = isCalVol && !!data?.signal;
+  const garchChartData =
+    activeSignal === 'regime' || activeSignal === 'garch_z' ? garchZChart : signalChart;
+  const spreadChartData =
+    activeSignal === 'garch_z' || activeSignal === 'regime' ? ivSpreadChart : signalChart;
 
   const enterPct = data?.signal?.enter_q != null ? `${((1 - data.signal.enter_q) * 100).toFixed(0)}/${(data.signal.enter_q * 100).toFixed(0)}` : '10/90';
   const exitPct =
@@ -440,10 +536,35 @@ const QisView: React.FC = () => {
         : '先 CT-IV 插值得到近/远端 IV，再做水平差（IV spread）。';
     const signalModeNote =
       activeSignal === 'garch_z'
-        ? '信号层：对 ΔSpread 做 expanding GARCH(1,1)-t（预热 504 日、每 5 日重估参数，仅用截至当日历史）得到 garch_z；再对 garch_z 做同样的滚动分位入场/出场（无未来数据；t−1 信号 → t close 成交）。'
+        ? '对 ΔSpread 做 expanding GARCH(1,1)-t（预热 504 日、每 5 日重估参数，仅用截至当日历史）得到 garch_z；再对 garch_z 做滚动分位入场/出场（无未来数据；t−1 信号 → t close 成交）。'
         : activeSignal === 'regime'
-          ? '信号层：Regime——Momentum 在加速区（q75–q92 / q08–q25）且 garch_z 出 90/10 顺势；平仓含中轴衰竭 30–70、反向冲击 20/80、空间 1/99、最长 8 日。Fade：Spread 出 10/90 且当日/前日冲击收敛（z≤q80且z_{t−1}≤q80 / 对称下侧）；平仓回 40–60 + 危机熔断；冷却 3 日。预算 Fade 1% / Momentum 0.7% NAV（无未来数据；t−1 信号 → t close 成交）。'
-          : '信号层：直接对 Spread 做滚动分位入场/出场（无未来数据；t−1 信号 → t close 成交）。';
+          ? null
+          : '直接对 Spread 做滚动分位入场/出场（无未来数据；t−1 信号 → t close 成交）。';
+
+    /** Structured Regime v2 logic for the docs card (applies to every tenor/side/spread/universe). */
+    const regimeLogic =
+      activeSignal === 'regime'
+        ? {
+            title: '信号层 · Regime v2（Fade / Momentum 双状态机）',
+            intro:
+              `在当前 CT-IV ${activeSpread === 'iv2' ? 'IV²' : 'IV'} Spread（${tenorLabel}）上，` +
+              '用水平分位 + garch_z 冲击分位切换 Fade / Momentum；空仓时 Momentum 优先于 Fade。' +
+              '分位均为过去 ' +
+              String(
+                typeof data?.params?.z_window === 'number' ? data.params.z_window : 252,
+              ) +
+              ' 日、shift(1)（无未来函数）。执行：t 收盘出信号 → t+1 收盘成交。' +
+              '下列规则对 50/300/1000 × 3M–6M/1M–3M × iv/iv2 × both/long_only/short_only 同一套；side_mode 只过滤 ±1 开仓方向。',
+            bullets: [
+              '状态变量：S = Spread；z = expanding GARCH(1,1)-t 标准化残差（garch_z）；z_{t−1} = 前日 z。',
+              'Momentum 开仓（优先）：上侧 q75 < S ≤ q92 且 z > q90 → Reverse(−1)；下侧 q08 ≤ S < q25 且 z < q10 → Normal(+1)。',
+              'Momentum 平仓（任一触发）：S 回到 [q15, q85] 衰竭；冲击反向穿过 q20/q80；空间止盈 S 出 q01/q99；最长持有 8 日 → 冷却 3 日。',
+              'Fade 开仓：S > q90 且 z≤q80 且 z_{t−1}≤q80 → Normal(+1)；S < q10 且 z≥q20 且 z_{t−1}≥q20 → Reverse(−1)（双日冲击收敛，避免硬抗突破）。',
+              'Fade 平仓：S 回到 [q40, q60]；危机熔断（持仓方向继续恶化且冲击极端）；Reverse 最长 20 日 → 冷却 3 日。',
+              '预算：Fade 远端美元 Vega = 1% NAV；Momentum = 0.8% NAV（按成交日 regime_mode 选预算）。',
+            ],
+          }
+        : null;
 
     let sideBlock: { title: string; body: string };
     if (activeSide === 'long_only') {
@@ -475,6 +596,11 @@ const QisView: React.FC = () => {
       '1000': '中证1000 · MO / IM / 000852 · 乘数 200',
     };
 
+    const budgetNote =
+      activeSignal === 'regime'
+        ? '远端美元 Vega 预算：Fade = 1% NAV / vol-pt，Momentum = 0.8% NAV / vol-pt（按成交日 regime_mode 切换）；'
+        : '远端美元 Vega 预算 = 1% NAV / vol-pt；';
+
     return {
       near,
       far,
@@ -484,6 +610,8 @@ const QisView: React.FC = () => {
       spreadFormula,
       spreadModeNote,
       signalModeNote,
+      regimeLogic,
+      budgetNote,
       sideBlock,
       universeLine: uniMap[universe] ?? universe,
     };
@@ -655,18 +783,40 @@ const QisView: React.FC = () => {
                 </div>
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
-                    信号算子
+                    价差构造
                   </div>
                   <p>
                     CT-IV：SVI otm，总方差对 T 插值（ACT/365），目标 T={calVolDocs.tNear}（{calVolDocs.near}）/
                     {calVolDocs.tFar}（{calVolDocs.far}）。
                     {calVolDocs.spreadModeNote}
                     公式 <code className="font-mono text-[10px]">{calVolDocs.spreadFormula}</code>。
-                    {calVolDocs.signalModeNote}
-                    滚动分位窗 {calVolDocs.zWin} 日（不含当日/未来）：入场 {enterPct}（level &gt; hi → Normal/+1；
-                    &lt; lo → Reverse/−1）；出场落入 {exitPct}% 带平仓。Reverse max hold = 20 交易日。
+                    滚动分位窗 {calVolDocs.zWin} 日（不含当日/未来）。
                   </p>
                 </div>
+                {calVolDocs.regimeLogic ? (
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
+                      {calVolDocs.regimeLogic.title}
+                    </div>
+                    <p className="mb-1.5">{calVolDocs.regimeLogic.intro}</p>
+                    <ul className="list-disc pl-4 space-y-1 text-slate-700">
+                      {calVolDocs.regimeLogic.bullets.map((b, i) => (
+                        <li key={`regime-logic-${i}`}>{b}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
+                      信号算子
+                    </div>
+                    <p>
+                      {calVolDocs.signalModeNote}
+                      入场 {enterPct}（level &gt; hi → Normal/+1；&lt; lo → Reverse/−1）；
+                      出场落入 {exitPct}% 带平仓。Reverse max hold = 20 交易日。
+                    </p>
+                  </div>
+                )}
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wide text-[#000066] mb-0.5">
                     {calVolDocs.sideBlock.title}
@@ -683,7 +833,7 @@ const QisView: React.FC = () => {
                     spread_mode=<code className="font-mono text-[10px]">{activeSpread}</code> ·
                     signal_mode=<code className="font-mono text-[10px]">{activeSignal}</code> ·
                     z_window={calVolDocs.zWin}。
-                    远端美元 Vega 预算 = 1% NAV / vol-pt；
+                    {calVolDocs.budgetNote}
                     N_{calVolDocs.near}=−N_{calVolDocs.far}·ν{calVolDocs.far}/ν{calVolDocs.near}（日频，净美元 Vega≈0）。
                     双腿 ATM straddle + 日频期货 delta hedge。绩效自首次开仓次日起算。
                   </p>
@@ -928,13 +1078,13 @@ const QisView: React.FC = () => {
                 </div>
               )}
 
-              {showGarchSignalChart && signalChart.length > 0 && (
+              {showGarchSignalChart && garchChartData.length > 0 && (
                 <div className="bg-white rounded-lg border border-slate-200 p-4">
                   <h3 className="font-bold text-[#000066] text-sm mb-3">
                     {tenorLabel} GARCH-z & Rolling Quantile Bands
                   </h3>
                   <ChartZoomFrame
-                    data={signalChart}
+                    data={garchChartData}
                     yKeys={['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']}
                     height={300}
                   >
@@ -950,7 +1100,7 @@ const QisView: React.FC = () => {
                           />
                           <Tooltip contentStyle={{ fontSize: 11 }} />
                           <Legend wrapperStyle={{ fontSize: 10 }} />
-                          <Line type="monotone" dataKey="spread_pts" name={sosLabel} stroke={CHART.spread} dot={false} strokeWidth={1.5} />
+                          <Line type="monotone" dataKey="spread_pts" name="garch_z" stroke={CHART.spread} dot={false} strokeWidth={1.5} />
                           <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
                           <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
                           <Line type="monotone" dataKey="exit_hi" name="Exit hi" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
@@ -963,19 +1113,20 @@ const QisView: React.FC = () => {
                     )}
                   </ChartZoomFrame>
                   <p className="text-[9px] text-slate-400 mt-1">
-                    黄线：garch_z（决策变量）。紫/灰虚线：对 garch_z 的滚动分位入场/出场带（与 Spread 策略同口径 10/90·40/60）。
-                    散点为实际成交：Long 红 · Short 绿 · 平仓蓝。
+                    黄线：garch_z。紫/灰虚线：对 garch_z 的滚动分位带（10/90 入场 · 40/60 出场口径）。
+                    散点为 Regime / GARCH-z 策略实际成交：Long 红 · Short 绿 · 平仓蓝
+                    {activeSignal === 'regime' ? '（标在成交日 garch_z 水平）。' : '。'}
                   </p>
                 </div>
               )}
 
-              {data.signal && (showGarchSignalChart ? ivSpreadChart : signalChart).length > 0 && (
+              {showSpreadBandChart && spreadChartData.length > 0 && (
                 <div className="bg-white rounded-lg border border-slate-200 p-4">
                   <h3 className="font-bold text-[#000066] text-sm mb-3">
                     {tenorLabel} Spread & Rolling Quantile Bands
                   </h3>
                   <ChartZoomFrame
-                    data={showGarchSignalChart ? ivSpreadChart : signalChart}
+                    data={spreadChartData}
                     yKeys={['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']}
                     height={300}
                   >
@@ -995,7 +1146,7 @@ const QisView: React.FC = () => {
                           <Line
                             type="monotone"
                             dataKey="spread_pts"
-                            name={showGarchSignalChart ? ivSpreadLabel : sosLabel}
+                            name={ivSpreadLabel}
                             stroke={CHART.spread}
                             dot={false}
                             strokeWidth={1.5}
@@ -1013,9 +1164,11 @@ const QisView: React.FC = () => {
                   </ChartZoomFrame>
                   <p className="text-[9px] text-slate-400 mt-1">
                     黄线：CT-IV Spread（vol pts）。紫虚线：对 Spread 水平的滚动入场分位；灰虚线：出场带（落入 {exitPct}% 区间）。
-                    {showGarchSignalChart
-                      ? ' 本图为对照：GARCH-z 模式下实际开平仓由上方 garch_z 分位决定，散点仍标在成交日对应的 Spread 水平。'
-                      : ` 散点：Long 红 · Short 绿 · 平仓蓝。分位仅用过去 ${data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。`}
+                    {activeSignal === 'regime'
+                      ? ' 散点为 Regime 实际成交（标在成交日 Spread 水平）：Long 红 · Short 绿 · 平仓蓝。'
+                      : activeSignal === 'garch_z'
+                        ? ' 本图为对照：GARCH-z 模式下实际开平仓由上方 garch_z 分位决定，散点仍标在成交日对应的 Spread 水平。'
+                        : ` 散点：Long 红 · Short 绿 · 平仓蓝。分位仅用过去 ${data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。`}
                   </p>
                 </div>
               )}

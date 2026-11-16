@@ -1,4 +1,4 @@
-"""Unit tests for Fade / Momentum regime signal (v1)."""
+"""Unit tests for Fade / Momentum regime signal (v2)."""
 from __future__ import annotations
 
 import sys
@@ -12,7 +12,6 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from engine.regime_signal import (
-    COOLDOWN_DAYS,
     RegimeState,
     decide_regime_signal,
     rolling_quantile_map,
@@ -24,12 +23,14 @@ def _bands():
         "q01": -2.0,
         "q08": -1.2,
         "q10": -1.0,
+        "q15": -0.8,
         "q25": -0.5,
         "q30": -0.35,
         "q40": -0.2,
         "q60": 0.2,
         "q70": 0.35,
         "q75": 0.5,
+        "q85": 0.8,
         "q90": 1.0,
         "q92": 1.2,
         "q99": 2.0,
@@ -62,11 +63,16 @@ def test_momentum_accel_zone():
     assert dec.signal == -1 and dec.regime_mode == "momentum"
 
 
-def test_momentum_exhaust_mid_band():
+def test_momentum_exhaust_wide_mid_band_v2():
+    """v2 exhausts Mom inside [q15, q85], not only [q30, q70]."""
     level, shock = _bands()
     st = RegimeState(position=-1, hold_days=1, regime_mode="momentum", entry_spread=0.8)
-    dec = decide_regime_signal(st, S_t=0.0, z_t=0.0, level_q=level, shock_q=shock)
+    # S=0.6 is between q75 and q85 → still inside v2 exhaust band
+    dec = decide_regime_signal(st, S_t=0.6, z_t=0.0, level_q=level, shock_q=shock)
     assert dec.signal == 0 and dec.reason == "momentum_exhaust"
+    # Outside [q15,q85] and not other exits → hold
+    dec2 = decide_regime_signal(st, S_t=0.95, z_t=0.0, level_q=level, shock_q=shock)
+    assert dec2.signal == -1 and dec2.reason == "momentum_hold"
 
 
 def test_fade_requires_dual_day_calm():

@@ -72,11 +72,11 @@ DEFAULT_SPREAD_MODE = "iv"
 # Signal operator on the chosen spread series.
 # quantile = rolling 10/90 enter & 40/60 exit on raw Spread;
 # garch_z = expanding GARCH(1,1)-t on ΔSpread → z, then same rolling quantiles on z;
-# regime = Fade / Momentum regime switch (v1) with cooldown.
+# regime = Fade / Momentum regime switch (v2) with cooldown.
 SIGNAL_MODES = ("quantile", "garch_z", "regime")
 DEFAULT_SIGNAL_MODE = "quantile"
 BUDGET_FADE = 0.01
-BUDGET_MOMENTUM = 0.007
+BUDGET_MOMENTUM = 0.008
 
 # option product (DB) → index / futures multipliers
 UNIVERSES: Dict[str, Dict[str, Any]] = {
@@ -183,6 +183,8 @@ def normalize_signal_mode(signal_mode: str) -> str:
         "rs": "regime",
         "regime_switch": "regime",
         "switch": "regime",
+        "regime_v2": "regime",
+        "v2": "regime",
         "regime_v1": "regime",
         "v1": "regime",
     }
@@ -827,6 +829,7 @@ class CalendarVolBacktestEngine:
         )
         regime_level_bands = None
         regime_shock_bands = None
+        gz_chart_bands = None
         garch_z_series: Optional[pd.Series] = None
         if self.signal_mode == "garch_z":
             from engine.garch_signal import GARCH_WARM, expanding_garch_z
@@ -869,6 +872,22 @@ class CalendarVolBacktestEngine:
             regime_shock_bands = rolling_quantile_map(
                 garch_z_series, self.z_window, SHOCK_QS
             ).add_prefix("shk_")
+            # Chart-only: same 10/90·40/60 rolling bands on garch_z as garch_z mode
+            # (decision still uses regime shock/level maps above).
+            gz_chart_bands = rolling_quantile_bands(
+                garch_z_series,
+                self.z_window,
+                enter_q=self.enter_q,
+                exit_lo_q=self.exit_lo_q,
+                exit_hi_q=self.exit_hi_q,
+            ).rename(
+                columns={
+                    "enter_hi": "gz_enter_hi",
+                    "enter_lo": "gz_enter_lo",
+                    "exit_hi": "gz_exit_hi",
+                    "exit_lo": "gz_exit_lo",
+                }
+            )
         else:
             signal_level = ct["spread"].astype(float)
             min_hist = self.z_window + 30
@@ -894,6 +913,8 @@ class CalendarVolBacktestEngine:
             join_parts.append(regime_level_bands)
         if regime_shock_bands is not None:
             join_parts.append(regime_shock_bands)
+        if gz_chart_bands is not None:
+            join_parts.append(gz_chart_bands)
         ct = join_parts[0]
         for part in join_parts[1:]:
             ct = ct.join(part, how="left")
@@ -952,6 +973,20 @@ class CalendarVolBacktestEngine:
             iv_el_f = float(iv_el) if pd.notna(iv_el) else float("nan")
             iv_xh_f = float(iv_xh) if pd.notna(iv_xh) else float("nan")
             iv_xl_f = float(iv_xl) if pd.notna(iv_xl) else float("nan")
+
+            def _opt_band(col: str) -> Optional[float]:
+                if col not in ct.columns:
+                    return None
+                v = ct.loc[d, col]
+                if pd.isna(v):
+                    return None
+                x = float(v)
+                return x if math.isfinite(x) else None
+
+            gz_eh_f = _opt_band("gz_enter_hi")
+            gz_el_f = _opt_band("gz_enter_lo")
+            gz_xh_f = _opt_band("gz_exit_hi")
+            gz_xl_f = _opt_band("gz_exit_lo")
             iv_near_raw = ct.loc[d, "iv_near"]
             iv_far_raw = ct.loc[d, "iv_far"]
             iv_near_f = float(iv_near_raw) if pd.notna(iv_near_raw) else float("nan")
@@ -970,12 +1005,14 @@ class CalendarVolBacktestEngine:
                 "q01": _band("lvl_q01"),
                 "q08": _band("lvl_q08"),
                 "q10": _band("lvl_q10"),
+                "q15": _band("lvl_q15"),
                 "q25": _band("lvl_q25"),
                 "q30": _band("lvl_q30"),
                 "q40": _band("lvl_q40"),
                 "q60": _band("lvl_q60"),
                 "q70": _band("lvl_q70"),
                 "q75": _band("lvl_q75"),
+                "q85": _band("lvl_q85"),
                 "q90": _band("lvl_q90"),
                 "q92": _band("lvl_q92"),
                 "q99": _band("lvl_q99"),
@@ -1108,12 +1145,14 @@ class CalendarVolBacktestEngine:
                     "q01",
                     "q08",
                     "q10",
+                    "q15",
                     "q25",
                     "q30",
                     "q40",
                     "q60",
                     "q70",
                     "q75",
+                    "q85",
                     "q90",
                     "q92",
                     "q99",
@@ -1207,15 +1246,21 @@ class CalendarVolBacktestEngine:
                     "iv_enter_lo": iv_el_f if math.isfinite(iv_el_f) else None,
                     "iv_exit_hi": iv_xh_f if math.isfinite(iv_xh_f) else None,
                     "iv_exit_lo": iv_xl_f if math.isfinite(iv_xl_f) else None,
+                    "gz_enter_hi": gz_eh_f,
+                    "gz_enter_lo": gz_el_f,
+                    "gz_exit_hi": gz_xh_f,
+                    "gz_exit_lo": gz_xl_f,
                     "lvl_q01": lvl_q["q01"],
                     "lvl_q08": lvl_q["q08"],
                     "lvl_q10": lvl_q["q10"],
+                    "lvl_q15": lvl_q.get("q15"),
                     "lvl_q25": lvl_q["q25"],
                     "lvl_q30": lvl_q["q30"],
                     "lvl_q40": lvl_q["q40"],
                     "lvl_q60": lvl_q["q60"],
                     "lvl_q70": lvl_q["q70"],
                     "lvl_q75": lvl_q["q75"],
+                    "lvl_q85": lvl_q.get("q85"),
                     "lvl_q90": lvl_q["q90"],
                     "lvl_q92": lvl_q["q92"],
                     "lvl_q99": lvl_q["q99"],
@@ -1467,6 +1512,7 @@ class CalendarVolBacktestEngine:
                     "sos": _sos_pts(rows[i]["spread"]),
                     "spread_iv": _opt(rows[i].get("spread_iv")),
                     "sos_iv": _sos_pts(rows[i].get("spread_iv"), scale=100.0),
+                    "garch_z": _opt(rows[i].get("garch_z")),
                     "position": curr_p,
                     "prev_position": prev_p,
                     "regime_mode": rows[i].get("regime_mode"),
@@ -1488,6 +1534,10 @@ class CalendarVolBacktestEngine:
             "iv_enter_lo": [_opt(rows[i].get("iv_enter_lo")) for i in sig_idx],
             "iv_exit_hi": [_opt(rows[i].get("iv_exit_hi")) for i in sig_idx],
             "iv_exit_lo": [_opt(rows[i].get("iv_exit_lo")) for i in sig_idx],
+            "gz_enter_hi": [_opt(rows[i].get("gz_enter_hi")) for i in sig_idx],
+            "gz_enter_lo": [_opt(rows[i].get("gz_enter_lo")) for i in sig_idx],
+            "gz_exit_hi": [_opt(rows[i].get("gz_exit_hi")) for i in sig_idx],
+            "gz_exit_lo": [_opt(rows[i].get("gz_exit_lo")) for i in sig_idx],
             "lvl_q01": [_opt(rows[i].get("lvl_q01")) for i in sig_idx],
             "lvl_q08": [_opt(rows[i].get("lvl_q08")) for i in sig_idx],
             "lvl_q10": [_opt(rows[i].get("lvl_q10")) for i in sig_idx],
@@ -1558,7 +1608,7 @@ class CalendarVolBacktestEngine:
         signal_label = {
             "quantile": "rolling quantile",
             "garch_z": "GARCH-z + rolling quantile",
-            "regime": "Fade / Momentum regime switch",
+            "regime": "Regime v2 Fade/Momentum",
         }[self.signal_mode]
         spread_formula = (
             "IV_near² − IV_far²"
@@ -1574,9 +1624,9 @@ class CalendarVolBacktestEngine:
             )
         elif self.signal_mode == "regime":
             signal_desc = (
-                f"regime on prior {self.z_window}d: Momentum in accel zone "
+                f"regime v2 on prior {self.z_window}d: Momentum in accel zone "
                 f"(q75–q92 / q08–q25) with garch_z beyond 90/10; "
-                f"mom exits: mid-band exhaust 30–70, adverse z 20/80, space 1/99, max 8d; "
+                f"mom exits: mid-band exhaust 15–85, adverse z 20/80, space 1/99, max 8d; "
                 f"Fade outside 10/90 when z≤q80/≥q20 and z_prev≤q80/≥q20; "
                 f"exit 40–60 + crisis fuse; cooldown 3d; "
                 f"budget fade={self.budget_fade:.1%} momentum={self.budget_momentum:.1%} NAV"
