@@ -64,7 +64,19 @@ const CHART = {
   close: '#2563EB',
   enterBand: '#7C3AED',
   exitBand: '#64748B',
+  /** Regime decision-band colors (match strategy thresholds, not fixed 10/90). */
+  fadeExt: '#7C3AED',
+  accel: '#0EA5E9',
+  exhaust: '#64748B',
+  meanRev: '#A16207',
+  shockExt: '#7C3AED',
+  shockCalm: '#0EA5E9',
 };
+
+function scaleOpt(v: number | null | undefined, mul: number): number | null {
+  if (v == null || Number.isNaN(v)) return null;
+  return v * mul;
+}
 
 const CAL_VOL_UNIVERSES = [
   { key: '50', id: 'equity_3_6_calendar_vol_50', label: '50' },
@@ -372,7 +384,7 @@ const QisView: React.FC = () => {
     });
   }, [data, byKind, levelScale]);
 
-  /** GARCH-z + rolling 10/90·40/60 bands (garch_z mode decision chart; regime reference). */
+  /** GARCH-z chart: garch_z mode uses enter_*; regime uses decision shock bands shk_q*. */
   const garchZChart = useMemo(() => {
     const s = data?.signal;
     if (!s?.dates?.length) return [];
@@ -399,10 +411,10 @@ const QisView: React.FC = () => {
         };
       });
     }
-    // regime: dedicated garch_z series + gz_* chart bands
+    // regime: garch_z + decision shock quantiles (same as FSM thresholds)
     if (!s.garch_z?.length) return [];
-    const useGzBands =
-      Array.isArray(s.gz_enter_hi) && s.gz_enter_hi.length === s.dates.length;
+    const useShk =
+      Array.isArray(s.shk_q10) && s.shk_q10.length === s.dates.length;
     return s.dates.map((dt, i) => {
       const zRaw = s.garch_z![i];
       const z = zRaw == null || Number.isNaN(zRaw) ? 0 : (zRaw as number);
@@ -410,10 +422,10 @@ const QisView: React.FC = () => {
       return {
         d: dt,
         spread_pts: z,
-        enter_hi: useGzBands && s.gz_enter_hi![i] != null ? (s.gz_enter_hi![i] as number) : null,
-        enter_lo: useGzBands && s.gz_enter_lo![i] != null ? (s.gz_enter_lo![i] as number) : null,
-        exit_hi: useGzBands && s.gz_exit_hi![i] != null ? (s.gz_exit_hi![i] as number) : null,
-        exit_lo: useGzBands && s.gz_exit_lo![i] != null ? (s.gz_exit_lo![i] as number) : null,
+        q10: useShk ? scaleOpt(s.shk_q10?.[i], 1) : null,
+        q20: useShk ? scaleOpt(s.shk_q20?.[i], 1) : null,
+        q80: useShk ? scaleOpt(s.shk_q80?.[i], 1) : null,
+        q90: useShk ? scaleOpt(s.shk_q90?.[i], 1) : null,
         long_pt: kind === 'long' ? z : null,
         short_pt: kind === 'short' ? z : null,
         close_pt: kind === 'close' ? z : null,
@@ -421,17 +433,47 @@ const QisView: React.FC = () => {
     });
   }, [data, byKindGz]);
 
-  /** CT-IV spread + its own rolling quantile bands (always vol-pt scale). */
+  /** CT-IV spread chart: quantile/garch use iv/enter bands; regime uses decision lvl_q*. */
   const ivSpreadChart = useMemo(() => {
     const s = data?.signal;
     if (!s?.dates?.length) return [];
     const ivSeries = s.spread_iv ?? (levelScale === 100 ? s.spread : null);
     if (!ivSeries?.length) return [];
+    const mode =
+      (typeof s.signal_mode === 'string' ? s.signal_mode : null) ??
+      (typeof data?.params?.signal_mode === 'string' ? data.params.signal_mode : null);
+    const kindByD = byKindIv;
+
+    if (mode === 'regime') {
+      const useLvl = Array.isArray(s.lvl_q10) && s.lvl_q10.length === s.dates.length;
+      return s.dates.map((dt, i) => {
+        const raw = ivSeries[i];
+        const spreadPts = raw == null || Number.isNaN(raw) ? 0 : raw * 100;
+        const kind = kindByD.get(dt);
+        return {
+          d: dt,
+          spread_pts: spreadPts,
+          q08: useLvl ? scaleOpt(s.lvl_q08?.[i], 100) : null,
+          q10: useLvl ? scaleOpt(s.lvl_q10?.[i], 100) : null,
+          q15: useLvl ? scaleOpt(s.lvl_q15?.[i], 100) : null,
+          q25: useLvl ? scaleOpt(s.lvl_q25?.[i], 100) : null,
+          q40: useLvl ? scaleOpt(s.lvl_q40?.[i], 100) : null,
+          q60: useLvl ? scaleOpt(s.lvl_q60?.[i], 100) : null,
+          q75: useLvl ? scaleOpt(s.lvl_q75?.[i], 100) : null,
+          q85: useLvl ? scaleOpt(s.lvl_q85?.[i], 100) : null,
+          q90: useLvl ? scaleOpt(s.lvl_q90?.[i], 100) : null,
+          q92: useLvl ? scaleOpt(s.lvl_q92?.[i], 100) : null,
+          long_pt: kind === 'long' ? spreadPts : null,
+          short_pt: kind === 'short' ? spreadPts : null,
+          close_pt: kind === 'close' ? spreadPts : null,
+        };
+      });
+    }
+
     const useIvBands =
       Array.isArray(s.iv_enter_hi) && s.iv_enter_hi.length === s.dates.length;
     const useDecBands =
       !useIvBands && Array.isArray(s.enter_hi) && s.enter_hi.length === s.dates.length && levelScale === 100;
-    const kindByD = byKindIv;
     return s.dates.map((dt, i) => {
       const raw = ivSeries[i];
       const spreadPts = raw == null || Number.isNaN(raw) ? 0 : raw * 100;
@@ -1081,11 +1123,16 @@ const QisView: React.FC = () => {
               {showGarchSignalChart && garchChartData.length > 0 && (
                 <div className="bg-white rounded-lg border border-slate-200 p-4">
                   <h3 className="font-bold text-[#000066] text-sm mb-3">
-                    {tenorLabel} GARCH-z & Rolling Quantile Bands
+                    {tenorLabel} GARCH-z &{' '}
+                    {activeSignal === 'regime' ? 'Decision Shock Bands' : 'Rolling Quantile Bands'}
                   </h3>
                   <ChartZoomFrame
                     data={garchChartData}
-                    yKeys={['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']}
+                    yKeys={
+                      activeSignal === 'regime'
+                        ? ['spread_pts', 'q10', 'q20', 'q80', 'q90']
+                        : ['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']
+                    }
                     height={300}
                   >
                     {(win) => (
@@ -1101,10 +1148,21 @@ const QisView: React.FC = () => {
                           <Tooltip contentStyle={{ fontSize: 11 }} />
                           <Legend wrapperStyle={{ fontSize: 10 }} />
                           <Line type="monotone" dataKey="spread_pts" name="garch_z" stroke={CHART.spread} dot={false} strokeWidth={1.5} />
-                          <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                          <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                          <Line type="monotone" dataKey="exit_hi" name="Exit hi" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
-                          <Line type="monotone" dataKey="exit_lo" name="Exit lo" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                          {activeSignal === 'regime' ? (
+                            <>
+                              <Line type="monotone" dataKey="q90" name="shk q90 (ext)" stroke={CHART.shockExt} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                              <Line type="monotone" dataKey="q10" name="shk q10 (ext)" stroke={CHART.shockExt} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                              <Line type="monotone" dataKey="q80" name="shk q80 (calm)" stroke={CHART.shockCalm} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                              <Line type="monotone" dataKey="q20" name="shk q20 (calm)" stroke={CHART.shockCalm} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                            </>
+                          ) : (
+                            <>
+                              <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                              <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                              <Line type="monotone" dataKey="exit_hi" name="Exit hi" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                              <Line type="monotone" dataKey="exit_lo" name="Exit lo" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                            </>
+                          )}
                           <Line type="monotone" dataKey="long_pt" name="Long" stroke={CHART.long} strokeWidth={0} dot={markerDot(CHART.long)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
                           <Line type="monotone" dataKey="short_pt" name="Short" stroke={CHART.short} strokeWidth={0} dot={markerDot(CHART.short)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
                           <Line type="monotone" dataKey="close_pt" name="Close" stroke={CHART.close} strokeWidth={0} dot={markerDot(CHART.close)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
@@ -1113,8 +1171,10 @@ const QisView: React.FC = () => {
                     )}
                   </ChartZoomFrame>
                   <p className="text-[9px] text-slate-400 mt-1">
-                    黄线：garch_z。紫/灰虚线：对 garch_z 的滚动分位带（10/90 入场 · 40/60 出场口径）。
-                    散点为 Regime / GARCH-z 策略实际成交：Long 红 · Short 绿 · 平仓蓝
+                    {activeSignal === 'regime'
+                      ? '黄线：garch_z。紫虚线：策略冲击极端带 shk q10/q90（Momentum 加速 / Fade 不利冲击）；青虚线：冷静带 shk q20/q80（Fade 双日冷静入场 · Momentum 不利冲击出场）。分位 = 过去 W 日、shift(1)，与 FSM 决策同一套。'
+                      : `黄线：garch_z。紫/灰虚线：对 garch_z 的滚动分位带（${enterPct} 入场 · ${exitPct} 出场口径）。`}
+                    {' '}散点为实际成交：Long 红 · Short 绿 · 平仓蓝
                     {activeSignal === 'regime' ? '（标在成交日 garch_z 水平）。' : '。'}
                   </p>
                 </div>
@@ -1123,11 +1183,16 @@ const QisView: React.FC = () => {
               {showSpreadBandChart && spreadChartData.length > 0 && (
                 <div className="bg-white rounded-lg border border-slate-200 p-4">
                   <h3 className="font-bold text-[#000066] text-sm mb-3">
-                    {tenorLabel} Spread & Rolling Quantile Bands
+                    {tenorLabel} Spread &{' '}
+                    {activeSignal === 'regime' ? 'Decision Level Bands' : 'Rolling Quantile Bands'}
                   </h3>
                   <ChartZoomFrame
                     data={spreadChartData}
-                    yKeys={['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']}
+                    yKeys={
+                      activeSignal === 'regime'
+                        ? ['spread_pts', 'q08', 'q10', 'q15', 'q25', 'q40', 'q60', 'q75', 'q85', 'q90', 'q92']
+                        : ['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']
+                    }
                     height={300}
                   >
                     {(win) => (
@@ -1151,10 +1216,27 @@ const QisView: React.FC = () => {
                             dot={false}
                             strokeWidth={1.5}
                           />
-                          <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                          <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                          <Line type="monotone" dataKey="exit_hi" name="Exit hi" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
-                          <Line type="monotone" dataKey="exit_lo" name="Exit lo" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                          {activeSignal === 'regime' ? (
+                            <>
+                              <Line type="monotone" dataKey="q90" name="lvl q90 (Fade)" stroke={CHART.fadeExt} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                              <Line type="monotone" dataKey="q10" name="lvl q10 (Fade)" stroke={CHART.fadeExt} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                              <Line type="monotone" dataKey="q92" name="lvl q92 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="3 3" connectNulls />
+                              <Line type="monotone" dataKey="q08" name="lvl q08 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="3 3" connectNulls />
+                              <Line type="monotone" dataKey="q75" name="lvl q75 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="2 3" connectNulls />
+                              <Line type="monotone" dataKey="q25" name="lvl q25 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="2 3" connectNulls />
+                              <Line type="monotone" dataKey="q85" name="lvl q85 (exhaust)" stroke={CHART.exhaust} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                              <Line type="monotone" dataKey="q15" name="lvl q15 (exhaust)" stroke={CHART.exhaust} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                              <Line type="monotone" dataKey="q60" name="lvl q60 (mean)" stroke={CHART.meanRev} dot={false} strokeWidth={1} strokeDasharray="1 3" connectNulls />
+                              <Line type="monotone" dataKey="q40" name="lvl q40 (mean)" stroke={CHART.meanRev} dot={false} strokeWidth={1} strokeDasharray="1 3" connectNulls />
+                            </>
+                          ) : (
+                            <>
+                              <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                              <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                              <Line type="monotone" dataKey="exit_hi" name="Exit hi" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                              <Line type="monotone" dataKey="exit_lo" name="Exit lo" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                            </>
+                          )}
                           <Line type="monotone" dataKey="long_pt" name="Long" stroke={CHART.long} strokeWidth={0} dot={markerDot(CHART.long)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
                           <Line type="monotone" dataKey="short_pt" name="Short" stroke={CHART.short} strokeWidth={0} dot={markerDot(CHART.short)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
                           <Line type="monotone" dataKey="close_pt" name="Close" stroke={CHART.close} strokeWidth={0} dot={markerDot(CHART.close)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
@@ -1163,12 +1245,11 @@ const QisView: React.FC = () => {
                     )}
                   </ChartZoomFrame>
                   <p className="text-[9px] text-slate-400 mt-1">
-                    黄线：CT-IV Spread（vol pts）。紫虚线：对 Spread 水平的滚动入场分位；灰虚线：出场带（落入 {exitPct}% 区间）。
                     {activeSignal === 'regime'
-                      ? ' 散点为 Regime 实际成交（标在成交日 Spread 水平）：Long 红 · Short 绿 · 平仓蓝。'
+                      ? '黄线：CT-IV Spread。紫：Fade 极端 lvl q10/q90；青：Momentum 加速区 lvl q08/q25/q75/q92；灰：耗尽出场 [q15,q85]；褐：Fade 均值回归出场 [q40,q60]。分位与 FSM 决策同一套（过去 W 日、shift(1)）。散点：Long 红 · Short 绿 · 平仓蓝。'
                       : activeSignal === 'garch_z'
-                        ? ' 本图为对照：GARCH-z 模式下实际开平仓由上方 garch_z 分位决定，散点仍标在成交日对应的 Spread 水平。'
-                        : ` 散点：Long 红 · Short 绿 · 平仓蓝。分位仅用过去 ${data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。`}
+                        ? `黄线：CT-IV Spread（vol pts）。紫/灰虚线：对 Spread 的滚动分位（对照；实际开平仓由上方 garch_z 分位决定）。散点标在成交日 Spread 水平。`
+                        : `黄线：CT-IV Spread（vol pts）。紫虚线：入场分位 ${enterPct}；灰虚线：出场带 ${exitPct}%。散点：Long 红 · Short 绿 · 平仓蓝。分位仅用过去 ${data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。`}
                   </p>
                 </div>
               )}

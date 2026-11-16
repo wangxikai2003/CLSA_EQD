@@ -468,11 +468,31 @@ export interface QisSignalSeries {
   iv_enter_lo?: (number | null)[];
   iv_exit_hi?: (number | null)[];
   iv_exit_lo?: (number | null)[];
-  /** Rolling 10/90·40/60 bands on garch_z (regime chart reference). */
+  /** Rolling 10/90·40/60 bands on garch_z (legacy chart fields; regime UI uses shk_*). */
   gz_enter_hi?: (number | null)[];
   gz_enter_lo?: (number | null)[];
   gz_exit_hi?: (number | null)[];
   gz_exit_lo?: (number | null)[];
+  /** Regime decision level (Spread) quantiles — prior W days, shift(1). */
+  lvl_q01?: (number | null)[];
+  lvl_q08?: (number | null)[];
+  lvl_q10?: (number | null)[];
+  lvl_q15?: (number | null)[];
+  lvl_q25?: (number | null)[];
+  lvl_q40?: (number | null)[];
+  lvl_q60?: (number | null)[];
+  lvl_q75?: (number | null)[];
+  lvl_q85?: (number | null)[];
+  lvl_q90?: (number | null)[];
+  lvl_q92?: (number | null)[];
+  lvl_q99?: (number | null)[];
+  /** Regime decision shock (garch_z) quantiles. */
+  shk_q10?: (number | null)[];
+  shk_q20?: (number | null)[];
+  shk_q25?: (number | null)[];
+  shk_q75?: (number | null)[];
+  shk_q80?: (number | null)[];
+  shk_q90?: (number | null)[];
   enter_q?: number;
   exit_lo_q?: number;
   exit_hi_q?: number;

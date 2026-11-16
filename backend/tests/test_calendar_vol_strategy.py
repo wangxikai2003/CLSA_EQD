@@ -273,6 +273,25 @@ def test_regime_signal_mode_smoke():
     assert "entry_spread" in sig and len(sig["entry_spread"]) == len(sig["dates"])
     assert "garch_z" in sig and len(sig["garch_z"]) == len(sig["dates"])
     assert any(m in ("fade", "momentum") for m in sig["regime_mode"] if m)
+    # Decision bands exported for charts (= FSM thresholds, not fixed 10/90 display).
+    for k in (
+        "lvl_q08",
+        "lvl_q10",
+        "lvl_q15",
+        "lvl_q25",
+        "lvl_q40",
+        "lvl_q60",
+        "lvl_q75",
+        "lvl_q85",
+        "lvl_q90",
+        "lvl_q92",
+        "shk_q10",
+        "shk_q20",
+        "shk_q80",
+        "shk_q90",
+    ):
+        assert k in sig and len(sig[k]) == len(sig["dates"]), k
+        assert any(v is not None for v in sig[k]), k
     assert float(payload["summary"]["final_nav_multiple"]) > 0
 
 
