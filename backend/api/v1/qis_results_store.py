@@ -15,10 +15,55 @@ _DB_CANDIDATES = [
     Path("/app/data/qis_results.sqlite"),
 ]
 
+try:
+    from data_paths import qis_results as _dp_qis
+except Exception:  # pragma: no cover
+    _dp_qis = None  # type: ignore
+
 _DEFAULT_TENOR = "3M-6M"
 _DEFAULT_SIDE = "both"
 _DEFAULT_SPREAD = "iv"
 _DEFAULT_SIGNAL = "quantile"
+
+# Cross Calendar Carry sentinel PK fields (cost encoded in signal_mode).
+CROSS_Z_WINDOW = 0
+CROSS_TENOR = "n/a"
+CROSS_SIDE = "n/a"
+CROSS_SPREAD = "n/a"
+
+
+def cost_sig(slippage: float = 0.0, fee: float = 0.0) -> str:
+    """Stable cost fingerprint; used as signal_mode for carry rows."""
+    return f"{float(slippage):.8g}|{float(fee):.8g}"
+
+
+def attach_cache_meta(
+    payload: Dict[str, Any],
+    *,
+    hit: bool,
+    source: str,
+    source_key: str,
+    persisted: bool = False,
+    tenor_pair: str = _DEFAULT_TENOR,
+    side_mode: str = _DEFAULT_SIDE,
+    spread_mode: str = _DEFAULT_SPREAD,
+    signal_mode: str = _DEFAULT_SIGNAL,
+    db: Optional[str] = None,
+) -> Dict[str, Any]:
+    meta: Dict[str, Any] = {
+        "hit": bool(hit),
+        "source": source,
+        "source_key": source_key,
+        "tenor_pair": tenor_pair,
+        "side_mode": side_mode,
+        "spread_mode": spread_mode,
+        "signal_mode": signal_mode,
+    }
+    if persisted:
+        meta["persisted"] = True
+    if db:
+        meta["db"] = db
+    return {**payload, "_cache": meta}
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS qis_backtest_cache (
@@ -39,6 +84,14 @@ CREATE INDEX IF NOT EXISTS idx_qis_cache_src ON qis_backtest_cache(source_key);
 
 
 def results_db_path(create_parent: bool = True) -> Path:
+    if _dp_qis is not None:
+        try:
+            p = _dp_qis()
+            if create_parent:
+                p.parent.mkdir(parents=True, exist_ok=True)
+            return p
+        except Exception:
+            pass
     for p in _DB_CANDIDATES:
         if p.exists():
             return p
@@ -229,16 +282,17 @@ def get_cached(
         if stored_src != src_key:
             return None
         data = json.loads(payload_s)
-        data["_cache"] = {
-            "hit": True,
-            "source_key": stored_src,
-            "db": str(path),
-            "tenor_pair": tenor_pair,
-            "side_mode": side_mode,
-            "spread_mode": spread_mode,
-            "signal_mode": signal_mode,
-        }
-        return data
+        return attach_cache_meta(
+            data,
+            hit=True,
+            source="db",
+            source_key=stored_src,
+            tenor_pair=tenor_pair,
+            side_mode=side_mode,
+            spread_mode=spread_mode,
+            signal_mode=signal_mode,
+            db=str(path),
+        )
     finally:
         conn.close()
 

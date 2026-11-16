@@ -547,6 +547,18 @@ export interface QisBacktestResponse {
   pnl_daily_greeks?: QisDailyGreeks;
   signal?: QisSignalSeries;
   pnl_contribution?: QisPnLContribution;
+  /** Result-store reuse: hit=true means engine was skipped. */
+  _cache?: {
+    hit: boolean;
+    source?: 'db' | 'memory' | 'miss' | string;
+    source_key?: string;
+    persisted?: boolean;
+    db?: string;
+    tenor_pair?: string;
+    side_mode?: string;
+    spread_mode?: string;
+    signal_mode?: string;
+  };
 }
 
 export function fetchQisStrategies(opts?: AbortSignal | FetchRetryOpts) {

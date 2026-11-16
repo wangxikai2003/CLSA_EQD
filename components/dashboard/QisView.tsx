@@ -182,7 +182,7 @@ const QisView: React.FC = () => {
   const load = (refresh = false, signal?: AbortSignal) => {
     setLoading(true);
     setErr(null);
-    setLoadStatus(refresh ? '刷新回测…' : 'Running backtest…');
+    setLoadStatus(refresh ? '强制重算并覆盖缓存…' : '加载回测（优先读库）…');
     fetchQisBacktest(
       strategyId,
       refresh,
@@ -204,6 +204,16 @@ const QisView: React.FC = () => {
         if (signal?.aborted) return;
         setData(d);
         setErr(null);
+        const c = d._cache;
+        if (c?.hit) {
+          setLoadStatus(
+            c.source === 'memory' ? '已从进程内存复用' : '已从结果库复用（未重跑引擎）',
+          );
+        } else if (c?.persisted) {
+          setLoadStatus('已重算并写入结果库');
+        } else {
+          setLoadStatus('回测完成');
+        }
       })
       .catch((e) => {
         if ((e as Error)?.name === 'AbortError' || signal?.aborted) return;
@@ -769,6 +779,7 @@ const QisView: React.FC = () => {
             type="button"
             onClick={() => load(true)}
             className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-md bg-[#000066] text-white"
+            title="强制重跑引擎并覆盖结果库"
           >
             <RefreshCw size={12} /> Refresh
           </button>
@@ -790,6 +801,17 @@ const QisView: React.FC = () => {
           {loadStatus}
         </div>
       )}
+      {!loading && data?._cache && (
+        <div className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded px-3 py-2">
+          结果落库复用：同参数首次成功回测写入 <code className="font-mono text-[10px]">qis_results.sqlite</code>
+          ，之后直接读库不重跑引擎；仅点 Refresh / <code className="font-mono text-[10px]">refresh=true</code>{' '}
+          强制重算覆盖。
+          <span className="font-mono text-[10px] text-slate-500 ml-1">
+            cache {data._cache.hit ? 'HIT' : 'MISS'}/{data._cache.source ?? '?'}
+            {data._cache.persisted ? ' · persisted' : ''}
+          </span>
+        </div>
+      )}
       {err && !loading && (
         <div className="text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded p-2">{err}</div>
       )}
@@ -806,6 +828,9 @@ const QisView: React.FC = () => {
                 {typeof data.params.z_window === 'number' ? ` · window=${data.params.z_window}d` : ''}
                 {isCalVol
                   ? ` · tenor=${tenorLabel} · side=${sideLabel} · spread=${spreadLabel} · signal=${signalLabel}`
+                  : ''}
+                {data._cache
+                  ? ` · cache ${data._cache.hit ? 'HIT' : 'MISS'}/${data._cache.source ?? '?'}`
                   : ''}
               </div>
             </div>
