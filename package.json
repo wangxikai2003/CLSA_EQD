@@ -9,11 +9,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react-dom": "^19.2.3",
-    "react": "^19.2.3",
     "lucide-react": "^0.562.0",
-    "recharts": "^3.6.0",
-    "react-plotly.js": "^2.6.0"
+    "picomatch": "^4.0.2",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "react-plotly.js": "^2.6.0",
+    "recharts": "^3.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

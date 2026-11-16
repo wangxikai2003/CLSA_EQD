@@ -16,11 +16,13 @@ from engine.black76 import black76_greeks
 from engine.calendar_vol_strategy import (
     CalendarVolBacktestEngine,
     SIDE_MODES,
+    SIGNAL_MODES,
     SPREAD_MODES,
     T_3M,
     TENOR_PAIRS,
     UNIVERSES,
     compute_spread,
+    normalize_signal_mode,
     rolling_quantile_bands,
     rolling_zscore,
     run_calendar_vol,
@@ -237,3 +239,36 @@ def test_holdings_excel_export(tmp_path):
     df = pd.read_excel(path, sheet_name="holdings")
     assert {"trade_date", "wind_code", "direction", "qty", "price"}.issubset(df.columns)
     assert len(df) > 0
+
+
+def test_normalize_signal_mode_regime():
+    assert "regime" in SIGNAL_MODES
+    assert normalize_signal_mode("regime") == "regime"
+    assert normalize_signal_mode("fade_momentum") == "regime"
+    assert normalize_signal_mode("rs") == "regime"
+    assert normalize_signal_mode("regime_v1") == "regime"
+
+
+def test_regime_signal_mode_smoke():
+    """regime mode runs end-to-end; payload carries regime_mode / cooldown / garch_z."""
+    payload = run_calendar_vol(
+        "300",
+        initial_nav=100_000_000.0,
+        z_window=252,
+        tenor_pair="3M-6M",
+        side_mode="both",
+        spread_mode="iv",
+        signal_mode="regime",
+    )
+    assert payload["params"]["signal_mode"] == "regime"
+    assert payload["params"]["budget_fade"] == 0.01
+    assert payload["params"]["budget_momentum"] == 0.007
+    assert payload["params"]["first_open"] < payload["params"]["perf_start"]
+    sig = payload["signal"]
+    assert sig["signal_mode"] == "regime"
+    assert "regime_mode" in sig and len(sig["regime_mode"]) == len(sig["dates"])
+    assert "cooldown" in sig and len(sig["cooldown"]) == len(sig["dates"])
+    assert "entry_spread" in sig and len(sig["entry_spread"]) == len(sig["dates"])
+    assert "garch_z" in sig and len(sig["garch_z"]) == len(sig["dates"])
+    assert any(m in ("fade", "momentum") for m in sig["regime_mode"] if m)
+    assert float(payload["summary"]["final_nav_multiple"]) > 0

@@ -376,7 +376,7 @@ def backtest(
     ),
     signal_mode: str = Query(
         "quantile",
-        description="Signal: quantile (rolling bands on Spread) | garch_z (GARCH-z + same bands)",
+        description="Signal: quantile | garch_z | regime",
     ),
 ):
     db = st._equity_db()
@@ -488,7 +488,7 @@ def download_holdings(
     ),
     signal_mode: str = Query(
         "quantile",
-        description="Signal: quantile | garch_z",
+        description="Signal: quantile | garch_z | regime",
     ),
     persist: bool = Query(
         True,

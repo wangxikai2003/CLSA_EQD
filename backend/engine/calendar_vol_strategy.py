@@ -21,6 +21,10 @@ _DB_CANDIDATES = [
     Path("/app/data/cffex_vol.sqlite"),
     REPO / "data" / "cffex_vol.sqlite",
 ]
+try:
+    from data_paths import cffex_vol as _dp_cffex, index_spot as _dp_spot
+except Exception:  # pragma: no cover
+    _dp_cffex = _dp_spot = None  # type: ignore
 _SPOT_CANDIDATES = [
     ROOT / "data" / "index_spot.parquet",
     Path("/app/data/index_spot.parquet"),
@@ -67,9 +71,12 @@ DEFAULT_SPREAD_MODE = "iv"
 
 # Signal operator on the chosen spread series.
 # quantile = rolling 10/90 enter & 40/60 exit on raw Spread;
-# garch_z = expanding GARCH(1,1)-t on ΔSpread → z, then same rolling quantiles on z.
-SIGNAL_MODES = ("quantile", "garch_z")
+# garch_z = expanding GARCH(1,1)-t on ΔSpread → z, then same rolling quantiles on z;
+# regime = Fade / Momentum regime switch (v1) with cooldown.
+SIGNAL_MODES = ("quantile", "garch_z", "regime")
 DEFAULT_SIGNAL_MODE = "quantile"
+BUDGET_FADE = 0.01
+BUDGET_MOMENTUM = 0.007
 
 # option product (DB) → index / futures multipliers
 UNIVERSES: Dict[str, Dict[str, Any]] = {
@@ -172,6 +179,12 @@ def normalize_signal_mode(signal_mode: str) -> str:
         "gz": "garch_z",
         "g_z": "garch_z",
         "z": "garch_z",
+        "fade_momentum": "regime",
+        "rs": "regime",
+        "regime_switch": "regime",
+        "switch": "regime",
+        "regime_v1": "regime",
+        "v1": "regime",
     }
     key = aliases.get(key, key)
     if key not in SIGNAL_MODES:
@@ -212,6 +225,11 @@ def default_holdings_export_path(
 
 
 def _equity_db() -> Path:
+    if _dp_cffex is not None:
+        try:
+            return _dp_cffex()
+        except FileNotFoundError:
+            pass
     for p in _DB_CANDIDATES:
         if p.exists() and p.stat().st_size > 0:
             return p
@@ -219,6 +237,10 @@ def _equity_db() -> Path:
 
 
 def _spot_path() -> Path:
+    if _dp_spot is not None:
+        p = _dp_spot()
+        if p is not None and p.exists() and p.stat().st_size > 0:
+            return p
     for p in _SPOT_CANDIDATES:
         if p.exists() and p.stat().st_size > 0:
             return p
@@ -320,6 +342,9 @@ class DayState:
     hold_days: int = 0
     opts: List[OptPos] = field(default_factory=list)
     n_if: float = 0.0
+    regime_mode: Optional[str] = None  # None | fade | momentum
+    cooldown: int = 0
+    entry_spread: Optional[float] = None
 
 
 class CalendarVolBacktestEngine:
@@ -335,6 +360,9 @@ class CalendarVolBacktestEngine:
         side_mode: str = DEFAULT_SIDE_MODE,
         spread_mode: str = DEFAULT_SPREAD_MODE,
         signal_mode: str = DEFAULT_SIGNAL_MODE,
+        budget_fade: float = BUDGET_FADE,
+        budget_momentum: float = BUDGET_MOMENTUM,
+        budget_fade_vol_scale: bool = False,
     ):
         if universe not in UNIVERSES:
             raise ValueError(f"unknown universe {universe}; choose {list(UNIVERSES)}")
@@ -350,19 +378,24 @@ class CalendarVolBacktestEngine:
         self.side_mode = normalize_side_mode(side_mode)
         self.spread_mode = normalize_spread_mode(spread_mode)
         self.signal_mode = normalize_signal_mode(signal_mode)
-        # Chart display: vol pts (*100) for raw spread; unit z (*1) for garch_z.
+        # Chart display: vol pts (*100) for raw spread / regime; unit z (*1) for garch_z.
         self.level_scale = 1.0 if self.signal_mode == "garch_z" else 100.0
         self.initial_nav = float(initial_nav)
         self.z_window = int(z_window)
         self.enter_q = float(enter_q)
         self.exit_lo_q = float(exit_lo_q)
         self.exit_hi_q = float(exit_hi_q)
+        self.budget_fade = float(budget_fade)
+        self.budget_momentum = float(budget_momentum)
+        self.budget_fade_vol_scale = bool(budget_fade_vol_scale)
         self.product = self.cfg["product"]
         self.spot_code = self.cfg["spot_code"]
         self.m_opt = float(self.cfg["m_opt"])
         self.m_fut = float(self.cfg["m_fut"])
         self._vega_checks: List[float] = []
         self._holdings_rows: List[Dict[str, Any]] = []
+        self._garch_sigma: Optional[pd.Series] = None
+        self._sigma_med252: Optional[pd.Series] = None
 
     def _load(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.DataFrame]:
         db = _equity_db()
@@ -543,15 +576,17 @@ class CalendarVolBacktestEngine:
         spot: float,
         direction: int,
         nav: float,
+        budget_frac: Optional[float] = None,
     ) -> Tuple[List[OptPos], float, float]:
-        """Far-leg dollar vega = 1% NAV/vol-pt; N_near = −N_far · ν_far / ν_near (daily)."""
+        """Far-leg dollar vega = budget_frac·NAV/vol-pt; N_near = −N_far · ν_far / ν_near."""
         _, nu_far, _ = self.build_synthetic_leg(day_opts, spot, self.t_far, 1.0)
         _, nu_near, _ = self.build_synthetic_leg(day_opts, spot, self.t_near, 1.0)
         if nu_near <= 1e-12 or nu_far <= 1e-12:
             return [], 0.0, 0.0
 
+        frac = float(VEGA_BUDGET_FRAC if budget_frac is None else budget_frac)
         unit_vp_far = nu_far / 100.0
-        target_cny_vp = VEGA_BUDGET_FRAC * nav
+        target_cny_vp = frac * nav
         n_far_abs = target_cny_vp / (unit_vp_far * self.m_opt)
         n_far = direction * n_far_abs
         n_near = -n_far * (nu_far / nu_near)
@@ -563,6 +598,29 @@ class CalendarVolBacktestEngine:
             return [], 0.0, 0.0
         self._vega_checks.append(abs(sum(p.n * p.vega for p in all_pos)))
         return all_pos, n_near, n_far
+
+    def _budget_for_mode(
+        self, regime_mode: Optional[str], trade_date: Optional[str] = None
+    ) -> float:
+        if self.signal_mode != "regime":
+            return float(VEGA_BUDGET_FRAC)
+        if regime_mode == "momentum":
+            return float(self.budget_momentum)
+        frac = float(self.budget_fade)
+        if (
+            self.budget_fade_vol_scale
+            and trade_date is not None
+            and self._garch_sigma is not None
+            and self._sigma_med252 is not None
+            and trade_date in self._garch_sigma.index
+        ):
+            sig = float(self._garch_sigma.loc[trade_date])
+            med = float(self._sigma_med252.loc[trade_date])
+            if math.isfinite(sig) and math.isfinite(med) and sig > 1e-12:
+                # High σ → shrink fade budget; low σ → allow up to 1.5× base.
+                scale = max(0.35, min(1.5, med / sig))
+                frac *= scale
+        return frac
 
     def _lookup_mtm(self, pos: OptPos, day_opts: pd.DataFrame) -> Optional[Tuple[float, float]]:
         hit = day_opts[day_opts["wind_code"] == pos.wind_code]
@@ -767,10 +825,14 @@ class CalendarVolBacktestEngine:
                 "exit_lo": "iv_exit_lo",
             }
         )
+        regime_level_bands = None
+        regime_shock_bands = None
+        garch_z_series: Optional[pd.Series] = None
         if self.signal_mode == "garch_z":
             from engine.garch_signal import GARCH_WARM, expanding_garch_z
 
             signal_level, _sigma = expanding_garch_z(ct["spread"])
+            garch_z_series = signal_level
             min_hist = GARCH_WARM + self.z_window + 30
             bands = rolling_quantile_bands(
                 signal_level,
@@ -779,6 +841,34 @@ class CalendarVolBacktestEngine:
                 exit_lo_q=self.exit_lo_q,
                 exit_hi_q=self.exit_hi_q,
             )
+        elif self.signal_mode == "regime":
+            from engine.garch_signal import GARCH_WARM, expanding_garch_z
+            from engine.regime_signal import LEVEL_QS, SHOCK_QS, rolling_quantile_map
+
+            garch_z_series, sigma = expanding_garch_z(ct["spread"])
+            self._garch_sigma = sigma
+            # Causal median of prior-252 σ (shift so today excluded).
+            self._sigma_med252 = (
+                sigma.shift(1).rolling(self.z_window, min_periods=self.z_window).median()
+            )
+            # Decision chart level = raw Spread; shock = garch_z.
+            signal_level = ct["spread"].astype(float)
+            min_hist = GARCH_WARM + self.z_window + 30
+            # Keep enter/exit columns aligned with fade level bands for markers/charts.
+            bands = spread_bands.rename(
+                columns={
+                    "iv_enter_hi": "enter_hi",
+                    "iv_enter_lo": "enter_lo",
+                    "iv_exit_hi": "exit_hi",
+                    "iv_exit_lo": "exit_lo",
+                }
+            )
+            regime_level_bands = rolling_quantile_map(
+                ct["spread"], self.z_window, LEVEL_QS
+            ).add_prefix("lvl_")
+            regime_shock_bands = rolling_quantile_map(
+                garch_z_series, self.z_window, SHOCK_QS
+            ).add_prefix("shk_")
         else:
             signal_level = ct["spread"].astype(float)
             min_hist = self.z_window + 30
@@ -791,12 +881,22 @@ class CalendarVolBacktestEngine:
                     "iv_exit_lo": "exit_lo",
                 }
             )
-        ct = (
-            ct.join(z.rename("z"), how="left")
-            .join(signal_level.rename("signal_level"), how="left")
-            .join(bands, how="left")
-            .join(spread_bands, how="left")
-        )
+        join_parts = [
+            ct,
+            z.rename("z"),
+            signal_level.rename("signal_level"),
+            bands,
+            spread_bands,
+        ]
+        if garch_z_series is not None and self.signal_mode == "regime":
+            join_parts.append(garch_z_series.rename("garch_z"))
+        if regime_level_bands is not None:
+            join_parts.append(regime_level_bands)
+        if regime_shock_bands is not None:
+            join_parts.append(regime_shock_bands)
+        ct = join_parts[0]
+        for part in join_parts[1:]:
+            ct = ct.join(part, how="left")
 
         dates = sorted(set(ct.index) & set(spot.index) & set(front.index) & set(opt["trade_date"]))
         if len(dates) < min_hist:
@@ -809,6 +909,9 @@ class CalendarVolBacktestEngine:
         nav = self.initial_nav
         state = DayState()
         pending_signal = 0  # day-0: observe only; first trade earliest on day 1
+        pending_mode: Optional[str] = None
+        pending_cooldown = 0
+        pending_entry_spread: Optional[float] = None
         rows: List[Dict[str, Any]] = []
         self._holdings_rows: List[Dict[str, Any]] = []
         cum_vega = cum_theta = cum_gamma = cum_basis = cum_delta = cum_resid = 0.0
@@ -827,6 +930,12 @@ class CalendarVolBacktestEngine:
             signal_level_f = float(sl_raw) if pd.notna(sl_raw) else float("nan")
             zv = ct.loc[d, "z"]
             zv = float(zv) if pd.notna(zv) else float("nan")
+            gz_f = float("nan")
+            if self.signal_mode == "regime" and "garch_z" in ct.columns:
+                gz_raw = ct.loc[d, "garch_z"]
+                gz_f = float(gz_raw) if pd.notna(gz_raw) else float("nan")
+            elif self.signal_mode == "garch_z":
+                gz_f = signal_level_f
             eh = ct.loc[d, "enter_hi"]
             el = ct.loc[d, "enter_lo"]
             xh = ct.loc[d, "exit_hi"]
@@ -847,6 +956,43 @@ class CalendarVolBacktestEngine:
             iv_far_raw = ct.loc[d, "iv_far"]
             iv_near_f = float(iv_near_raw) if pd.notna(iv_near_raw) else float("nan")
             iv_far_f = float(iv_far_raw) if pd.notna(iv_far_raw) else float("nan")
+
+            def _band(col: str) -> Optional[float]:
+                if col not in ct.columns:
+                    return None
+                v = ct.loc[d, col]
+                if pd.isna(v):
+                    return None
+                x = float(v)
+                return x if math.isfinite(x) else None
+
+            lvl_q = {
+                "q01": _band("lvl_q01"),
+                "q08": _band("lvl_q08"),
+                "q10": _band("lvl_q10"),
+                "q25": _band("lvl_q25"),
+                "q30": _band("lvl_q30"),
+                "q40": _band("lvl_q40"),
+                "q60": _band("lvl_q60"),
+                "q70": _band("lvl_q70"),
+                "q75": _band("lvl_q75"),
+                "q90": _band("lvl_q90"),
+                "q92": _band("lvl_q92"),
+                "q99": _band("lvl_q99"),
+            }
+            shk_q = {
+                "q10": _band("shk_q10"),
+                "q20": _band("shk_q20"),
+                "q25": _band("shk_q25"),
+                "q75": _band("shk_q75"),
+                "q80": _band("shk_q80"),
+                "q90": _band("shk_q90"),
+            }
+            sig_f = float("nan")
+            if self.signal_mode == "regime" and self._garch_sigma is not None and d in self._garch_sigma.index:
+                _sv = self._garch_sigma.loc[d]
+                if pd.notna(_sv):
+                    sig_f = float(_sv)
 
             # 1) Mark overnight holdings (from t−1 execution) to today's close.
             net_delta = basis = gamma = theta = vega_pnl = 0.0
@@ -896,6 +1042,8 @@ class CalendarVolBacktestEngine:
             # 2) Execute t−1 signal at today's close (open / flat / reverse / resize).
             # Missing near/far CT-IV (e.g. no 1M bracket) → cannot open/resize; flatten.
             target = int(pending_signal)
+            exec_mode = pending_mode if target != 0 else None
+            exec_entry = pending_entry_spread if target != 0 else None
             opts: List[OptPos] = []
             n_if = 0.0
             n_near = n_far = 0.0
@@ -903,34 +1051,136 @@ class CalendarVolBacktestEngine:
             executed = False
             can_trade = math.isfinite(spread) and math.isfinite(iv_near_f) and math.isfinite(iv_far_f)
             if target != 0 and not day_opts.empty and can_trade:
-                opts, n_near, n_far = self._size_legs(day_opts, S, target, nav)
+                budget = self._budget_for_mode(exec_mode, trade_date=d)
+                opts, n_near, n_far = self._size_legs(
+                    day_opts, S, target, nav, budget_frac=budget
+                )
                 if opts:
                     opt_delta_pts = sum(p.n * p.delta for p in opts)
                     n_if = -hedge_scale * opt_delta_pts
+                    # New open (or flip) → hold=0 then +1? Existing code: hold = prior+1 if same pos else 0
+                    # Then decision uses hold; first day in position hold=0. Spec "满 8 日" counts
+                    # trading days held; after execute, hold=0 on open day, then increments.
+                    # Match prior engine: same-direction continue increments, else 0 on open day.
                     hold = state.hold_days + 1 if state.position == target else 0
                     executed = True
+                    # Keep entry_spread from pending on new open; carry if holding same book.
+                    if state.position == target and state.entry_spread is not None:
+                        exec_entry = state.entry_spread
                 else:
                     target = 0
+                    exec_mode = None
+                    exec_entry = None
                     hold = 0
             elif target == 0:
                 executed = state.position != 0  # flat after prior open = close trade
                 hold = 0
+                exec_mode = None
+                exec_entry = None
             else:
                 # signalled open but no option book / missing CT bracket → stay flat
                 target = 0
+                exec_mode = None
+                exec_entry = None
                 hold = 0
 
             if first_open_i is None and target != 0:
                 first_open_i = i
 
-            state = DayState(position=target, hold_days=hold, opts=opts, n_if=n_if)
+            # Carry cooldown from pending when we stay/go flat; mode only when in book.
+            live_cooldown = int(pending_cooldown) if target == 0 else 0
+            state = DayState(
+                position=target,
+                hold_days=hold,
+                opts=opts,
+                n_if=n_if,
+                regime_mode=exec_mode if target != 0 else None,
+                cooldown=live_cooldown,
+                entry_spread=exec_entry if target != 0 else None,
+            )
 
             # 3) Emit signal for next day from post-trade state + today's close.
-            # Decision uses signal_level (raw Spread or garch_z) + its rolling bands.
-            # NaN level → keep position / no new entry via bands_ok=False.
-            signal_next = self._decide_signal(
-                target, hold, signal_level_f, eh_f, el_f, xh_f, xl_f
-            )
+            signal_reason = "quantile"
+            if self.signal_mode == "regime":
+                from engine.regime_signal import RegimeState, decide_regime_signal
+
+                need_lvl = (
+                    "q01",
+                    "q08",
+                    "q10",
+                    "q25",
+                    "q30",
+                    "q40",
+                    "q60",
+                    "q70",
+                    "q75",
+                    "q90",
+                    "q92",
+                    "q99",
+                )
+                need_shk = ("q10", "q20", "q80", "q90")
+                level_ok = all(lvl_q.get(k) is not None for k in need_lvl)
+                shock_ok = all(shk_q.get(k) is not None for k in need_shk)
+                z_prev = float("nan")
+                if i > 0 and "garch_z" in ct.columns:
+                    gz_p = ct.loc[dates[i - 1], "garch_z"]
+                    if pd.notna(gz_p):
+                        z_prev = float(gz_p)
+                rs = RegimeState(
+                    position=target,
+                    hold_days=hold,
+                    regime_mode=state.regime_mode,
+                    cooldown=live_cooldown,
+                    entry_spread=state.entry_spread,
+                )
+                if level_ok and shock_ok and math.isfinite(spread) and math.isfinite(gz_f):
+                    dec = decide_regime_signal(
+                        rs,
+                        spread,
+                        gz_f,
+                        {k: float(lvl_q[k]) for k in need_lvl},  # type: ignore[index]
+                        {k: float(shk_q[k]) for k in need_shk},  # type: ignore[index]
+                        z_prev=z_prev if math.isfinite(z_prev) else None,
+                    )
+                    raw_next = int(dec.signal)
+                    signal_next = self._apply_side_mode(raw_next, target)
+                    signal_reason = dec.reason
+                    if signal_next != 0:
+                        pending_mode = dec.regime_mode
+                        pending_cooldown = 0
+                        if target == 0 or target != signal_next:
+                            pending_entry_spread = dec.entry_spread
+                        else:
+                            pending_entry_spread = state.entry_spread
+                    else:
+                        pending_mode = None
+                        pending_entry_spread = None
+                        if raw_next == 0:
+                            pending_cooldown = int(dec.cooldown)
+                        elif target != 0:
+                            pending_cooldown = 3
+                            signal_reason = f"side_flat:{dec.reason}"
+                        else:
+                            pending_cooldown = (
+                                max(live_cooldown - 1, 0) if live_cooldown > 0 else 0
+                            )
+                            signal_reason = f"side_filter:{dec.reason}"
+                else:
+                    signal_next = self._apply_side_mode(target, target)
+                    pending_mode = state.regime_mode if signal_next != 0 else None
+                    pending_entry_spread = state.entry_spread if signal_next != 0 else None
+                    if signal_next == 0 and live_cooldown > 0:
+                        pending_cooldown = live_cooldown - 1
+                    else:
+                        pending_cooldown = 0 if signal_next != 0 else live_cooldown
+                    signal_reason = "bands_nan"
+            else:
+                signal_next = self._decide_signal(
+                    target, hold, signal_level_f, eh_f, el_f, xh_f, xl_f
+                )
+                pending_mode = None
+                pending_cooldown = 0
+                pending_entry_spread = None
             pending_signal = signal_next
 
             if target != 0 or executed:
@@ -946,6 +1196,8 @@ class CalendarVolBacktestEngine:
                     # CT-IV spread kept for reference; chart/decision use signal_level.
                     "spread_iv": spread if math.isfinite(spread) else float("nan"),
                     "spread": signal_level_f if math.isfinite(signal_level_f) else float("nan"),
+                    "garch_z": gz_f if math.isfinite(gz_f) else None,
+                    "garch_sigma": sig_f if math.isfinite(sig_f) else None,
                     "z": zv if math.isfinite(zv) else None,
                     "enter_hi": eh_f if math.isfinite(eh_f) else None,
                     "enter_lo": el_f if math.isfinite(el_f) else None,
@@ -955,8 +1207,30 @@ class CalendarVolBacktestEngine:
                     "iv_enter_lo": iv_el_f if math.isfinite(iv_el_f) else None,
                     "iv_exit_hi": iv_xh_f if math.isfinite(iv_xh_f) else None,
                     "iv_exit_lo": iv_xl_f if math.isfinite(iv_xl_f) else None,
+                    "lvl_q01": lvl_q["q01"],
+                    "lvl_q08": lvl_q["q08"],
+                    "lvl_q10": lvl_q["q10"],
+                    "lvl_q25": lvl_q["q25"],
+                    "lvl_q30": lvl_q["q30"],
+                    "lvl_q40": lvl_q["q40"],
+                    "lvl_q60": lvl_q["q60"],
+                    "lvl_q70": lvl_q["q70"],
+                    "lvl_q75": lvl_q["q75"],
+                    "lvl_q90": lvl_q["q90"],
+                    "lvl_q92": lvl_q["q92"],
+                    "lvl_q99": lvl_q["q99"],
+                    "shk_q10": shk_q["q10"],
+                    "shk_q20": shk_q["q20"],
+                    "shk_q25": shk_q["q25"],
+                    "shk_q75": shk_q["q75"],
+                    "shk_q80": shk_q["q80"],
+                    "shk_q90": shk_q["q90"],
                     "position": target,  # executed / held after t close
                     "signal_next": signal_next,  # to be traded at t+1 close
+                    "regime_mode": state.regime_mode,
+                    "cooldown": int(state.cooldown),
+                    "entry_spread": state.entry_spread,
+                    "signal_reason": signal_reason,
                     "n_near": n_near,
                     "n_far": n_far,
                     "n_if": n_if,
@@ -1195,6 +1469,7 @@ class CalendarVolBacktestEngine:
                     "sos_iv": _sos_pts(rows[i].get("spread_iv"), scale=100.0),
                     "position": curr_p,
                     "prev_position": prev_p,
+                    "regime_mode": rows[i].get("regime_mode"),
                 }
             )
 
@@ -1202,6 +1477,7 @@ class CalendarVolBacktestEngine:
             "dates": [rows[i]["d"] for i in sig_idx],
             "spread": [_opt(rows[i]["spread"]) for i in sig_idx],  # decision level
             "spread_iv": [_opt(rows[i].get("spread_iv")) for i in sig_idx],
+            "garch_z": [_opt(rows[i].get("garch_z")) for i in sig_idx],
             "zscore": [None if rows[i]["z"] is None else round(float(rows[i]["z"]), 4) for i in sig_idx],
             "enter_hi": [_opt(rows[i]["enter_hi"]) for i in sig_idx],
             "enter_lo": [_opt(rows[i]["enter_lo"]) for i in sig_idx],
@@ -1212,8 +1488,28 @@ class CalendarVolBacktestEngine:
             "iv_enter_lo": [_opt(rows[i].get("iv_enter_lo")) for i in sig_idx],
             "iv_exit_hi": [_opt(rows[i].get("iv_exit_hi")) for i in sig_idx],
             "iv_exit_lo": [_opt(rows[i].get("iv_exit_lo")) for i in sig_idx],
+            "lvl_q01": [_opt(rows[i].get("lvl_q01")) for i in sig_idx],
+            "lvl_q08": [_opt(rows[i].get("lvl_q08")) for i in sig_idx],
+            "lvl_q10": [_opt(rows[i].get("lvl_q10")) for i in sig_idx],
+            "lvl_q25": [_opt(rows[i].get("lvl_q25")) for i in sig_idx],
+            "lvl_q40": [_opt(rows[i].get("lvl_q40")) for i in sig_idx],
+            "lvl_q60": [_opt(rows[i].get("lvl_q60")) for i in sig_idx],
+            "lvl_q75": [_opt(rows[i].get("lvl_q75")) for i in sig_idx],
+            "lvl_q90": [_opt(rows[i].get("lvl_q90")) for i in sig_idx],
+            "lvl_q92": [_opt(rows[i].get("lvl_q92")) for i in sig_idx],
+            "lvl_q99": [_opt(rows[i].get("lvl_q99")) for i in sig_idx],
+            "shk_q10": [_opt(rows[i].get("shk_q10")) for i in sig_idx],
+            "shk_q20": [_opt(rows[i].get("shk_q20")) for i in sig_idx],
+            "shk_q25": [_opt(rows[i].get("shk_q25")) for i in sig_idx],
+            "shk_q75": [_opt(rows[i].get("shk_q75")) for i in sig_idx],
+            "shk_q80": [_opt(rows[i].get("shk_q80")) for i in sig_idx],
+            "shk_q90": [_opt(rows[i].get("shk_q90")) for i in sig_idx],
             "position": [rows[i]["position"] for i in sig_idx],  # executed at t close
             "signal_next": [rows[i]["signal_next"] for i in sig_idx],  # for t+1 trade
+            "regime_mode": [rows[i].get("regime_mode") for i in sig_idx],
+            "cooldown": [int(rows[i].get("cooldown") or 0) for i in sig_idx],
+            "entry_spread": [_opt(rows[i].get("entry_spread")) for i in sig_idx],
+            "signal_reason": [rows[i].get("signal_reason") for i in sig_idx],
             "trade_markers": trade_markers,
             "enter_q": self.enter_q,
             "exit_lo_q": self.exit_lo_q,
@@ -1224,6 +1520,9 @@ class CalendarVolBacktestEngine:
             "spread_mode": self.spread_mode,
             "signal_mode": self.signal_mode,
             "level_scale": self.level_scale,
+            "budget_fade": self.budget_fade,
+            "budget_momentum": self.budget_momentum,
+            "budget_fade_vol_scale": self.budget_fade_vol_scale,
             "perf_start": perf[0]["d"],
             "first_open": open_row["d"],
         }
@@ -1259,6 +1558,7 @@ class CalendarVolBacktestEngine:
         signal_label = {
             "quantile": "rolling quantile",
             "garch_z": "GARCH-z + rolling quantile",
+            "regime": "Fade / Momentum regime switch",
         }[self.signal_mode]
         spread_formula = (
             "IV_near² − IV_far²"
@@ -1271,6 +1571,16 @@ class CalendarVolBacktestEngine:
                 f"then rolling quantiles of garch_z on prior {self.z_window}d "
                 f"(enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
                 f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}; no look-ahead)"
+            )
+        elif self.signal_mode == "regime":
+            signal_desc = (
+                f"regime on prior {self.z_window}d: Momentum in accel zone "
+                f"(q75–q92 / q08–q25) with garch_z beyond 90/10; "
+                f"mom exits: mid-band exhaust 30–70, adverse z 20/80, space 1/99, max 8d; "
+                f"Fade outside 10/90 when z≤q80/≥q20 and z_prev≤q80/≥q20; "
+                f"exit 40–60 + crisis fuse; cooldown 3d; "
+                f"budget fade={self.budget_fade:.1%} momentum={self.budget_momentum:.1%} NAV"
+                + ("; fade vol-scaled" if self.budget_fade_vol_scale else "")
             )
         else:
             signal_desc = (
@@ -1322,8 +1632,16 @@ class CalendarVolBacktestEngine:
                     "no settle fallback; CT ATM IV via SVI total-var ACT/365"
                 ),
                 "sizing": (
-                    f"dollar vega={VEGA_BUDGET_FRAC*100:.0f}% NAV per vol-pt on {fl}; "
-                    f"N_{nl}=-N_{fl}*ν{fl}/ν{nl}"
+                    (
+                        f"regime budgets: fade={self.budget_fade*100:.1f}% / "
+                        f"momentum={self.budget_momentum*100:.1f}% NAV per vol-pt on {fl}; "
+                        f"N_{nl}=-N_{fl}*ν{fl}/ν{nl}"
+                    )
+                    if self.signal_mode == "regime"
+                    else (
+                        f"dollar vega={VEGA_BUDGET_FRAC*100:.0f}% NAV per vol-pt on {fl}; "
+                        f"N_{nl}=-N_{fl}*ν{fl}/ν{nl}"
+                    )
                 ),
                 "ttm_targets": {nl: self.t_near, fl: self.t_far},
                 "tenor_pair": self.tenor_pair,
@@ -1331,6 +1649,9 @@ class CalendarVolBacktestEngine:
                 "spread_mode": self.spread_mode,
                 "signal_mode": self.signal_mode,
                 "level_scale": self.level_scale,
+                "budget_fade": self.budget_fade,
+                "budget_momentum": self.budget_momentum,
+                "budget_fade_vol_scale": self.budget_fade_vol_scale,
                 "spread_formula": spread_formula,
                 "z_window": self.z_window,
                 "enter_q": self.enter_q,

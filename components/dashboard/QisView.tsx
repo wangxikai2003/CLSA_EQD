@@ -36,6 +36,7 @@ const CAL_VOL_SPREADS: { key: QisSpreadMode; label: string }[] = [
 const CAL_VOL_SIGNALS: { key: QisSignalMode; label: string }[] = [
   { key: 'quantile', label: 'Quantile' },
   { key: 'garch_z', label: 'GARCH-z' },
+  { key: 'regime', label: 'Regime' },
 ];
 
 const WINDOW_LABELS: { key: keyof QisBacktestResponse['metrics']; label: string }[] = [
@@ -440,7 +441,9 @@ const QisView: React.FC = () => {
     const signalModeNote =
       activeSignal === 'garch_z'
         ? '信号层：对 ΔSpread 做 expanding GARCH(1,1)-t（预热 504 日、每 5 日重估参数，仅用截至当日历史）得到 garch_z；再对 garch_z 做同样的滚动分位入场/出场（无未来数据；t−1 信号 → t close 成交）。'
-        : '信号层：直接对 Spread 做滚动分位入场/出场（无未来数据；t−1 信号 → t close 成交）。';
+        : activeSignal === 'regime'
+          ? '信号层：Regime——Momentum 在加速区（q75–q92 / q08–q25）且 garch_z 出 90/10 顺势；平仓含中轴衰竭 30–70、反向冲击 20/80、空间 1/99、最长 8 日。Fade：Spread 出 10/90 且当日/前日冲击收敛（z≤q80且z_{t−1}≤q80 / 对称下侧）；平仓回 40–60 + 危机熔断；冷却 3 日。预算 Fade 1% / Momentum 0.7% NAV（无未来数据；t−1 信号 → t close 成交）。'
+          : '信号层：直接对 Spread 做滚动分位入场/出场（无未来数据；t−1 信号 → t close 成交）。';
 
     let sideBlock: { title: string; body: string };
     if (activeSide === 'long_only') {

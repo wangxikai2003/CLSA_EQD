@@ -270,8 +270,12 @@ export function calibrateJwSvi(req: JwCalibRequest, signal?: AbortSignal) {
   return postJson<JwCalibResponse>('/api/v1/calibration/jwsvi', req, signal);
 }
 
-export function fetchYieldCurve(params?: { codes?: string; asof?: string; history?: string }, signal?: AbortSignal) {
+export function fetchYieldCurve(
+  params?: { market?: 'CN' | 'US' | string; codes?: string; asof?: string; history?: string },
+  signal?: AbortSignal
+) {
   const q = new URLSearchParams();
+  if (params?.market) q.set('market', params.market);
   if (params?.codes) q.set('codes', params.codes);
   if (params?.asof) q.set('asof', params.asof);
   if (params?.history) q.set('history', params.history);
@@ -423,7 +427,7 @@ export interface QisDailyGreeks {
 export type QisTenorPair = '3M-6M' | '1M-3M';
 export type QisSideMode = 'both' | 'long_only' | 'short_only';
 export type QisSpreadMode = 'iv' | 'iv2';
-export type QisSignalMode = 'quantile' | 'garch_z';
+export type QisSignalMode = 'quantile' | 'garch_z' | 'regime';
 
 export interface QisTradeMarker {
   d: string;
