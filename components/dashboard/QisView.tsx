@@ -465,12 +465,10 @@ const QisView: React.FC = () => {
           spread_pts: spreadPts,
           q08: useLvl ? scaleOpt(s.lvl_q08?.[i], 100) : null,
           q10: useLvl ? scaleOpt(s.lvl_q10?.[i], 100) : null,
-          q15: useLvl ? scaleOpt(s.lvl_q15?.[i], 100) : null,
           q25: useLvl ? scaleOpt(s.lvl_q25?.[i], 100) : null,
           q40: useLvl ? scaleOpt(s.lvl_q40?.[i], 100) : null,
           q60: useLvl ? scaleOpt(s.lvl_q60?.[i], 100) : null,
           q75: useLvl ? scaleOpt(s.lvl_q75?.[i], 100) : null,
-          q85: useLvl ? scaleOpt(s.lvl_q85?.[i], 100) : null,
           q90: useLvl ? scaleOpt(s.lvl_q90?.[i], 100) : null,
           q92: useLvl ? scaleOpt(s.lvl_q92?.[i], 100) : null,
           long_pt: kind === 'long' ? spreadPts : null,
@@ -610,7 +608,7 @@ const QisView: React.FC = () => {
             bullets: [
               '状态变量：S = Spread；z = expanding GARCH(1,1)-t 标准化残差（garch_z）；z_{t−1} = 前日 z。',
               'Momentum 开仓（优先）：上侧 q75 < S ≤ q92 且 z > q90 → Reverse(−1)；下侧 q08 ≤ S < q25 且 z < q10 → Normal(+1)。',
-              'Momentum 平仓（任一触发）：S 回到 [q15, q85] 衰竭；冲击反向穿过 q20/q80；空间止盈 S 出 q01/q99；最长持有 8 日 → 冷却 3 日。',
+              'Momentum 平仓（任一触发）：S 回到 [q40, q60] 均值带衰竭；冲击反向穿过极端 q10/q90；空间止盈 S 出 q01/q99；最长持有 12 日 → 冷却 3 日。',
               'Fade 开仓：S > q90 且 z≤q80 且 z_{t−1}≤q80 → Normal(+1)；S < q10 且 z≥q20 且 z_{t−1}≥q20 → Reverse(−1)（双日冲击收敛，避免硬抗突破）。',
               'Fade 平仓：S 回到 [q40, q60]；危机熔断（持仓方向继续恶化且冲击极端）；Reverse 最长 20 日 → 冷却 3 日。',
               '预算：Fade 远端美元 Vega = 1% NAV；Momentum = 0.8% NAV（按成交日 regime_mode 选预算）。',
@@ -1197,7 +1195,7 @@ const QisView: React.FC = () => {
                   </ChartZoomFrame>
                   <p className="text-[9px] text-slate-400 mt-1">
                     {activeSignal === 'regime'
-                      ? '黄线：garch_z。紫虚线：策略冲击极端带 shk q10/q90（Momentum 加速 / Fade 不利冲击）；青虚线：冷静带 shk q20/q80（Fade 双日冷静入场 · Momentum 不利冲击出场）。分位 = 过去 W 日、shift(1)，与 FSM 决策同一套。'
+                      ? '黄线：garch_z。紫虚线：冲击极端 shk q10/q90（Mom 加速入场 / Mom 不利冲击出场 / Fade crisis）。青虚线：冷静带 shk q20/q80（Fade 双日冷静入场）。分位 = 过去 W 日、shift(1)，与 FSM 决策同一套。'
                       : `黄线：garch_z。紫/灰虚线：对 garch_z 的滚动分位带（${enterPct} 入场 · ${exitPct} 出场口径）。`}
                     {' '}散点为实际成交：Long 红 · Short 绿 · 平仓蓝
                     {activeSignal === 'regime' ? '（标在成交日 garch_z 水平）。' : '。'}
@@ -1215,7 +1213,7 @@ const QisView: React.FC = () => {
                     data={spreadChartData}
                     yKeys={
                       activeSignal === 'regime'
-                        ? ['spread_pts', 'q08', 'q10', 'q15', 'q25', 'q40', 'q60', 'q75', 'q85', 'q90', 'q92']
+                        ? ['spread_pts', 'q08', 'q10', 'q25', 'q40', 'q60', 'q75', 'q90', 'q92']
                         : ['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']
                     }
                     height={300}
@@ -1249,10 +1247,8 @@ const QisView: React.FC = () => {
                               <Line type="monotone" dataKey="q08" name="lvl q08 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="3 3" connectNulls />
                               <Line type="monotone" dataKey="q75" name="lvl q75 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="2 3" connectNulls />
                               <Line type="monotone" dataKey="q25" name="lvl q25 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="2 3" connectNulls />
-                              <Line type="monotone" dataKey="q85" name="lvl q85 (exhaust)" stroke={CHART.exhaust} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
-                              <Line type="monotone" dataKey="q15" name="lvl q15 (exhaust)" stroke={CHART.exhaust} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
-                              <Line type="monotone" dataKey="q60" name="lvl q60 (mean)" stroke={CHART.meanRev} dot={false} strokeWidth={1} strokeDasharray="1 3" connectNulls />
-                              <Line type="monotone" dataKey="q40" name="lvl q40 (mean)" stroke={CHART.meanRev} dot={false} strokeWidth={1} strokeDasharray="1 3" connectNulls />
+                              <Line type="monotone" dataKey="q60" name="lvl q60 (mean/Mom exh)" stroke={CHART.meanRev} dot={false} strokeWidth={1} strokeDasharray="1 3" connectNulls />
+                              <Line type="monotone" dataKey="q40" name="lvl q40 (mean/Mom exh)" stroke={CHART.meanRev} dot={false} strokeWidth={1} strokeDasharray="1 3" connectNulls />
                             </>
                           ) : (
                             <>
@@ -1271,7 +1267,7 @@ const QisView: React.FC = () => {
                   </ChartZoomFrame>
                   <p className="text-[9px] text-slate-400 mt-1">
                     {activeSignal === 'regime'
-                      ? '黄线：CT-IV Spread。紫：Fade 极端 lvl q10/q90；青：Momentum 加速区 lvl q08/q25/q75/q92；灰：耗尽出场 [q15,q85]；褐：Fade 均值回归出场 [q40,q60]。分位与 FSM 决策同一套（过去 W 日、shift(1)）。散点：Long 红 · Short 绿 · 平仓蓝。'
+                      ? '黄线：CT-IV Spread。紫：Fade 极端 lvl q10/q90；青：Momentum 加速区 lvl q08/q25/q75/q92；褐：均值带 [q40,q60]（Fade 出场 + Mom 衰竭）。分位与 FSM 决策同一套（过去 W 日、shift(1)）。散点：Long 红 · Short 绿 · 平仓蓝。'
                       : activeSignal === 'garch_z'
                         ? `黄线：CT-IV Spread（vol pts）。紫/灰虚线：对 Spread 的滚动分位（对照；实际开平仓由上方 garch_z 分位决定）。散点标在成交日 Spread 水平。`
                         : `黄线：CT-IV Spread（vol pts）。紫虚线：入场分位 ${enterPct}；灰虚线：出场带 ${exitPct}%。散点：Long 红 · Short 绿 · 平仓蓝。分位仅用过去 ${data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。`}

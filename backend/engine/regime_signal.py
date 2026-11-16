@@ -1,8 +1,11 @@
 """Regime-switching Fade / Momentum signal for Equity Calendar Vol (no look-ahead).
 
-This is regime v2: Fade mean-reversion with dual-day shock calm, plus Momentum
-breakout chase whose exhaustion exit uses the wider level mid-band [q15, q85]
-(shorter Mom holds than v1's [q30, q70]).
+Fade mean-reversion with dual-day shock calm, plus Momentum breakout chase.
+
+Momentum was previously exiting almost immediately because (1) exhaust used a
+wide mid-band [q15,q85] / [q30,q70] that sits next to the accel entry zone, and
+(2) adverse-shock used q20/q80. Exhaust is now the mean band [q40,q60]; adverse
+shock uses extreme q10/q90; max Mom hold is 12d.
 """
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ SHOCK_QS = (0.10, 0.20, 0.25, 0.75, 0.80, 0.90)
 DEFAULT_Z_WINDOW = 252
 COOLDOWN_DAYS = 3
 MAX_HOLD_FADE_REVERSE = 20
-MAX_HOLD_MOMENTUM = 8
+MAX_HOLD_MOMENTUM = 12
 
 RegimeMode = Optional[str]  # None | "fade" | "momentum"
 
@@ -133,12 +136,10 @@ def decide_regime_signal(
     q01_l = _q(level_q, "q01")
     q08_l = _q(level_q, "q08")
     q10_l = _q(level_q, "q10")
-    q15_l = _q(level_q, "q15")
     q25_l = _q(level_q, "q25")
     q40_l = _q(level_q, "q40")
     q60_l = _q(level_q, "q60")
     q75_l = _q(level_q, "q75")
-    q85_l = _q(level_q, "q85")
     q90_l = _q(level_q, "q90")
     q92_l = _q(level_q, "q92")
     q99_l = _q(level_q, "q99")
@@ -165,18 +166,18 @@ def decide_regime_signal(
                 return RegimeDecision(0, None, COOLDOWN_DAYS, "fade_reverse_max_hold", None)
             return RegimeDecision(pos, "fade", 0, "fade_hold", entry)
 
-        # Momentum exits (v2): wider exhaustion 15–85, adverse 20/80, space 1/99, max 8d
+        # Momentum exits: mean-band exhaust [q40,q60], extreme adverse 10/90, space 1/99, max 12d
         if hold >= MAX_HOLD_MOMENTUM:
             return RegimeDecision(0, None, COOLDOWN_DAYS, "momentum_max_hold", None)
-        if q15_l <= S <= q85_l:
+        if q40_l <= S <= q60_l:
             return RegimeDecision(0, None, COOLDOWN_DAYS, "momentum_exhaust", None)
         if pos == -1 and S > q99_l:
             return RegimeDecision(0, None, COOLDOWN_DAYS, "momentum_space_tp", None)
         if pos == 1 and S < q01_l:
             return RegimeDecision(0, None, COOLDOWN_DAYS, "momentum_space_tp", None)
-        if pos == -1 and z < q20_s:
+        if pos == -1 and z < q10_s:
             return RegimeDecision(0, None, COOLDOWN_DAYS, "momentum_adverse_shock", None)
-        if pos == 1 and z > q80_s:
+        if pos == 1 and z > q90_s:
             return RegimeDecision(0, None, COOLDOWN_DAYS, "momentum_adverse_shock", None)
         return RegimeDecision(
             pos, "momentum" if mode == "momentum" else mode, 0, "momentum_hold", entry

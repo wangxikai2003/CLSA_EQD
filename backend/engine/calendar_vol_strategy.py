@@ -1543,8 +1543,10 @@ class CalendarVolBacktestEngine:
             "lvl_q10": [_opt(rows[i].get("lvl_q10")) for i in sig_idx],
             "lvl_q15": [_opt(rows[i].get("lvl_q15")) for i in sig_idx],
             "lvl_q25": [_opt(rows[i].get("lvl_q25")) for i in sig_idx],
+            "lvl_q30": [_opt(rows[i].get("lvl_q30")) for i in sig_idx],
             "lvl_q40": [_opt(rows[i].get("lvl_q40")) for i in sig_idx],
             "lvl_q60": [_opt(rows[i].get("lvl_q60")) for i in sig_idx],
+            "lvl_q70": [_opt(rows[i].get("lvl_q70")) for i in sig_idx],
             "lvl_q75": [_opt(rows[i].get("lvl_q75")) for i in sig_idx],
             "lvl_q85": [_opt(rows[i].get("lvl_q85")) for i in sig_idx],
             "lvl_q90": [_opt(rows[i].get("lvl_q90")) for i in sig_idx],
@@ -1626,9 +1628,9 @@ class CalendarVolBacktestEngine:
             )
         elif self.signal_mode == "regime":
             signal_desc = (
-                f"regime v2 on prior {self.z_window}d: Momentum in accel zone "
+                f"regime on prior {self.z_window}d: Momentum in accel zone "
                 f"(q75–q92 / q08–q25) with garch_z beyond 90/10; "
-                f"mom exits: mid-band exhaust 15–85, adverse z 20/80, space 1/99, max 8d; "
+                f"mom exits: mean-band exhaust 40–60, adverse z 10/90, space 1/99, max 12d; "
                 f"Fade outside 10/90 when z≤q80/≥q20 and z_prev≤q80/≥q20; "
                 f"exit 40–60 + crisis fuse; cooldown 3d; "
                 f"budget fade={self.budget_fade:.1%} momentum={self.budget_momentum:.1%} NAV"

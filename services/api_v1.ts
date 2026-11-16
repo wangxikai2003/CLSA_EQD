@@ -479,8 +479,10 @@ export interface QisSignalSeries {
   lvl_q10?: (number | null)[];
   lvl_q15?: (number | null)[];
   lvl_q25?: (number | null)[];
+  lvl_q30?: (number | null)[];
   lvl_q40?: (number | null)[];
   lvl_q60?: (number | null)[];
+  lvl_q70?: (number | null)[];
   lvl_q75?: (number | null)[];
   lvl_q85?: (number | null)[];
   lvl_q90?: (number | null)[];

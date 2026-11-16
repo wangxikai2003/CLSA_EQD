@@ -1,4 +1,4 @@
-"""Unit tests for Fade / Momentum regime signal (v2)."""
+"""Unit tests for Fade / Momentum regime signal."""
 from __future__ import annotations
 
 import sys
@@ -63,16 +63,21 @@ def test_momentum_accel_zone():
     assert dec.signal == -1 and dec.regime_mode == "momentum"
 
 
-def test_momentum_exhaust_wide_mid_band_v2():
-    """v2 exhausts Mom inside [q15, q85], not only [q30, q70]."""
+def test_momentum_exhaust_mean_band_q40_q60():
+    """Mom exhausts inside [q40, q60]; wing levels can still hold."""
     level, shock = _bands()
     st = RegimeState(position=-1, hold_days=1, regime_mode="momentum", entry_spread=0.8)
-    # S=0.6 is between q75 and q85 → still inside v2 exhaust band
-    dec = decide_regime_signal(st, S_t=0.6, z_t=0.0, level_q=level, shock_q=shock)
+    # S=0.0 is inside [q40,q60] → exhaust
+    dec = decide_regime_signal(st, S_t=0.0, z_t=0.0, level_q=level, shock_q=shock)
     assert dec.signal == 0 and dec.reason == "momentum_exhaust"
-    # Outside [q15,q85] and not other exits → hold
-    dec2 = decide_regime_signal(st, S_t=0.95, z_t=0.0, level_q=level, shock_q=shock)
+    # S=0.6 between q60 and q75 → hold (no longer early-exhaust)
+    dec2 = decide_regime_signal(st, S_t=0.6, z_t=0.0, level_q=level, shock_q=shock)
     assert dec2.signal == -1 and dec2.reason == "momentum_hold"
+    # Mild adverse z (between q20 and q10) should NOT stop; extreme q10 does
+    dec3 = decide_regime_signal(st, S_t=0.95, z_t=-1.0, level_q=level, shock_q=shock)
+    assert dec3.signal == -1 and dec3.reason == "momentum_hold"
+    dec4 = decide_regime_signal(st, S_t=0.95, z_t=-1.5, level_q=level, shock_q=shock)
+    assert dec4.signal == 0 and dec4.reason == "momentum_adverse_shock"
 
 
 def test_fade_requires_dual_day_calm():
