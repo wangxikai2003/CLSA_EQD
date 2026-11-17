@@ -1044,18 +1044,11 @@ class CalendarVolBacktestEngine:
 
             lvl_q = {
                 "q01": _band("lvl_q01"),
-                "q08": _band("lvl_q08"),
                 "q10": _band("lvl_q10"),
-                "q15": _band("lvl_q15"),
                 "q25": _band("lvl_q25"),
-                "q30": _band("lvl_q30"),
-                "q40": _band("lvl_q40"),
-                "q60": _band("lvl_q60"),
-                "q70": _band("lvl_q70"),
+                "q50": _band("lvl_q50"),
                 "q75": _band("lvl_q75"),
-                "q85": _band("lvl_q85"),
                 "q90": _band("lvl_q90"),
-                "q92": _band("lvl_q92"),
                 "q99": _band("lvl_q99"),
             }
             shk_q = {
@@ -1184,18 +1177,11 @@ class CalendarVolBacktestEngine:
 
                 need_lvl = (
                     "q01",
-                    "q08",
                     "q10",
-                    "q15",
                     "q25",
-                    "q30",
-                    "q40",
-                    "q60",
-                    "q70",
+                    "q50",
                     "q75",
-                    "q85",
                     "q90",
-                    "q92",
                     "q99",
                 )
                 need_shk = ("q10", "q20", "q80", "q90")
@@ -1293,18 +1279,11 @@ class CalendarVolBacktestEngine:
                     "gz_exit_hi": gz_xh_f,
                     "gz_exit_lo": gz_xl_f,
                     "lvl_q01": lvl_q["q01"],
-                    "lvl_q08": lvl_q["q08"],
                     "lvl_q10": lvl_q["q10"],
-                    "lvl_q15": lvl_q.get("q15"),
                     "lvl_q25": lvl_q["q25"],
-                    "lvl_q30": lvl_q["q30"],
-                    "lvl_q40": lvl_q["q40"],
-                    "lvl_q60": lvl_q["q60"],
-                    "lvl_q70": lvl_q["q70"],
+                    "lvl_q50": lvl_q["q50"],
                     "lvl_q75": lvl_q["q75"],
-                    "lvl_q85": lvl_q.get("q85"),
                     "lvl_q90": lvl_q["q90"],
-                    "lvl_q92": lvl_q["q92"],
                     "lvl_q99": lvl_q["q99"],
                     "shk_q10": shk_q["q10"],
                     "shk_q20": shk_q["q20"],
@@ -1604,18 +1583,11 @@ class CalendarVolBacktestEngine:
             "gz_exit_hi": [_opt(rows[i].get("gz_exit_hi")) for i in sig_idx],
             "gz_exit_lo": [_opt(rows[i].get("gz_exit_lo")) for i in sig_idx],
             "lvl_q01": [_opt(rows[i].get("lvl_q01")) for i in sig_idx],
-            "lvl_q08": [_opt(rows[i].get("lvl_q08")) for i in sig_idx],
             "lvl_q10": [_opt(rows[i].get("lvl_q10")) for i in sig_idx],
-            "lvl_q15": [_opt(rows[i].get("lvl_q15")) for i in sig_idx],
             "lvl_q25": [_opt(rows[i].get("lvl_q25")) for i in sig_idx],
-            "lvl_q30": [_opt(rows[i].get("lvl_q30")) for i in sig_idx],
-            "lvl_q40": [_opt(rows[i].get("lvl_q40")) for i in sig_idx],
-            "lvl_q60": [_opt(rows[i].get("lvl_q60")) for i in sig_idx],
-            "lvl_q70": [_opt(rows[i].get("lvl_q70")) for i in sig_idx],
+            "lvl_q50": [_opt(rows[i].get("lvl_q50")) for i in sig_idx],
             "lvl_q75": [_opt(rows[i].get("lvl_q75")) for i in sig_idx],
-            "lvl_q85": [_opt(rows[i].get("lvl_q85")) for i in sig_idx],
             "lvl_q90": [_opt(rows[i].get("lvl_q90")) for i in sig_idx],
-            "lvl_q92": [_opt(rows[i].get("lvl_q92")) for i in sig_idx],
             "lvl_q99": [_opt(rows[i].get("lvl_q99")) for i in sig_idx],
             "shk_q10": [_opt(rows[i].get("shk_q10")) for i in sig_idx],
             "shk_q20": [_opt(rows[i].get("shk_q20")) for i in sig_idx],
@@ -1705,11 +1677,11 @@ class CalendarVolBacktestEngine:
             }[_book]
             signal_desc = (
                 f"regime ({_book_note}) on prior {self.z_window}d: "
-                f"Momentum in accel zone (q75–q92 / q08–q25) with garch_z beyond 90/10; "
-                f"mom exits: mean-band exhaust 40–60 after ≥2d hold, adverse z 10/90, "
+                f"Momentum in accel zone (q75–q90 / q10–q25) with garch_z beyond 90/10; "
+                f"mom exits: cross q50 after ≥2d hold, adverse z 10/90, "
                 f"space 1/99, max 12d; "
                 f"Fade outside 10/90 when z≤q80/≥q20 and z_prev≤q80/≥q20; "
-                f"exit 40–60 + crisis fuse; cooldown 3d; "
+                f"exit at q50 + crisis fuse; cooldown 3d; "
                 f"budget fade={self.budget_fade:.1%} momentum={self.budget_momentum:.1%} NAV"
                 + ("; fade vol-scaled" if self.budget_fade_vol_scale else "")
             )

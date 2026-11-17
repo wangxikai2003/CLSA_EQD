@@ -21,18 +21,11 @@ from engine.regime_signal import (
 def _bands():
     level = {
         "q01": -2.0,
-        "q08": -1.2,
         "q10": -1.0,
-        "q15": -0.8,
         "q25": -0.5,
-        "q30": -0.35,
-        "q40": -0.2,
-        "q60": 0.2,
-        "q70": 0.35,
+        "q50": 0.0,
         "q75": 0.5,
-        "q85": 0.8,
         "q90": 1.0,
-        "q92": 1.2,
         "q99": 2.0,
     }
     shock = {
@@ -63,40 +56,45 @@ def test_momentum_accel_zone():
     assert dec.signal == -1 and dec.regime_mode == "momentum"
 
 
-def test_momentum_exhaust_mean_band_q40_q60():
-    """Mom exhausts inside [q40, q60] only after min hold; wings can still hold."""
+def test_momentum_exhaust_at_q50():
+    """Mom exhausts once S crosses q50 after min hold."""
     level, shock = _bands()
-    # hold_days=1 < MIN_HOLD_MOMENTUM_EXHAUST → no exhaust yet
     st_early = RegimeState(position=-1, hold_days=1, regime_mode="momentum", entry_spread=0.8)
-    dec0 = decide_regime_signal(st_early, S_t=0.0, z_t=0.0, level_q=level, shock_q=shock)
+    dec0 = decide_regime_signal(st_early, S_t=0.1, z_t=0.0, level_q=level, shock_q=shock)
     assert dec0.signal == -1 and dec0.reason == "momentum_hold"
     st = RegimeState(position=-1, hold_days=2, regime_mode="momentum", entry_spread=0.8)
-    # S=0.0 is inside [q40,q60] → exhaust
+    # Short Mom: S >= q50 → exhaust
     dec = decide_regime_signal(st, S_t=0.0, z_t=0.0, level_q=level, shock_q=shock)
     assert dec.signal == 0 and dec.reason == "momentum_exhaust"
-    # S=0.6 between q60 and q75 → hold (no longer early-exhaust)
-    dec2 = decide_regime_signal(st, S_t=0.6, z_t=0.0, level_q=level, shock_q=shock)
-    assert dec2.signal == -1 and dec2.reason == "momentum_hold"
-    # Mild adverse z (between q20 and q10) should NOT stop; extreme q10 does
-    dec3 = decide_regime_signal(st, S_t=0.95, z_t=-1.0, level_q=level, shock_q=shock)
-    assert dec3.signal == -1 and dec3.reason == "momentum_hold"
-    dec4 = decide_regime_signal(st, S_t=0.95, z_t=-1.5, level_q=level, shock_q=shock)
+    # Still above mean but not crossed for long: S=0.3 < q75, > q50 hold for short? S=0.3 >= 0 → exhaust
+    dec_hold = decide_regime_signal(st, S_t=-0.2, z_t=0.0, level_q=level, shock_q=shock)
+    assert dec_hold.signal == -1 and dec_hold.reason == "momentum_hold"
+    # Keep S below q50 so exhaust does not fire; extreme adverse z stops.
+    dec4 = decide_regime_signal(st, S_t=-0.2, z_t=-1.5, level_q=level, shock_q=shock)
     assert dec4.signal == 0 and dec4.reason == "momentum_adverse_shock"
 
 
 def test_fade_requires_dual_day_calm():
     level, shock = _bands()
     st = RegimeState()
-    # prior day still hot (z_prev > q80) → blocked
     dec = decide_regime_signal(
         st, S_t=1.5, z_t=0.5, level_q=level, shock_q=shock, z_prev=1.0
     )
     assert dec.signal == 0
-    # both calm (≤ q80) → fade short
     dec2 = decide_regime_signal(
         st, S_t=1.5, z_t=0.5, level_q=level, shock_q=shock, z_prev=0.5
     )
     assert dec2.signal == 1 and dec2.regime_mode == "fade"
+
+
+def test_fade_exit_at_q50():
+    level, shock = _bands()
+    st = RegimeState(position=1, hold_days=3, regime_mode="fade", entry_spread=1.2)
+    # Long fade: exit when S <= q50
+    dec = decide_regime_signal(st, S_t=0.0, z_t=0.0, level_q=level, shock_q=shock)
+    assert dec.signal == 0 and dec.reason == "fade_mean_revert_exit"
+    dec_hold = decide_regime_signal(st, S_t=0.3, z_t=0.0, level_q=level, shock_q=shock)
+    assert dec_hold.signal == 1 and dec_hold.reason == "fade_hold"
 
 
 def test_cooldown():
@@ -110,12 +108,10 @@ def test_cooldown():
 def test_book_momentum_only_blocks_fade_entry():
     level, shock = _bands()
     st = RegimeState()
-    # Would be fade short under both, but momentum-only → flat
     dec = decide_regime_signal(
         st, S_t=1.5, z_t=0.5, level_q=level, shock_q=shock, z_prev=0.5, book="momentum"
     )
     assert dec.signal == 0 and dec.reason == "flat"
-    # Mom breakout still works
     dec2 = decide_regime_signal(
         st, S_t=0.8, z_t=1.5, level_q=level, shock_q=shock, book="momentum"
     )

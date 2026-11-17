@@ -489,18 +489,11 @@ export interface QisSignalSeries {
   gz_exit_lo?: (number | null)[];
   /** Regime decision level (Spread) quantiles — prior W days, shift(1). */
   lvl_q01?: (number | null)[];
-  lvl_q08?: (number | null)[];
   lvl_q10?: (number | null)[];
-  lvl_q15?: (number | null)[];
   lvl_q25?: (number | null)[];
-  lvl_q30?: (number | null)[];
-  lvl_q40?: (number | null)[];
-  lvl_q60?: (number | null)[];
-  lvl_q70?: (number | null)[];
+  lvl_q50?: (number | null)[];
   lvl_q75?: (number | null)[];
-  lvl_q85?: (number | null)[];
   lvl_q90?: (number | null)[];
-  lvl_q92?: (number | null)[];
   lvl_q99?: (number | null)[];
   /** Regime decision shock (garch_z) quantiles. */
   shk_q10?: (number | null)[];

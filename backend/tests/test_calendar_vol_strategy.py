@@ -281,16 +281,13 @@ def test_regime_signal_mode_smoke():
     assert any(m in ("fade", "momentum") for m in sig["regime_mode"] if m)
     # Decision bands exported for charts (= FSM thresholds, not fixed 10/90 display).
     for k in (
-        "lvl_q08",
+        "lvl_q01",
         "lvl_q10",
         "lvl_q25",
-        "lvl_q30",
-        "lvl_q40",
-        "lvl_q60",
-        "lvl_q70",
+        "lvl_q50",
         "lvl_q75",
         "lvl_q90",
-        "lvl_q92",
+        "lvl_q99",
         "shk_q10",
         "shk_q20",
         "shk_q80",

@@ -1,11 +1,7 @@
 """Regime-switching Fade / Momentum signal for Equity Calendar Vol (no look-ahead).
 
-Fade mean-reversion with dual-day shock calm, plus Momentum breakout chase.
-
-Momentum was previously exiting almost immediately because (1) exhaust used a
-wide mid-band [q15,q85] / [q30,q70] that sits next to the accel entry zone, and
-(2) adverse-shock used q20/q80. Exhaust is now the mean band [q40,q60]; adverse
-shock uses extreme q10/q90; max Mom hold is 12d.
+Simplified level grid: extremes & Mom outer edge share q10/q90; mean exit is q50.
+Momentum accel wings remain q25/q75. Shock calm q20/q80; extreme shock q10/q90.
 """
 from __future__ import annotations
 
@@ -15,8 +11,8 @@ from typing import Dict, Mapping, Optional, Sequence
 
 import pandas as pd
 
-# Level (Spread) quantiles — prior W days only.
-LEVEL_QS = (0.01, 0.08, 0.10, 0.15, 0.25, 0.30, 0.40, 0.60, 0.70, 0.75, 0.85, 0.90, 0.92, 0.99)
+# Level (Spread) quantiles — prior W days only (decision set).
+LEVEL_QS = (0.01, 0.10, 0.25, 0.50, 0.75, 0.90, 0.99)
 # Shock (garch_z) quantiles — prior W days only.
 SHOCK_QS = (0.10, 0.20, 0.25, 0.75, 0.80, 0.90)
 
@@ -128,8 +124,8 @@ def decide_regime_signal(
     """Emit next-day target from post-trade state + today's close levels.
 
     Priority when flat: Momentum (A) before Fade (B), gated by ``book``.
-    ``book=momentum`` / ``fade`` disable the other entry path; exits for an
-    already-open mode still apply.
+    Level grid: Mom accel q75–q90 / q10–q25; Fade extremes beyond q90/q10;
+    mean exit / Mom exhaust at q50 (directional cross).
     """
     book_n = normalize_regime_book(book)
     allow_mom = book_n in ("both", "momentum")
@@ -140,22 +136,7 @@ def decide_regime_signal(
     cd = max(0, int(state.cooldown))
     entry = state.entry_spread
 
-    need_level = (
-        "q01",
-        "q08",
-        "q10",
-        "q15",
-        "q25",
-        "q30",
-        "q40",
-        "q60",
-        "q70",
-        "q75",
-        "q85",
-        "q90",
-        "q92",
-        "q99",
-    )
+    need_level = ("q01", "q10", "q25", "q50", "q75", "q90", "q99")
     need_shock = ("q10", "q20", "q80", "q90")
     bands_ok = (
         _finite(S_t)
@@ -171,14 +152,11 @@ def decide_regime_signal(
         )
 
     q01_l = _q(level_q, "q01")
-    q08_l = _q(level_q, "q08")
     q10_l = _q(level_q, "q10")
     q25_l = _q(level_q, "q25")
-    q40_l = _q(level_q, "q40")
-    q60_l = _q(level_q, "q60")
+    q50_l = _q(level_q, "q50")
     q75_l = _q(level_q, "q75")
     q90_l = _q(level_q, "q90")
-    q92_l = _q(level_q, "q92")
     q99_l = _q(level_q, "q99")
 
     q10_s = _q(shock_q, "q10")
@@ -190,10 +168,18 @@ def decide_regime_signal(
     z = float(z_t)
     zp = float(z_prev) if _finite(z_prev) else float("nan")
 
+    def _mean_reverted() -> bool:
+        """Directional return to median q50."""
+        if pos == 1:
+            return S <= q50_l
+        if pos == -1:
+            return S >= q50_l
+        return False
+
     # ---- In position ----
     if pos != 0:
         if mode == "fade":
-            if q40_l <= S <= q60_l:
+            if _mean_reverted():
                 return RegimeDecision(0, None, COOLDOWN_DAYS, "fade_mean_revert_exit", None)
             if pos == 1 and z > q90_s and _finite(entry) and S > float(entry):
                 return RegimeDecision(0, None, COOLDOWN_DAYS, "fade_crisis_stop", None)
@@ -203,11 +189,11 @@ def decide_regime_signal(
                 return RegimeDecision(0, None, COOLDOWN_DAYS, "fade_reverse_max_hold", None)
             return RegimeDecision(pos, "fade", 0, "fade_hold", entry)
 
-        # Momentum exits: mean-band exhaust [q40,q60] after min hold, extreme adverse 10/90,
+        # Momentum exits: q50 mean exhaust after min hold, extreme adverse 10/90,
         # space 1/99, max 12d.
         if hold >= MAX_HOLD_MOMENTUM:
             return RegimeDecision(0, None, COOLDOWN_DAYS, "momentum_max_hold", None)
-        if hold >= MIN_HOLD_MOMENTUM_EXHAUST and q40_l <= S <= q60_l:
+        if hold >= MIN_HOLD_MOMENTUM_EXHAUST and _mean_reverted():
             return RegimeDecision(0, None, COOLDOWN_DAYS, "momentum_exhaust", None)
         if pos == -1 and S > q99_l:
             return RegimeDecision(0, None, COOLDOWN_DAYS, "momentum_space_tp", None)
@@ -225,14 +211,14 @@ def decide_regime_signal(
     if cd > 0:
         return RegimeDecision(0, None, cd - 1, "cooldown", None)
 
-    # Mode A: Momentum
+    # Mode A: Momentum — accel wing into shared 10/90 edge
     if allow_mom:
-        if q75_l < S <= q92_l and z > q90_s:
+        if q75_l < S <= q90_l and z > q90_s:
             return RegimeDecision(-1, "momentum", 0, "momentum_long_breakout", S)
-        if q08_l <= S < q25_l and z < q10_s:
+        if q10_l <= S < q25_l and z < q10_s:
             return RegimeDecision(1, "momentum", 0, "momentum_short_breakout", S)
 
-    # Mode B: Fade — level extreme + dual-day shock calm (no fighting breakouts)
+    # Mode B: Fade — beyond 10/90 + dual-day shock calm
     if allow_fade:
         if S > q90_l and z <= q80_s and _finite(zp) and zp <= q80_s:
             return RegimeDecision(1, "fade", 0, "fade_short_resistance", S)

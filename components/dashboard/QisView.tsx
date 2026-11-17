@@ -486,14 +486,11 @@ const QisView: React.FC = () => {
         return {
           d: dt,
           spread_pts: spreadPts,
-          q08: useLvl ? scaleOpt(s.lvl_q08?.[i], 100) : null,
           q10: useLvl ? scaleOpt(s.lvl_q10?.[i], 100) : null,
           q25: useLvl ? scaleOpt(s.lvl_q25?.[i], 100) : null,
-          q40: useLvl ? scaleOpt(s.lvl_q40?.[i], 100) : null,
-          q60: useLvl ? scaleOpt(s.lvl_q60?.[i], 100) : null,
+          q50: useLvl ? scaleOpt(s.lvl_q50?.[i], 100) : null,
           q75: useLvl ? scaleOpt(s.lvl_q75?.[i], 100) : null,
           q90: useLvl ? scaleOpt(s.lvl_q90?.[i], 100) : null,
-          q92: useLvl ? scaleOpt(s.lvl_q92?.[i], 100) : null,
           long_pt: kind === 'long' ? spreadPts : null,
           short_pt: kind === 'short' ? spreadPts : null,
           close_pt: kind === 'close' ? spreadPts : null,
@@ -576,10 +573,10 @@ const QisView: React.FC = () => {
   const regimeShowFade = activeSignal === 'regime' || activeSignal === 'regime_fade';
   const regimeLevelYKeys = [
     'spread_pts',
-    ...(regimeShowFade ? (['q10', 'q90'] as const) : []),
-    ...(regimeShowMom ? (['q08', 'q25', 'q75', 'q92'] as const) : []),
-    'q40',
-    'q60',
+    'q10',
+    'q90',
+    ...(regimeShowMom ? (['q25', 'q75'] as const) : []),
+    'q50',
   ];
   const regimeShockYKeys = [
     'spread_pts',
@@ -647,14 +644,14 @@ const QisView: React.FC = () => {
               '状态变量：S = Spread；z = expanding GARCH(1,1)-t 标准化残差（garch_z）；z_{t−1} = 前日 z。',
               ...(activeSignal !== 'regime_fade'
                 ? [
-                    'Momentum 开仓（优先）：上侧 q75 < S ≤ q92 且 z > q90 → Reverse(−1)；下侧 q08 ≤ S < q25 且 z < q10 → Normal(+1)。',
-                    'Momentum 平仓（任一触发）：持仓≥2 日后 S 回到 [q40, q60] 均值带衰竭；冲击反向穿过极端 q10/q90；空间止盈 S 出 q01/q99；最长持有 12 日 → 冷却 3 日。',
+                    'Momentum 开仓（优先）：上侧 q75 < S ≤ q90 且 z > q90 → Reverse(−1)；下侧 q10 ≤ S < q25 且 z < q10 → Normal(+1)。',
+                    'Momentum 平仓（任一触发）：持仓≥2 日后 S 穿过 q50 均值；冲击反向穿过极端 q10/q90；空间止盈 S 出 q01/q99；最长持有 12 日 → 冷却 3 日。',
                   ]
                 : []),
               ...(activeSignal !== 'regime_momentum'
                 ? [
                     'Fade 开仓：S > q90 且 z≤q80 且 z_{t−1}≤q80 → Normal(+1)；S < q10 且 z≥q20 且 z_{t−1}≥q20 → Reverse(−1)（双日冲击收敛，避免硬抗突破）。',
-                    'Fade 平仓：S 回到 [q40, q60]；危机熔断（持仓方向继续恶化且冲击极端）；Reverse 最长 20 日 → 冷却 3 日。',
+                    'Fade 平仓：S 穿过 q50；危机熔断（持仓方向继续恶化且冲击极端）；Reverse 最长 20 日 → 冷却 3 日。',
                   ]
                 : []),
               '预算：Fade 远端美元 Vega = 1% NAV；Momentum = 0.8% NAV（按成交日 regime_mode 选预算）。',
@@ -1362,22 +1359,15 @@ const QisView: React.FC = () => {
                           />
                           {isRegimeSignalMode(activeSignal) ? (
                             <>
-                              {regimeShowFade && (
-                                <>
-                                  <Line type="monotone" dataKey="q90" name="lvl q90 (Fade)" stroke={CHART.fadeExt} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                                  <Line type="monotone" dataKey="q10" name="lvl q10 (Fade)" stroke={CHART.fadeExt} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                                </>
-                              )}
+                              <Line type="monotone" dataKey="q90" name="lvl q90" stroke={CHART.fadeExt} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                              <Line type="monotone" dataKey="q10" name="lvl q10" stroke={CHART.fadeExt} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
                               {regimeShowMom && (
                                 <>
-                                  <Line type="monotone" dataKey="q92" name="lvl q92 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="3 3" connectNulls />
-                                  <Line type="monotone" dataKey="q08" name="lvl q08 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="3 3" connectNulls />
                                   <Line type="monotone" dataKey="q75" name="lvl q75 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="2 3" connectNulls />
                                   <Line type="monotone" dataKey="q25" name="lvl q25 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="2 3" connectNulls />
                                 </>
                               )}
-                              <Line type="monotone" dataKey="q60" name="lvl q60 (mean)" stroke={CHART.meanRev} dot={false} strokeWidth={1} strokeDasharray="1 3" connectNulls />
-                              <Line type="monotone" dataKey="q40" name="lvl q40 (mean)" stroke={CHART.meanRev} dot={false} strokeWidth={1} strokeDasharray="1 3" connectNulls />
+                              <Line type="monotone" dataKey="q50" name="lvl q50 (mean)" stroke={CHART.meanRev} dot={false} strokeWidth={1.25} strokeDasharray="1 3" connectNulls />
                             </>
                           ) : activeSignal === 'quantile' ? (
                             <>
@@ -1396,7 +1386,7 @@ const QisView: React.FC = () => {
                   </ChartZoomFrame>
                   <p className="text-[9px] text-slate-400 mt-1">
                     {isRegimeSignalMode(activeSignal)
-                      ? '黄线：CT-IV Spread。仅叠 FSM 决策用水平分位——紫：Fade 极端 lvl q10/q90；青：Momentum 加速区 lvl q08/q25/q75/q92；褐：均值带 [q40,q60]（Fade 出场 + Mom 衰竭）。分位与决策同一套（过去 W 日、shift(1)）。散点：Long 红 · Short 绿 · 平仓蓝。'
+                      ? '黄线：CT-IV Spread。紫：共享极端/外沿 lvl q10/q90；青：Momentum 内沿 lvl q25/q75；褐：均值 lvl q50（Fade 出场 + Mom 衰竭）。分位与决策同一套（过去 W 日、shift(1)）。散点：Long 红 · Short 绿 · 平仓蓝。'
                       : activeSignal === 'garch_z'
                         ? '黄线：CT-IV Spread（vol pts）。本图不叠分位带——开平仓由上方 GARCH-z 决策分位决定。散点标在成交日 Spread 水平。'
                         : `黄线：CT-IV Spread（vol pts）。紫虚线：入场分位 ${enterPct}；灰虚线：出场带 ${exitPct}%。散点：Long 红 · Short 绿 · 平仓蓝。分位仅用过去 ${data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。`}
