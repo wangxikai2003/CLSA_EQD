@@ -443,7 +443,12 @@ const QisView: React.FC = () => {
     });
   }, [data, byKindGz]);
 
-  /** CT-IV spread chart: quantile/garch use iv/enter bands; regime uses decision lvl_q*. */
+  /**
+   * CT-IV spread chart — only decision-relevant overlays for the active signal_mode:
+   * - regime: lvl_q* used by Fade/Mom FSM
+   * - garch_z: raw CT-IV spread only (decision bands live on the GARCH-z chart)
+   * - quantile: handled via signalChart (enter/exit on Spread)
+   */
   const ivSpreadChart = useMemo(() => {
     const s = data?.signal;
     if (!s?.dates?.length) return [];
@@ -478,25 +483,15 @@ const QisView: React.FC = () => {
       });
     }
 
-    const useIvBands =
-      Array.isArray(s.iv_enter_hi) && s.iv_enter_hi.length === s.dates.length;
-    const useDecBands =
-      !useIvBands && Array.isArray(s.enter_hi) && s.enter_hi.length === s.dates.length && levelScale === 100;
+    // garch_z (and any other non-regime path here): no reference IV quantile bands —
+    // those are not the live decision signal.
     return s.dates.map((dt, i) => {
       const raw = ivSeries[i];
       const spreadPts = raw == null || Number.isNaN(raw) ? 0 : raw * 100;
       const kind = kindByD.get(dt);
-      const eh = useIvBands ? s.iv_enter_hi![i] : useDecBands ? s.enter_hi![i] : null;
-      const el = useIvBands ? s.iv_enter_lo![i] : useDecBands ? s.enter_lo![i] : null;
-      const xh = useIvBands ? s.iv_exit_hi![i] : useDecBands ? s.exit_hi![i] : null;
-      const xl = useIvBands ? s.iv_exit_lo![i] : useDecBands ? s.exit_lo![i] : null;
       return {
         d: dt,
         spread_pts: spreadPts,
-        enter_hi: eh != null ? (eh as number) * 100 : null,
-        enter_lo: el != null ? (el as number) * 100 : null,
-        exit_hi: xh != null ? (xh as number) * 100 : null,
-        exit_lo: xl != null ? (xl as number) * 100 : null,
         long_pt: kind === 'long' ? spreadPts : null,
         short_pt: kind === 'short' ? spreadPts : null,
         close_pt: kind === 'close' ? spreadPts : null,
@@ -1233,15 +1228,20 @@ const QisView: React.FC = () => {
               {showSpreadBandChart && spreadChartData.length > 0 && (
                 <div className="bg-white rounded-lg border border-slate-200 p-4">
                   <h3 className="font-bold text-[#000066] text-sm mb-3">
-                    {tenorLabel} Spread &{' '}
-                    {activeSignal === 'regime' ? 'Decision Level Bands' : 'Rolling Quantile Bands'}
+                    {activeSignal === 'regime'
+                      ? `${tenorLabel} Spread & Decision Level Bands`
+                      : activeSignal === 'garch_z'
+                        ? `${tenorLabel} CT-IV Spread`
+                        : `${tenorLabel} Spread & Rolling Quantile Bands`}
                   </h3>
                   <ChartZoomFrame
                     data={spreadChartData}
                     yKeys={
                       activeSignal === 'regime'
                         ? ['spread_pts', 'q08', 'q10', 'q25', 'q40', 'q60', 'q75', 'q90', 'q92']
-                        : ['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']
+                        : activeSignal === 'garch_z'
+                          ? ['spread_pts']
+                          : ['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']
                     }
                     height={300}
                   >
@@ -1277,14 +1277,14 @@ const QisView: React.FC = () => {
                               <Line type="monotone" dataKey="q60" name="lvl q60 (mean/Mom exh)" stroke={CHART.meanRev} dot={false} strokeWidth={1} strokeDasharray="1 3" connectNulls />
                               <Line type="monotone" dataKey="q40" name="lvl q40 (mean/Mom exh)" stroke={CHART.meanRev} dot={false} strokeWidth={1} strokeDasharray="1 3" connectNulls />
                             </>
-                          ) : (
+                          ) : activeSignal === 'quantile' ? (
                             <>
                               <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
                               <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
                               <Line type="monotone" dataKey="exit_hi" name="Exit hi" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
                               <Line type="monotone" dataKey="exit_lo" name="Exit lo" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
                             </>
-                          )}
+                          ) : null}
                           <Line type="monotone" dataKey="long_pt" name="Long" stroke={CHART.long} strokeWidth={0} dot={markerDot(CHART.long)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
                           <Line type="monotone" dataKey="short_pt" name="Short" stroke={CHART.short} strokeWidth={0} dot={markerDot(CHART.short)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
                           <Line type="monotone" dataKey="close_pt" name="Close" stroke={CHART.close} strokeWidth={0} dot={markerDot(CHART.close)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
@@ -1294,9 +1294,9 @@ const QisView: React.FC = () => {
                   </ChartZoomFrame>
                   <p className="text-[9px] text-slate-400 mt-1">
                     {activeSignal === 'regime'
-                      ? '黄线：CT-IV Spread。紫：Fade 极端 lvl q10/q90；青：Momentum 加速区 lvl q08/q25/q75/q92；褐：均值带 [q40,q60]（Fade 出场 + Mom 衰竭）。分位与 FSM 决策同一套（过去 W 日、shift(1)）。散点：Long 红 · Short 绿 · 平仓蓝。'
+                      ? '黄线：CT-IV Spread。仅叠 FSM 决策用水平分位——紫：Fade 极端 lvl q10/q90；青：Momentum 加速区 lvl q08/q25/q75/q92；褐：均值带 [q40,q60]（Fade 出场 + Mom 衰竭）。分位与决策同一套（过去 W 日、shift(1)）。散点：Long 红 · Short 绿 · 平仓蓝。'
                       : activeSignal === 'garch_z'
-                        ? `黄线：CT-IV Spread（vol pts）。紫/灰虚线：对 Spread 的滚动分位（对照；实际开平仓由上方 garch_z 分位决定）。散点标在成交日 Spread 水平。`
+                        ? '黄线：CT-IV Spread（vol pts）。本图不叠分位带——开平仓由上方 GARCH-z 决策分位决定。散点标在成交日 Spread 水平。'
                         : `黄线：CT-IV Spread（vol pts）。紫虚线：入场分位 ${enterPct}；灰虚线：出场带 ${exitPct}%。散点：Long 红 · Short 绿 · 平仓蓝。分位仅用过去 ${data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。`}
                   </p>
                 </div>
