@@ -81,28 +81,7 @@ def test_dual_day_stress_blocks_new_open():
     assert dec.reason == "stress_block_entry"
 
 
-def test_stress_force_flats_open_book_even_outside_exit_band():
-    """Stress Gate flattens open positions (not only blocks new entries)."""
-    dec = decide_regime2_signal(
-        position=1,
-        hold_days=5,
-        spread=0.8,
-        enter_hi=1.0,
-        enter_lo=-1.0,
-        exit_hi=0.6,
-        exit_lo=-0.6,
-        z_t=2.0,
-        z_q10_t=-1.2,
-        z_q90_t=1.2,
-        z_prev=2.5,
-        z_q10_prev=-1.1,
-        z_q90_prev=1.1,
-    )
-    assert dec.signal == 0 and dec.stress
-    assert dec.reason == "stress_force_flat"
-
-
-def test_stress_force_flat_overrides_quantile_exit_reason():
+def test_stress_still_allows_quantile_exit():
     dec = decide_regime2_signal(
         position=1,
         hold_days=5,
@@ -119,7 +98,27 @@ def test_stress_force_flat_overrides_quantile_exit_reason():
         z_q90_prev=1.1,
     )
     assert dec.signal == 0 and dec.stress
-    assert dec.reason == "stress_force_flat"
+    assert dec.reason == "quantile_exit_band"
+
+
+def test_stress_allows_hold_outside_exit_band():
+    dec = decide_regime2_signal(
+        position=1,
+        hold_days=5,
+        spread=0.8,
+        enter_hi=1.0,
+        enter_lo=-1.0,
+        exit_hi=0.6,
+        exit_lo=-0.6,
+        z_t=2.0,
+        z_q10_t=-1.2,
+        z_q90_t=1.2,
+        z_prev=2.5,
+        z_q10_prev=-1.1,
+        z_q90_prev=1.1,
+    )
+    assert dec.signal == 1 and dec.stress
+    assert dec.reason == "quantile_hold"
 
 
 def test_stress_streak_three_requires_three_extremes():

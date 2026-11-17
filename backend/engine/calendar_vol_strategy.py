@@ -83,7 +83,7 @@ DEFAULT_SPREAD_MODE = "iv"
 # garch_z = expanding GARCH(1,1)-t on ΔSpread → z, then same rolling quantiles on z;
 # regime* = Fade / Momentum regime switch (v2) with cooldown;
 #   regime = both books; regime_momentum / regime_fade = single book;
-# regime2 = quantile base + garch_z stress gate (force-flat + block new opens).
+# regime2 = quantile base + dual-day garch_z stress gate (block new opens only).
 SIGNAL_MODES = (
     "quantile",
     "garch_z",
@@ -1777,8 +1777,8 @@ class CalendarVolBacktestEngine:
                 f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}); "
                 f"stress when garch_z outside its prior-{self.z_window}d "
                 f"{1-self.enter_q:.0%}/{self.enter_q:.0%} for "
-                f"{self.stress_streak_days} consecutive closes → force-flat open books "
-                f"and block new opens (Reverse max hold {self.max_hold_reverse}d); "
+                f"{self.stress_streak_days} consecutive closes → block new opens only "
+                f"(exits still allowed; Reverse max hold {self.max_hold_reverse}d); "
                 f"GARCH warm {_garch_warm}d, bands from {_mp}d"
             )
         else:

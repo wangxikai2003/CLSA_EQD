@@ -4,7 +4,8 @@ Calm: identical to rolling-quantile on Spread (enter outside enter_q,
 exit inside [exit_lo, exit_hi], Reverse max-hold). No crisis stop.
 
 Stress: garch_z outside its rolling enter band for ``stress_streak_days``
-consecutive closes → force-flat any open book and block new opens.
+consecutive closes → block new opens only; existing books still exit via
+quantile rules.
 """
 from __future__ import annotations
 
@@ -107,7 +108,7 @@ def decide_regime2_signal(
     stress_streak_days: int = STRESS_STREAK_DAYS,
     max_hold_reverse: int = MAX_HOLD_REVERSE,
 ) -> Regime2Decision:
-    """Emit next-day target: quantile rules + N-day stress force-flat / block entry.
+    """Emit next-day target: quantile rules + N-day stress blocks flat→open.
 
     Prefer ``z_hist`` (oldest→newest, last = today). If omitted, falls back to
     today + optional yesterday (legacy dual-day API).
@@ -135,10 +136,6 @@ def decide_regime2_signal(
 
     if not all(math.isfinite(x) for x in (enter_hi, enter_lo, exit_hi, exit_lo, spread)):
         return Regime2Decision(pos, stress, "bands_nan_hold" if pos != 0 else "bands_nan")
-
-    # Stress Gate: flatten open books first, then keep flat (no new opens).
-    if stress and pos != 0:
-        return Regime2Decision(0, True, "stress_force_flat")
 
     if pos == 0:
         if stress and raw != 0:

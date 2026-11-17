@@ -657,7 +657,7 @@ const QisView: React.FC = () => {
         : isRegimeSignalMode(activeSignal)
           ? null
           : isRegime2SignalMode(activeSignal)
-            ? '基线与 Quantile 完全相同（Spread 滚动 10/90 进、40/60 出；无 crisis stop）。压力态：garch_z 连续 N 日越出其滚动 10/90 → 强制平掉已有仓，并停新开。'
+            ? '基线与 Quantile 完全相同（Spread 滚动 10/90 进、40/60 出；无 crisis stop）。压力态：garch_z 连续 N 日越出其滚动 10/90 → 仅停新开，已有仓位仍按 Quantile 规则平仓。'
             : '直接对 Spread 做滚动分位入场/出场（无未来数据；t−1 信号 → t close 成交）。';
 
     /** Structured Regime v2 logic for the docs card (applies to every tenor/side/spread/universe). */
@@ -1358,7 +1358,7 @@ const QisView: React.FC = () => {
                     {isRegimeSignalMode(activeSignal)
                       ? '黄线：garch_z。紫虚线：冲击极端 shk q10/q90（Mom 加速入场 / Mom 不利冲击出场 / Fade crisis）。青虚线：冷静带 shk q20/q80（Fade 双日冷静入场）。分位 = 过去 W 日、shift(1)，与 FSM 决策同一套。'
                       : isRegime2SignalMode(activeSignal)
-                        ? '黄线：garch_z。紫虚线：压力门 10/90（连续 N 日越出 → 强平已有仓 + 停新开）。灰虚线：参考 40/60。决策开平仓仍看上方 Spread Quantile 图。'
+                        ? '黄线：garch_z。紫虚线：压力门 10/90（连续 N 日越出 → 停新开）。灰虚线：参考 40/60。决策开平仓仍看上方 Spread Quantile 图。'
                         : `黄线：garch_z。紫/灰虚线：对 garch_z 的滚动分位带（${enterPct} 入场 · ${exitPct} 出场口径）。`}
                     {' '}散点为实际成交：Long 红 · Short 绿 · 平仓蓝
                     {isRegimeSignalMode(activeSignal) || isRegime2SignalMode(activeSignal)
