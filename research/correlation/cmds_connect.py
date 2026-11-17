@@ -30,11 +30,15 @@ def _creds_from_docx(docx: Path) -> tuple[str, str]:
         for t in root.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t")
     ]
     full = "".join(texts)
-    m_user = re.search(r"(?:用户名|账号|user)\s*[：:]\s*(\S+)", full, re.I)
+    m_user = re.search(r"(?:用户名|账号|user)\s*[：:]?\s*(\S+)", full, re.I)
     m_pwd = re.search(r"密码[：:]\s*(\S+)", full)
     if not m_user or not m_pwd:
         raise RuntimeError(f"Cannot parse CMDS creds from {docx}")
-    return m_user.group(1), m_pwd.group(1)
+    user = m_user.group(1)
+    # docx may concatenate as "账号 xikaiwang密码：..."
+    if "密码" in user:
+        user = user.split("密码")[0]
+    return user, m_pwd.group(1)
 
 
 def get_cmds_creds() -> tuple[str, str]:

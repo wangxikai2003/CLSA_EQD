@@ -27,3 +27,11 @@ data/cmds_us_equity_panel.parquet
 !data/explore_us_iv_coverage_report.json
 !data/corr_matrix_local.csv
 !data/corr_matrix_local_matrix.csv
+
+# corr_mark CMDS v1 artifacts (panels stay ignored via *_panel.*)
+!data/corr_mark_universe.csv
+!data/corr_mark_internal_baskets.json
+!data/corr_mark_cmds_*.csv
+!data/corr_mark_cmds_*.json
+!data/run_manifest.json
+!data/corr_mark_cmds_matrix.csv

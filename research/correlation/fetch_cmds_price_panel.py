@@ -179,7 +179,7 @@ def fetch_equity_by_sec_ids(sec_ids: list[str], start: str, end: str, batch: int
         print(f"  equity batch {i // batch + 1}/{(len(sec_ids) - 1) // batch + 1} n={len(part)}", flush=True)
         sql = f"""
         SELECT e.SEC_ID, s.BB_TICKER, s.WIND_CODE, e.TRADE_DATE,
-               e.OPEN_PRICE, e.CLOSE_PRICE, e.ADJCLOSE_FORWARD
+               e.OPEN_PRICE, e.CLOSE_PRICE, e.ADJCLOSE_FORWARD, e.ADJOPEN_FORWARD
         FROM CDM.EQUITYEOD e
         LEFT JOIN CDM.SECURITYCODE s ON s.SEC_ID = e.SEC_ID
         WHERE e.SEC_ID IN ({_in_list(part)})
@@ -190,6 +190,8 @@ def fetch_equity_by_sec_ids(sec_ids: list[str], start: str, end: str, batch: int
         return pd.DataFrame()
     raw = pd.concat(frames, ignore_index=True)
     adj = raw["ADJCLOSE_FORWARD"].where(raw["ADJCLOSE_FORWARD"].notna(), raw["CLOSE_PRICE"])
+    adj_open = raw["ADJOPEN_FORWARD"].where(raw["ADJOPEN_FORWARD"].notna(), raw["OPEN_PRICE"])
+    adj_src = raw["ADJCLOSE_FORWARD"].notna().map({True: "adj_forward", False: "raw_close"})
     return pd.DataFrame(
         {
             "symbol": raw["WIND_CODE"].fillna(raw["BB_TICKER"]).astype(str),
@@ -200,9 +202,223 @@ def fetch_equity_by_sec_ids(sec_ids: list[str], start: str, end: str, batch: int
             "trade_date": raw["TRADE_DATE"].astype(str),
             "open": pd.to_numeric(raw["OPEN_PRICE"], errors="coerce"),
             "close": pd.to_numeric(raw["CLOSE_PRICE"], errors="coerce"),
+            "adj_open": pd.to_numeric(adj_open, errors="coerce"),
             "adj_close": pd.to_numeric(adj, errors="coerce"),
+            "adj_source": adj_src,
         }
     )
+
+
+def fetch_index_by_sec_ids(
+    sec_id_to_symbol: dict[str, str], start: str, end: str, batch: int = 20
+) -> pd.DataFrame:
+    sec_ids = list(sec_id_to_symbol.keys())
+    frames = []
+    for i in range(0, len(sec_ids), batch):
+        part = sec_ids[i : i + batch]
+        sql = f"""
+        SELECT e.SEC_ID, s.BB_TICKER, s.WIND_CODE, e.TRADE_DATE,
+               e.OPEN_PRICE, e.CLOSE_PRICE
+        FROM CDM.INDEXEOD e
+        LEFT JOIN CDM.SECURITYCODE s ON s.SEC_ID = e.SEC_ID
+        WHERE e.SEC_ID IN ({_in_list(part)})
+          AND e.TRADE_DATE BETWEEN '{start}' AND '{end}'
+        """
+        frames.append(read_sql(sql))
+        print(f"  index batch {i // batch + 1} n={len(part)}", flush=True)
+    if not frames:
+        return pd.DataFrame()
+    raw = pd.concat(frames, ignore_index=True)
+    raw["sec_id"] = raw["SEC_ID"].astype(str)
+    raw["symbol"] = raw["sec_id"].map(sec_id_to_symbol)
+    return pd.DataFrame(
+        {
+            "symbol": raw["symbol"],
+            "asset_type": "INDEX",
+            "bb_ticker": raw["BB_TICKER"],
+            "wind_code": raw["WIND_CODE"],
+            "sec_id": raw["sec_id"],
+            "trade_date": raw["TRADE_DATE"].astype(str),
+            "open": pd.to_numeric(raw["OPEN_PRICE"], errors="coerce"),
+            "close": pd.to_numeric(raw["CLOSE_PRICE"], errors="coerce"),
+            "adj_open": pd.to_numeric(raw["OPEN_PRICE"], errors="coerce"),
+            "adj_close": pd.to_numeric(raw["CLOSE_PRICE"], errors="coerce"),
+            "adj_source": "index_close",
+        }
+    )
+
+
+def fetch_fx_by_winds(wind_to_symbol: dict[str, str], start: str, end: str) -> pd.DataFrame:
+    winds = list(wind_to_symbol.keys())
+    if not winds:
+        return pd.DataFrame()
+    sql = f"""
+    SELECT WINDCODE, BB_TICKER, TRADE_DATE, OPEN, CLOSE
+    FROM CDM.FXEOD
+    WHERE WINDCODE IN ({_in_list(winds)})
+      AND TRADE_DATE BETWEEN '{start}' AND '{end}'
+    """
+    raw = read_sql(sql)
+    raw["symbol"] = raw["WINDCODE"].map(wind_to_symbol)
+    return pd.DataFrame(
+        {
+            "symbol": raw["symbol"],
+            "asset_type": "FX",
+            "bb_ticker": raw["BB_TICKER"],
+            "wind_code": raw["WINDCODE"],
+            "sec_id": None,
+            "trade_date": raw["TRADE_DATE"].astype(str),
+            "open": pd.to_numeric(raw["OPEN"], errors="coerce"),
+            "close": pd.to_numeric(raw["CLOSE"], errors="coerce"),
+            "adj_open": pd.to_numeric(raw["OPEN"], errors="coerce"),
+            "adj_close": pd.to_numeric(raw["CLOSE"], errors="coerce"),
+            "adj_source": "fx_close",
+        }
+    )
+
+
+def _resolve_bb_sec_ids(bb_tickers: list[str]) -> pd.DataFrame:
+    if not bb_tickers:
+        return pd.DataFrame(columns=["BB_TICKER", "SEC_ID", "WIND_CODE"])
+    frames = []
+    for i in range(0, len(bb_tickers), 80):
+        chunk = bb_tickers[i : i + 80]
+        frames.append(
+            read_sql(
+                f"""
+                SELECT BB_TICKER, SEC_ID, WIND_CODE
+                FROM CDM.SECURITYCODE
+                WHERE BB_TICKER IN ({_in_list(chunk)})
+                """
+            )
+        )
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def fetch_corr_mark_universe_panel(universe_csv: str | Path, start: str, end: str) -> pd.DataFrame:
+    """Pull panel for active rows in corr_mark_universe.csv (Calypso symbols as keys)."""
+    from corr_mark_cmds_mapping import (
+        FORCE_PROXY,
+        PROXY_INFO,
+        active_symbols,
+        fx_windcode,
+        load_universe,
+    )
+
+    uni = load_universe(universe_csv)
+    active = active_symbols(uni, ["IDX", "EQ", "FX"])
+
+    frames: list[pd.DataFrame] = []
+
+    idx = active[active["type"] == "IDX"]
+    # one sec_id may map to two calypso aliases (KOSPI2/KOSPI200) — duplicate series
+    sec_to_syms: dict[str, list[str]] = {}
+    for _, r in idx.iterrows():
+        sid = str(r["sec_id"])
+        if not sid:
+            continue
+        sec_to_syms.setdefault(sid, []).append(r["calypso"])
+    if sec_to_syms:
+        # fetch once per sec_id then explode aliases
+        base = fetch_index_by_sec_ids({sid: sid for sid in sec_to_syms}, start, end)
+        parts = []
+        for sid, syms in sec_to_syms.items():
+            sub = base[base["sec_id"] == sid]
+            for sym in syms:
+                s = sub.copy()
+                s["symbol"] = sym
+                parts.append(s)
+        if parts:
+            frames.append(pd.concat(parts, ignore_index=True))
+
+    eq = active[active["type"] == "EQ"]
+    # sec_id → list of calypso aliases (600804.CH / 600804.C1)
+    sec_to_cals: dict[str, list[str]] = {}
+    for _, r in eq.iterrows():
+        sid = str(r["sec_id"])
+        if not sid:
+            continue
+        sec_to_cals.setdefault(sid, []).append(r["calypso"])
+
+    # proxy / force targets priced under mapped calypso-like symbols
+    extra_bb = []
+    bb_to_symbol = {}
+    for _src, (bb, _fx) in PROXY_INFO.items():
+        extra_bb.append(bb)
+        parts = bb.split()
+        if len(parts) >= 2:
+            bb_to_symbol[bb] = f"{parts[0]}.{parts[1]}"
+    for _src, (bb, _fx, _ccy) in FORCE_PROXY.items():
+        extra_bb.append(bb)
+        parts = bb.split()
+        if len(parts) >= 2:
+            # 300750 C2 → 300750.CH; COIN US → COIN.US; 688256 C1 → 688256.CH
+            suf = parts[1]
+            if suf in ("C1", "C2", "CH", "CG"):
+                bb_to_symbol[bb] = f"{parts[0]}.CH"
+            else:
+                bb_to_symbol[bb] = f"{parts[0]}.{suf}"
+
+    sec_map = _resolve_bb_sec_ids(sorted(set(extra_bb)))
+    for _, r in sec_map.iterrows():
+        bb = str(r["BB_TICKER"])
+        sid = str(r["SEC_ID"])
+        sym = bb_to_symbol.get(bb)
+        if sym:
+            sec_to_cals.setdefault(sid, [])
+            if sym not in sec_to_cals[sid]:
+                sec_to_cals[sid].append(sym)
+
+    if sec_to_cals:
+        eq_panel = fetch_equity_by_sec_ids(list(sec_to_cals.keys()), start, end, batch=40)
+        parts = []
+        for sid, syms in sec_to_cals.items():
+            sub = eq_panel[eq_panel["sec_id"] == sid]
+            for sym in syms:
+                s = sub.copy()
+                s["symbol"] = sym
+                parts.append(s)
+        if parts:
+            frames.append(pd.concat(parts, ignore_index=True))
+
+    fx = active[active["type"] == "FX"]
+    wind_to_sym: dict[str, str] = {}
+    invert_jobs: list[tuple[str, str]] = []  # (calypso, invert_of_calypso)
+    for _, r in fx.iterrows():
+        if r["invert_of"]:
+            invert_jobs.append((r["calypso"], r["invert_of"]))
+        else:
+            w = r["fx_wind"] or fx_windcode(r["calypso"])
+            wind_to_sym[w] = r["calypso"]
+    if wind_to_sym:
+        frames.append(fetch_fx_by_winds(wind_to_sym, start, end))
+
+    panel = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if panel.empty:
+        return panel
+
+    # synthesize inverted FX
+    if invert_jobs and len(panel):
+        inv_frames = []
+        for cal, src in invert_jobs:
+            src_df = panel[panel["symbol"] == src].copy()
+            if src_df.empty:
+                continue
+            src_df["symbol"] = cal
+            for c in ("open", "close", "adj_open", "adj_close"):
+                if c in src_df.columns:
+                    src_df[c] = 1.0 / src_df[c]
+            src_df["adj_source"] = "fx_invert"
+            src_df["wind_code"] = f"INV({src})"
+            inv_frames.append(src_df)
+        if inv_frames:
+            panel = pd.concat([panel, *inv_frames], ignore_index=True)
+
+    panel["trade_date"] = panel["trade_date"].astype(str)
+    for c in ("open", "close", "adj_open", "adj_close"):
+        if c in panel.columns:
+            panel[c] = pd.to_numeric(panel[c], errors="coerce")
+    return panel.dropna(subset=["adj_close"]).sort_values(["symbol", "trade_date"])
 
 
 def main():
@@ -230,7 +446,26 @@ def main():
     )
     p.add_argument("--batch", type=int, default=200)
     p.add_argument("--skip-default", action="store_true", help="skip default index/equity/fx panel")
+    p.add_argument(
+        "--corr-mark-universe",
+        default="",
+        help="path to corr_mark_universe.csv — pulls active IDX/EQ/FX into --out",
+    )
     args = p.parse_args()
+
+    if args.corr_mark_universe:
+        panel = fetch_corr_mark_universe_panel(args.corr_mark_universe, args.start, args.end)
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        panel.to_parquet(out, index=False)
+        summary = (
+            panel.groupby(["symbol", "asset_type"], as_index=False)
+            .agg(n=("adj_close", "size"), dmin=("trade_date", "min"), dmax=("trade_date", "max"))
+            .sort_values("symbol")
+        )
+        print(summary.to_string(index=False))
+        print(f"\nWrote {len(panel):,} rows -> {out}")
+        return
 
     frames = []
     if not args.skip_default:

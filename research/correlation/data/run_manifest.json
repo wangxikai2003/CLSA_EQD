@@ -1,0 +1,26 @@
+{
+  "mode": "IDX.IDX",
+  "rolling_win": 63,
+  "look_back_months": 24,
+  "el": 504,
+  "pad_override": null,
+  "alpha_override": null,
+  "use_proxy": true,
+  "simple_last": true,
+  "corr_lambda": 0.0,
+  "axis0_n": 12,
+  "axis1_n": 12,
+  "pairs": 66,
+  "ok_pairs": 66,
+  "missing_panel_axis0": [],
+  "missing_panel_axis1": [],
+  "fail_reasons": {
+    "ok": 66
+  },
+  "adj_source_symbol_counts": {
+    "index_close": 12
+  },
+  "hist_short_pairs": [],
+  "ts": "2026-11-17T16:09:45",
+  "rules": false
+}
