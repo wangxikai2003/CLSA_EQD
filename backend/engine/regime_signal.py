@@ -65,9 +65,11 @@ def rolling_quantile_map(
     q_list = [float(q) for q in qs]
     if not q_list or any(not (0.0 < q < 1.0) for q in q_list):
         raise ValueError("qs must be in (0, 1)")
+    # Match calendar_vol_strategy.rolling_min_periods: half-window, floor 60.
+    min_periods = max(60, int(math.ceil(window * 0.5)))
     s = series.astype(float)
     hist = s.shift(1)
-    roll = hist.rolling(window, min_periods=window)
+    roll = hist.rolling(window, min_periods=min_periods)
     cols: Dict[str, pd.Series] = {}
     for q in q_list:
         cols[q_key(q)] = roll.quantile(q)

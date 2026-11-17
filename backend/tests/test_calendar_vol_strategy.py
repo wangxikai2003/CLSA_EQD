@@ -151,7 +151,7 @@ def test_compute_spread_iv_vs_iv2():
 
 
 def test_300_36_nav_regression():
-    """Locked 3M–6M CSI300 final NAV multiple (~1.198563) under default spread_mode=iv."""
+    """Locked 3M–6M CSI300 final NAV multiple (~1.163945) after warm/min_periods cut."""
     payload = run_calendar_vol(
         "300",
         initial_nav=100_000_000.0,
@@ -161,8 +161,9 @@ def test_300_36_nav_regression():
         spread_mode="iv",
     )
     mult = float(payload["summary"]["final_nav_multiple"])
-    assert abs(mult - 1.198563) < 5e-4, mult
+    assert abs(mult - 1.163945) < 5e-4, mult
     assert payload["params"]["spread_mode"] == "iv"
+    assert payload.get("yearly_metrics"), "yearly_metrics missing"
 
 
 def test_spread_mode_iv2_differs_from_iv():
@@ -175,8 +176,8 @@ def test_spread_mode_iv2_differs_from_iv():
     )
     assert iv2["params"]["spread_mode"] == "iv2"
     assert iv2["params"]["spread_formula"] == "IV_near² − IV_far²"
-    assert abs(float(iv["summary"]["final_nav_multiple"]) - 1.198563) < 5e-4
-    assert abs(float(iv2["summary"]["final_nav_multiple"]) - 1.266752) < 5e-4
+    assert abs(float(iv["summary"]["final_nav_multiple"]) - 1.163945) < 5e-4
+    assert abs(float(iv2["summary"]["final_nav_multiple"]) - 1.230101) < 5e-4
     # Chart series may downsample differently when position paths diverge.
     assert any(
         a is not None and b is not None and abs(a - b) > 1e-12

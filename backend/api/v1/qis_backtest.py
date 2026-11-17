@@ -249,6 +249,23 @@ def run_cross_calendar_carry(
         metrics[name]["start"] = str(nav_w.index[0]) if len(nav_w) else None
         metrics[name]["end"] = str(nav_w.index[-1]) if len(nav_w) else None
 
+    yearly_metrics: List[Dict[str, Any]] = []
+    idx_y = pd.to_datetime(nav_s.index)
+    for year in sorted({int(y) for y in idx_y.year}):
+        mask = idx_y.year == year
+        nav_y = nav_s.loc[mask]
+        ret_y = ret_s.loc[mask]
+        if len(nav_y) < 2:
+            continue
+        base_y = float(nav_y.iloc[0])
+        if base_y <= 0:
+            continue
+        ym = _window_metrics(nav_y / base_y, ret_y)
+        ym["year"] = int(year)
+        ym["start"] = str(pd.Timestamp(nav_y.index[0]).date())
+        ym["end"] = str(pd.Timestamp(nav_y.index[-1]).date())
+        yearly_metrics.append(ym)
+
     # downsample NAV for chart
     step = max(1, len(rows) // 800)
     nav_chart = [
@@ -293,6 +310,7 @@ def run_cross_calendar_carry(
         },
         "nav": nav_chart,
         "metrics": metrics,
+        "yearly_metrics": yearly_metrics,
         "summary": {
             "start": dates[0],
             "end": dates[-1],

@@ -8,7 +8,9 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 
-GARCH_WARM = 504
+# Minimum expanding history (trading days of Δspread) before first GARCH fit.
+# 252 ≈ 1Y: halves the blank period vs the old 504 (2Y) warm while staying causal.
+GARCH_WARM = 252
 REFIT_EVERY = 5
 
 

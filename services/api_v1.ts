@@ -404,6 +404,8 @@ export interface QisMetrics {
   pct_positive_months: number | null;
   start?: string | null;
   end?: string | null;
+  /** Present on yearly_metrics rows only. */
+  year?: number;
 }
 
 export interface QisPnLDecomposition {
@@ -534,6 +536,8 @@ export interface QisBacktestResponse {
   };
   nav: { d: string; nav: number; sos: number }[];
   metrics: Record<'1y' | '3y' | '5y' | 'max', QisMetrics>;
+  /** Calendar-year rows (nav rebased at each year start). */
+  yearly_metrics?: QisMetrics[];
   summary: {
     start: string;
     end: string;

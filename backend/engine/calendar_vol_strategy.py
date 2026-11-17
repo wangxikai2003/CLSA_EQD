@@ -34,6 +34,15 @@ T_1M = 30.0 / 365.0
 T_3M = 90.0 / 365.0
 T_6M = 180.0 / 365.0
 DEFAULT_Z_WINDOW = 252  # rolling window for quantiles / Z (trading days)
+# Allow bands/z before the full window fills (still causal via shift(1)).
+# With window=252 → min_periods=126 ≈ 6M, cutting ~1Y off the blank prefix.
+ROLLING_MIN_FLOOR = 60
+ROLLING_MIN_FRAC = 0.5
+
+
+def rolling_min_periods(window: int) -> int:
+    w = int(window)
+    return max(ROLLING_MIN_FLOOR, int(math.ceil(w * ROLLING_MIN_FRAC)))
 # Rolling quantile bands on Spread (prior window only — no look-ahead)
 ENTER_Q = 0.90  # enter outside 10/90
 EXIT_LO_Q = 0.40
@@ -279,10 +288,11 @@ def rolling_zscore(spread: pd.Series, window: int = DEFAULT_Z_WINDOW) -> pd.Seri
     window = int(window)
     if window < 2:
         raise ValueError("z_window must be >= 2")
+    mp = rolling_min_periods(window)
     s = spread.astype(float)
     hist = s.shift(1)  # exclude today from stats
-    mu = hist.rolling(window, min_periods=window).mean()
-    var = hist.rolling(window, min_periods=window).var(ddof=1)
+    mu = hist.rolling(window, min_periods=mp).mean()
+    var = hist.rolling(window, min_periods=mp).var(ddof=1)
     sig = np.sqrt(var)
     return (s - mu) / sig.replace(0.0, np.nan)
 
@@ -297,6 +307,7 @@ def rolling_quantile_bands(
     """Time-varying enter/exit bands from prior-window quantiles of Spread.
 
     All bands at t use only Spread[t-window .. t-1] (shift(1) → no future leak).
+    Bands appear once ``rolling_min_periods(window)`` history exists.
     """
     window = int(window)
     if window < 2:
@@ -307,7 +318,7 @@ def rolling_quantile_bands(
         raise ValueError("need 0 < exit_lo_q < exit_hi_q < 1")
     s = spread.astype(float)
     hist = s.shift(1)
-    roll = hist.rolling(window, min_periods=window)
+    roll = hist.rolling(window, min_periods=rolling_min_periods(window))
     return pd.DataFrame(
         {
             "enter_hi": roll.quantile(enter_q),
@@ -836,7 +847,7 @@ class CalendarVolBacktestEngine:
 
             signal_level, _sigma = expanding_garch_z(ct["spread"])
             garch_z_series = signal_level
-            min_hist = GARCH_WARM + self.z_window + 30
+            min_hist = GARCH_WARM + rolling_min_periods(self.z_window) + 30
             bands = rolling_quantile_bands(
                 signal_level,
                 self.z_window,
@@ -850,13 +861,14 @@ class CalendarVolBacktestEngine:
 
             garch_z_series, sigma = expanding_garch_z(ct["spread"])
             self._garch_sigma = sigma
-            # Causal median of prior-252 σ (shift so today excluded).
+            # Causal median of prior-window σ (shift so today excluded).
+            _mp = rolling_min_periods(self.z_window)
             self._sigma_med252 = (
-                sigma.shift(1).rolling(self.z_window, min_periods=self.z_window).median()
+                sigma.shift(1).rolling(self.z_window, min_periods=_mp).median()
             )
             # Decision chart level = raw Spread; shock = garch_z.
             signal_level = ct["spread"].astype(float)
-            min_hist = GARCH_WARM + self.z_window + 30
+            min_hist = GARCH_WARM + _mp + 30
             # Keep enter/exit columns aligned with fade level bands for markers/charts.
             bands = spread_bands.rename(
                 columns={
@@ -890,7 +902,7 @@ class CalendarVolBacktestEngine:
             )
         else:
             signal_level = ct["spread"].astype(float)
-            min_hist = self.z_window + 30
+            min_hist = rolling_min_periods(self.z_window) + 30
             # Decision bands == IV-spread bands.
             bands = spread_bands.rename(
                 columns={
@@ -1370,6 +1382,28 @@ class CalendarVolBacktestEngine:
         base = float(nav.iloc[i0])
         return (nav.iloc[i0:] / base if base else nav.iloc[i0:]), ret.iloc[i0:]
 
+    def _yearly_metrics(self, nav: pd.Series, daily_ret: pd.Series) -> List[Dict[str, Any]]:
+        """Calendar-year performance rows (nav rebased to 1.0 at each year start)."""
+        if len(nav) < 2:
+            return []
+        idx = pd.to_datetime(nav.index)
+        out: List[Dict[str, Any]] = []
+        for year in sorted({int(y) for y in idx.year}):
+            mask = idx.year == year
+            nav_y = nav.loc[mask]
+            ret_y = daily_ret.loc[mask]
+            if len(nav_y) < 2:
+                continue
+            base = float(nav_y.iloc[0])
+            if base <= 0:
+                continue
+            m = self._window_metrics(nav_y / base, ret_y)
+            m["year"] = int(year)
+            m["start"] = str(pd.Timestamp(nav_y.index[0]).date())
+            m["end"] = str(pd.Timestamp(nav_y.index[-1]).date())
+            out.append(m)
+        return out
+
     def _pack_payload(
         self, rows: List[Dict[str, Any]], first_open_i: Optional[int]
     ) -> Dict[str, Any]:
@@ -1419,6 +1453,7 @@ class CalendarVolBacktestEngine:
             metrics[name] = self._window_metrics(nav_w, ret_w)
             metrics[name]["start"] = str(nav_w.index[0]) if len(nav_w) else None
             metrics[name]["end"] = str(nav_w.index[-1]) if len(nav_w) else None
+        yearly_metrics = self._yearly_metrics(nav_s, ret_s)
 
         def _sos_pts(sp: Any, scale: Optional[float] = None) -> Optional[float]:
             """Scaled level for overlay charts (vol pts or garch_z units)."""
@@ -1620,10 +1655,13 @@ class CalendarVolBacktestEngine:
             else "IV_near − IV_far"
         )
         if self.signal_mode == "garch_z":
+            from engine.garch_signal import GARCH_WARM as _garch_warm
+
+            _mp = rolling_min_periods(self.z_window)
             signal_desc = (
-                f"expanding GARCH(1,1)-t on ΔSpread (warm 504d, refit every 5d) → garch_z; "
+                f"expanding GARCH(1,1)-t on ΔSpread (warm {_garch_warm}d, refit every 5d) → garch_z; "
                 f"then rolling quantiles of garch_z on prior {self.z_window}d "
-                f"(enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
+                f"(bands from {_mp}d; enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
                 f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}; no look-ahead)"
             )
         elif self.signal_mode == "regime":
@@ -1723,6 +1761,7 @@ class CalendarVolBacktestEngine:
             },
             "nav": nav_chart,
             "metrics": metrics,
+            "yearly_metrics": yearly_metrics,
             "summary": {
                 "start": perf[0]["d"],
                 "end": perf[-1]["d"],

@@ -586,7 +586,7 @@ const QisView: React.FC = () => {
         : '先 CT-IV 插值得到近/远端 IV，再做水平差（IV spread）。';
     const signalModeNote =
       activeSignal === 'garch_z'
-        ? '对 ΔSpread 做 expanding GARCH(1,1)-t（预热 504 日、每 5 日重估参数，仅用截至当日历史）得到 garch_z；再对 garch_z 做滚动分位入场/出场（无未来数据；t−1 信号 → t close 成交）。'
+        ? '对 ΔSpread 做 expanding GARCH(1,1)-t（预热 252 日、每 5 日重估参数，仅用截至当日历史）得到 garch_z；再对 garch_z 做滚动分位入场/出场（窗长默认 252，满半窗≈126 日即可出带；无未来数据；t−1 信号 → t close 成交）。'
         : activeSignal === 'regime'
           ? null
           : '直接对 Spread 做滚动分位入场/出场（无未来数据；t−1 信号 → t close 成交）。';
@@ -1021,10 +1021,37 @@ const QisView: React.FC = () => {
                     </tr>
                   );
                 })}
+                {(data.yearly_metrics?.length ?? 0) > 0 && (
+                  <tr className="border-b border-slate-200">
+                    <td colSpan={8} className="pt-3 pb-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                      Calendar year
+                    </td>
+                  </tr>
+                )}
+                {(data.yearly_metrics ?? []).map((m) => (
+                  <tr key={`y-${m.year}`} className="border-b border-slate-100 text-[#000066]">
+                    <td className="py-2 pr-3 font-bold">
+                      {m.year}
+                      <div className="text-[9px] font-normal text-slate-400 font-mono">
+                        {m.start && m.end ? `${m.start} → ${m.end}` : ''}
+                      </div>
+                    </td>
+                    <td className="py-2 pr-3 tabular-nums">{fmtPct(m.ann_return)}</td>
+                    <td className="py-2 pr-3 tabular-nums">{fmtPct(m.ann_vol)}</td>
+                    <td className="py-2 pr-3 tabular-nums font-bold">{fmtNum(m.sharpe)}</td>
+                    <td className="py-2 pr-3 tabular-nums">{fmtPct(m.mdd)}</td>
+                    <td className="py-2 pr-3 tabular-nums">{fmtNum(m.mdd_vol)}</td>
+                    <td className="py-2 pr-3 tabular-nums">
+                      {m.pct_positive_months == null ? '—' : `${m.pct_positive_months.toFixed(1)}%`}
+                    </td>
+                    <td className="py-2 tabular-nums text-slate-500">{m.n_days}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
             <p className="text-[9px] text-slate-400 mt-2">
-              Sharpe 以 rf=0、252 交易日年化；MDD 为净值最大回撤。
+              Sharpe 以 rf=0、252 交易日年化；MDD 为净值最大回撤。Calendar year
+              按自然年切分，年初净值再基准化为 1；首尾不完整年份同样按实际交易日年化。
             </p>
           </div>
 
