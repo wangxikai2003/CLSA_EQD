@@ -14,6 +14,7 @@ import {
   QisStrategyInfo,
   QisTenorPair,
   QisTradeMarker,
+  isRegimeSignalMode,
 } from '../../services/api_v1';
 import ChartZoomFrame from './ChartZoomFrame';
 
@@ -33,11 +34,28 @@ const CAL_VOL_SPREADS: { key: QisSpreadMode; label: string }[] = [
   { key: 'iv2', label: 'IV² spread' },
 ];
 
-const CAL_VOL_SIGNALS: { key: QisSignalMode; label: string }[] = [
+/** Top-level signal family (Regime expands into book sub-toggle). */
+const CAL_VOL_SIGNAL_FAMILIES: { key: 'quantile' | 'garch_z' | 'regime'; label: string }[] = [
   { key: 'quantile', label: 'Quantile' },
   { key: 'garch_z', label: 'GARCH-z' },
-  { key: 'regime', label: 'Regime v2' },
+  { key: 'regime', label: 'Regime' },
 ];
+
+const CAL_VOL_REGIME_BOOKS: { key: QisSignalMode; label: string; hint: string }[] = [
+  { key: 'regime', label: 'Both', hint: 'Momentum + Mean-reversion' },
+  { key: 'regime_momentum', label: 'Momentum', hint: 'Momentum only' },
+  { key: 'regime_fade', label: 'Mean-rev', hint: 'Fade / mean-reversion only' },
+];
+
+function segBtnClass(active: boolean, disabled?: boolean) {
+  const base = 'px-3 py-1.5 text-xs font-bold transition-colors';
+  if (disabled) {
+    return `${base} ${active ? 'bg-[#000066]/80 text-white' : 'bg-slate-100 text-slate-400'} cursor-wait`;
+  }
+  return `${base} ${
+    active ? 'bg-[#000066] text-white' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+  }`;
+}
 
 const WINDOW_LABELS: { key: keyof QisBacktestResponse['metrics']; label: string }[] = [
   { key: '1y', label: '1 Year' },
@@ -459,7 +477,7 @@ const QisView: React.FC = () => {
       (typeof data?.params?.signal_mode === 'string' ? data.params.signal_mode : null);
     const kindByD = byKindIv;
 
-    if (mode === 'regime') {
+    if (isRegimeSignalMode(mode)) {
       const useLvl = Array.isArray(s.lvl_q10) && s.lvl_q10.length === s.dates.length;
       return s.dates.map((dt, i) => {
         const raw = ivSeries[i];
@@ -534,7 +552,7 @@ const QisView: React.FC = () => {
   const sosLabel = isCalVol
     ? activeSignal === 'garch_z'
       ? `${tenorLabel} GARCH-z`
-      : activeSignal === 'regime'
+      : isRegimeSignalMode(activeSignal)
         ? activeSpread === 'iv2'
           ? `${tenorLabel} IV² · Regime v2`
           : `${tenorLabel} IV · Regime v2`
@@ -548,12 +566,27 @@ const QisView: React.FC = () => {
       : `${tenorLabel} IV spread (vol pts)`
     : 'Spread (pts)';
   const showGarchSignalChart =
-    isCalVol && (activeSignal === 'garch_z' || activeSignal === 'regime');
+    isCalVol && (activeSignal === 'garch_z' || isRegimeSignalMode(activeSignal));
   const showSpreadBandChart = isCalVol && !!data?.signal;
   const garchChartData =
-    activeSignal === 'regime' || activeSignal === 'garch_z' ? garchZChart : signalChart;
+    isRegimeSignalMode(activeSignal) || activeSignal === 'garch_z' ? garchZChart : signalChart;
   const spreadChartData =
-    activeSignal === 'garch_z' || activeSignal === 'regime' ? ivSpreadChart : signalChart;
+    activeSignal === 'garch_z' || isRegimeSignalMode(activeSignal) ? ivSpreadChart : signalChart;
+  const regimeShowMom = activeSignal === 'regime' || activeSignal === 'regime_momentum';
+  const regimeShowFade = activeSignal === 'regime' || activeSignal === 'regime_fade';
+  const regimeLevelYKeys = [
+    'spread_pts',
+    ...(regimeShowFade ? (['q10', 'q90'] as const) : []),
+    ...(regimeShowMom ? (['q08', 'q25', 'q75', 'q92'] as const) : []),
+    'q40',
+    'q60',
+  ];
+  const regimeShockYKeys = [
+    'spread_pts',
+    'q10',
+    'q90',
+    ...(regimeShowFade ? (['q20', 'q80'] as const) : []),
+  ];
 
   const enterPct = data?.signal?.enter_q != null ? `${((1 - data.signal.enter_q) * 100).toFixed(0)}/${(data.signal.enter_q * 100).toFixed(0)}` : '10/90';
   const exitPct =
@@ -582,30 +615,48 @@ const QisView: React.FC = () => {
     const signalModeNote =
       activeSignal === 'garch_z'
         ? '对 ΔSpread 做 expanding GARCH(1,1)-t（预热 252 日、每 5 日重估参数，仅用截至当日历史）得到 garch_z；再对 garch_z 做滚动分位入场/出场（窗长默认 252，满半窗≈126 日即可出带；无未来数据；t−1 信号 → t close 成交）。'
-        : activeSignal === 'regime'
+        : isRegimeSignalMode(activeSignal)
           ? null
           : '直接对 Spread 做滚动分位入场/出场（无未来数据；t−1 信号 → t close 成交）。';
 
     /** Structured Regime v2 logic for the docs card (applies to every tenor/side/spread/universe). */
+    const regimeBookLabel =
+      activeSignal === 'regime_momentum'
+        ? 'Momentum only'
+        : activeSignal === 'regime_fade'
+          ? 'Mean-reversion only'
+          : 'Both (Mom + Fade)';
     const regimeLogic =
-      activeSignal === 'regime'
+      isRegimeSignalMode(activeSignal)
         ? {
-            title: '信号层 · Regime v2（Fade / Momentum 双状态机）',
+            title: `信号层 · Regime v2 · ${regimeBookLabel}`,
             intro:
               `在当前 CT-IV ${activeSpread === 'iv2' ? 'IV²' : 'IV'} Spread（${tenorLabel}）上，` +
-              '用水平分位 + garch_z 冲击分位切换 Fade / Momentum；空仓时 Momentum 优先于 Fade。' +
+              (activeSignal === 'regime_momentum'
+                ? '仅启用 Momentum 开仓（Fade 入场关闭）。'
+                : activeSignal === 'regime_fade'
+                  ? '仅启用 Fade / mean-reversion 开仓（Momentum 入场关闭）。'
+                  : '用水平分位 + garch_z 冲击分位切换 Fade / Momentum；空仓时 Momentum 优先于 Fade。') +
               '分位均为过去 ' +
               String(
                 typeof data?.params?.z_window === 'number' ? data.params.z_window : 252,
               ) +
               ' 日、shift(1)（无未来函数）。执行：t 收盘出信号 → t+1 收盘成交。' +
-              '下列规则对 50/300/1000 × 3M–6M/1M–3M × iv/iv2 × both/long_only/short_only 同一套；side_mode 只过滤 ±1 开仓方向。',
+              'Book 选择与 side_mode / tenor / spread / universe 正交组合。',
             bullets: [
               '状态变量：S = Spread；z = expanding GARCH(1,1)-t 标准化残差（garch_z）；z_{t−1} = 前日 z。',
-              'Momentum 开仓（优先）：上侧 q75 < S ≤ q92 且 z > q90 → Reverse(−1)；下侧 q08 ≤ S < q25 且 z < q10 → Normal(+1)。',
-              'Momentum 平仓（任一触发）：持仓≥2 日后 S 回到 [q40, q60] 均值带衰竭；冲击反向穿过极端 q10/q90；空间止盈 S 出 q01/q99；最长持有 12 日 → 冷却 3 日。',
-              'Fade 开仓：S > q90 且 z≤q80 且 z_{t−1}≤q80 → Normal(+1)；S < q10 且 z≥q20 且 z_{t−1}≥q20 → Reverse(−1)（双日冲击收敛，避免硬抗突破）。',
-              'Fade 平仓：S 回到 [q40, q60]；危机熔断（持仓方向继续恶化且冲击极端）；Reverse 最长 20 日 → 冷却 3 日。',
+              ...(activeSignal !== 'regime_fade'
+                ? [
+                    'Momentum 开仓（优先）：上侧 q75 < S ≤ q92 且 z > q90 → Reverse(−1)；下侧 q08 ≤ S < q25 且 z < q10 → Normal(+1)。',
+                    'Momentum 平仓（任一触发）：持仓≥2 日后 S 回到 [q40, q60] 均值带衰竭；冲击反向穿过极端 q10/q90；空间止盈 S 出 q01/q99；最长持有 12 日 → 冷却 3 日。',
+                  ]
+                : []),
+              ...(activeSignal !== 'regime_momentum'
+                ? [
+                    'Fade 开仓：S > q90 且 z≤q80 且 z_{t−1}≤q80 → Normal(+1)；S < q10 且 z≥q20 且 z_{t−1}≥q20 → Reverse(−1)（双日冲击收敛，避免硬抗突破）。',
+                    'Fade 平仓：S 回到 [q40, q60]；危机熔断（持仓方向继续恶化且冲击极端）；Reverse 最长 20 日 → 冷却 3 日。',
+                  ]
+                : []),
               '预算：Fade 远端美元 Vega = 1% NAV；Momentum = 0.8% NAV（按成交日 regime_mode 选预算）。',
             ],
           }
@@ -642,7 +693,7 @@ const QisView: React.FC = () => {
     };
 
     const budgetNote =
-      activeSignal === 'regime'
+      isRegimeSignalMode(activeSignal)
         ? '远端美元 Vega 预算：Fade = 1% NAV / vol-pt，Momentum = 0.8% NAV / vol-pt（按成交日 regime_mode 切换）；'
         : '远端美元 Vega 预算 = 1% NAV / vol-pt；';
 
@@ -675,115 +726,154 @@ const QisView: React.FC = () => {
             缓存 <code className="font-mono">qis_results.sqlite</code>（tenor × side × spread × signal 分键）。
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            className="px-3 py-1.5 text-xs font-bold border border-slate-200 rounded-md bg-slate-50 text-[#000066]"
-            value={family}
-            onChange={(e) => setFamily(e.target.value as FamilyKey)}
-          >
-            <option value="cross_calendar_carry">Cross Calendar Carry</option>
-            <option value="calendar_vol">Equity Calendar Vol</option>
-          </select>
-          {family === 'calendar_vol' && (
-            <>
-              <div className="flex rounded-md border border-slate-200 overflow-hidden">
-                {CAL_VOL_UNIVERSES.map((u) => (
-                  <button
-                    key={u.key}
-                    type="button"
-                    onClick={() => setUniverse(u.key)}
-                    className={`px-3 py-1.5 text-xs font-bold ${
-                      universe === u.key
-                        ? 'bg-[#000066] text-white'
-                        : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
-                    }`}
-                  >
-                    {u.label}
-                  </button>
-                ))}
-              </div>
-              <div className="flex rounded-md border border-slate-200 overflow-hidden">
-                {CAL_VOL_TENORS.map((t) => (
-                  <button
-                    key={t.key}
-                    type="button"
-                    onClick={() => setTenorPair(t.key)}
-                    className={`px-3 py-1.5 text-xs font-bold ${
-                      tenorPair === t.key
-                        ? 'bg-[#000066] text-white'
-                        : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
-                    }`}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-              <div className="flex rounded-md border border-slate-200 overflow-hidden">
-                {CAL_VOL_SIDES.map((s) => (
-                  <button
-                    key={s.key}
-                    type="button"
-                    onClick={() => setSideMode(s.key)}
-                    className={`px-3 py-1.5 text-xs font-bold ${
-                      sideMode === s.key
-                        ? 'bg-[#000066] text-white'
-                        : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
-                    }`}
-                  >
-                    {s.label}
-                  </button>
-                ))}
-              </div>
-              <div className="flex rounded-md border border-slate-200 overflow-hidden">
-                {CAL_VOL_SPREADS.map((s) => (
-                  <button
-                    key={s.key}
-                    type="button"
-                    onClick={() => setSpreadMode(s.key)}
-                    className={`px-3 py-1.5 text-xs font-bold ${
-                      spreadMode === s.key
-                        ? 'bg-[#000066] text-white'
-                        : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
-                    }`}
-                  >
-                    {s.label}
-                  </button>
-                ))}
-              </div>
-              <div className="flex rounded-md border border-slate-200 overflow-hidden">
-                {CAL_VOL_SIGNALS.map((s) => (
-                  <button
-                    key={s.key}
-                    type="button"
-                    onClick={() => setSignalMode(s.key)}
-                    className={`px-3 py-1.5 text-xs font-bold ${
-                      signalMode === s.key
-                        ? 'bg-[#000066] text-white'
-                        : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
-                    }`}
-                  >
-                    {s.label}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-          <button
-            type="button"
-            onClick={() => load(true)}
-            className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-md bg-[#000066] text-white"
-            title="强制重跑引擎并覆盖结果库"
-          >
-            <RefreshCw size={12} /> Refresh
-          </button>
-          {isCalVol && (
-            <a
-              href={qisHoldingsExcelUrl(strategyId, 252, tenorPair, sideMode, spreadMode, signalMode)}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-md border border-slate-200 bg-white text-[#000066] hover:bg-slate-50"
-              title="Download concrete holdings Excel (t−1 signal / t close)"
+        <div className="flex flex-col items-stretch sm:items-end gap-2 min-w-0">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <select
+              className="px-3 py-1.5 text-xs font-bold border border-slate-200 rounded-md bg-slate-50 text-[#000066] disabled:opacity-60"
+              value={family}
+              disabled={loading}
+              onChange={(e) => setFamily(e.target.value as FamilyKey)}
             >
-              <Download size={12} /> Holdings.xlsx
-            </a>
+              <option value="cross_calendar_carry">Cross Calendar Carry</option>
+              <option value="calendar_vol">Equity Calendar Vol</option>
+            </select>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => load(true)}
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-md bg-[#000066] text-white disabled:opacity-60"
+              title="强制重跑引擎并覆盖结果库"
+            >
+              <RefreshCw size={12} className={loading ? 'animate-spin' : undefined} /> Refresh
+            </button>
+            {isCalVol && (
+              <a
+                href={qisHoldingsExcelUrl(strategyId, 252, tenorPair, sideMode, spreadMode, signalMode)}
+                className={`inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-md border border-slate-200 bg-white text-[#000066] hover:bg-slate-50 ${
+                  loading ? 'pointer-events-none opacity-60' : ''
+                }`}
+                title="Download concrete holdings Excel (t−1 signal / t close)"
+              >
+                <Download size={12} /> Holdings.xlsx
+              </a>
+            )}
+          </div>
+          {family === 'calendar_vol' && (
+            <div className="flex flex-col gap-1.5 w-full max-w-3xl">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-end">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Index</span>
+                  <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                    {CAL_VOL_UNIVERSES.map((u) => (
+                      <button
+                        key={u.key}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => setUniverse(u.key)}
+                        className={segBtnClass(universe === u.key, loading)}
+                      >
+                        {u.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Tenor</span>
+                  <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                    {CAL_VOL_TENORS.map((t) => (
+                      <button
+                        key={t.key}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => setTenorPair(t.key)}
+                        className={segBtnClass(tenorPair === t.key, loading)}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Side</span>
+                  <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                    {CAL_VOL_SIDES.map((s) => (
+                      <button
+                        key={s.key}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => setSideMode(s.key)}
+                        className={segBtnClass(sideMode === s.key, loading)}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Spread</span>
+                  <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                    {CAL_VOL_SPREADS.map((s) => (
+                      <button
+                        key={s.key}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => setSpreadMode(s.key)}
+                        className={segBtnClass(spreadMode === s.key, loading)}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-end">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Signal</span>
+                  <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                    {CAL_VOL_SIGNAL_FAMILIES.map((s) => {
+                      const active =
+                        s.key === 'regime' ? isRegimeSignalMode(signalMode) : signalMode === s.key;
+                      return (
+                        <button
+                          key={s.key}
+                          type="button"
+                          disabled={loading}
+                          onClick={() => {
+                            if (s.key === 'regime') {
+                              setSignalMode(isRegimeSignalMode(signalMode) ? signalMode : 'regime');
+                            } else {
+                              setSignalMode(s.key);
+                            }
+                          }}
+                          className={segBtnClass(active, loading)}
+                        >
+                          {s.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                {isRegimeSignalMode(signalMode) && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Book</span>
+                    <div className="flex rounded-md border border-[#000066]/30 overflow-hidden">
+                      {CAL_VOL_REGIME_BOOKS.map((b) => (
+                        <button
+                          key={b.key}
+                          type="button"
+                          disabled={loading}
+                          title={b.hint}
+                          onClick={() => setSignalMode(b.key)}
+                          className={segBtnClass(signalMode === b.key, loading)}
+                        >
+                          {b.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -1169,13 +1259,13 @@ const QisView: React.FC = () => {
                 <div className="bg-white rounded-lg border border-slate-200 p-4">
                   <h3 className="font-bold text-[#000066] text-sm mb-3">
                     {tenorLabel} GARCH-z &{' '}
-                    {activeSignal === 'regime' ? 'Decision Shock Bands' : 'Rolling Quantile Bands'}
+                    {isRegimeSignalMode(activeSignal) ? 'Decision Shock Bands' : 'Rolling Quantile Bands'}
                   </h3>
                   <ChartZoomFrame
                     data={garchChartData}
                     yKeys={
-                      activeSignal === 'regime'
-                        ? ['spread_pts', 'q10', 'q20', 'q80', 'q90']
+                      isRegimeSignalMode(activeSignal)
+                        ? [...regimeShockYKeys]
                         : ['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']
                     }
                     height={300}
@@ -1193,12 +1283,16 @@ const QisView: React.FC = () => {
                           <Tooltip contentStyle={{ fontSize: 11 }} />
                           <Legend wrapperStyle={{ fontSize: 10 }} />
                           <Line type="monotone" dataKey="spread_pts" name="garch_z" stroke={CHART.spread} dot={false} strokeWidth={1.5} />
-                          {activeSignal === 'regime' ? (
+                          {isRegimeSignalMode(activeSignal) ? (
                             <>
                               <Line type="monotone" dataKey="q90" name="shk q90 (ext)" stroke={CHART.shockExt} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
                               <Line type="monotone" dataKey="q10" name="shk q10 (ext)" stroke={CHART.shockExt} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                              <Line type="monotone" dataKey="q80" name="shk q80 (calm)" stroke={CHART.shockCalm} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
-                              <Line type="monotone" dataKey="q20" name="shk q20 (calm)" stroke={CHART.shockCalm} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                              {regimeShowFade && (
+                                <>
+                                  <Line type="monotone" dataKey="q80" name="shk q80 (calm)" stroke={CHART.shockCalm} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                                  <Line type="monotone" dataKey="q20" name="shk q20 (calm)" stroke={CHART.shockCalm} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                                </>
+                              )}
                             </>
                           ) : (
                             <>
@@ -1216,11 +1310,11 @@ const QisView: React.FC = () => {
                     )}
                   </ChartZoomFrame>
                   <p className="text-[9px] text-slate-400 mt-1">
-                    {activeSignal === 'regime'
+                    {isRegimeSignalMode(activeSignal)
                       ? '黄线：garch_z。紫虚线：冲击极端 shk q10/q90（Mom 加速入场 / Mom 不利冲击出场 / Fade crisis）。青虚线：冷静带 shk q20/q80（Fade 双日冷静入场）。分位 = 过去 W 日、shift(1)，与 FSM 决策同一套。'
                       : `黄线：garch_z。紫/灰虚线：对 garch_z 的滚动分位带（${enterPct} 入场 · ${exitPct} 出场口径）。`}
                     {' '}散点为实际成交：Long 红 · Short 绿 · 平仓蓝
-                    {activeSignal === 'regime' ? '（标在成交日 garch_z 水平）。' : '。'}
+                    {isRegimeSignalMode(activeSignal) ? '（标在成交日 garch_z 水平）。' : '。'}
                   </p>
                 </div>
               )}
@@ -1228,7 +1322,7 @@ const QisView: React.FC = () => {
               {showSpreadBandChart && spreadChartData.length > 0 && (
                 <div className="bg-white rounded-lg border border-slate-200 p-4">
                   <h3 className="font-bold text-[#000066] text-sm mb-3">
-                    {activeSignal === 'regime'
+                    {isRegimeSignalMode(activeSignal)
                       ? `${tenorLabel} Spread & Decision Level Bands`
                       : activeSignal === 'garch_z'
                         ? `${tenorLabel} CT-IV Spread`
@@ -1237,8 +1331,8 @@ const QisView: React.FC = () => {
                   <ChartZoomFrame
                     data={spreadChartData}
                     yKeys={
-                      activeSignal === 'regime'
-                        ? ['spread_pts', 'q08', 'q10', 'q25', 'q40', 'q60', 'q75', 'q90', 'q92']
+                      isRegimeSignalMode(activeSignal)
+                        ? [...regimeLevelYKeys]
                         : activeSignal === 'garch_z'
                           ? ['spread_pts']
                           : ['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']
@@ -1266,16 +1360,24 @@ const QisView: React.FC = () => {
                             dot={false}
                             strokeWidth={1.5}
                           />
-                          {activeSignal === 'regime' ? (
+                          {isRegimeSignalMode(activeSignal) ? (
                             <>
-                              <Line type="monotone" dataKey="q90" name="lvl q90 (Fade)" stroke={CHART.fadeExt} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                              <Line type="monotone" dataKey="q10" name="lvl q10 (Fade)" stroke={CHART.fadeExt} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                              <Line type="monotone" dataKey="q92" name="lvl q92 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="3 3" connectNulls />
-                              <Line type="monotone" dataKey="q08" name="lvl q08 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="3 3" connectNulls />
-                              <Line type="monotone" dataKey="q75" name="lvl q75 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="2 3" connectNulls />
-                              <Line type="monotone" dataKey="q25" name="lvl q25 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="2 3" connectNulls />
-                              <Line type="monotone" dataKey="q60" name="lvl q60 (mean/Mom exh)" stroke={CHART.meanRev} dot={false} strokeWidth={1} strokeDasharray="1 3" connectNulls />
-                              <Line type="monotone" dataKey="q40" name="lvl q40 (mean/Mom exh)" stroke={CHART.meanRev} dot={false} strokeWidth={1} strokeDasharray="1 3" connectNulls />
+                              {regimeShowFade && (
+                                <>
+                                  <Line type="monotone" dataKey="q90" name="lvl q90 (Fade)" stroke={CHART.fadeExt} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                                  <Line type="monotone" dataKey="q10" name="lvl q10 (Fade)" stroke={CHART.fadeExt} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
+                                </>
+                              )}
+                              {regimeShowMom && (
+                                <>
+                                  <Line type="monotone" dataKey="q92" name="lvl q92 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="3 3" connectNulls />
+                                  <Line type="monotone" dataKey="q08" name="lvl q08 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="3 3" connectNulls />
+                                  <Line type="monotone" dataKey="q75" name="lvl q75 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="2 3" connectNulls />
+                                  <Line type="monotone" dataKey="q25" name="lvl q25 (Mom)" stroke={CHART.accel} dot={false} strokeWidth={1} strokeDasharray="2 3" connectNulls />
+                                </>
+                              )}
+                              <Line type="monotone" dataKey="q60" name="lvl q60 (mean)" stroke={CHART.meanRev} dot={false} strokeWidth={1} strokeDasharray="1 3" connectNulls />
+                              <Line type="monotone" dataKey="q40" name="lvl q40 (mean)" stroke={CHART.meanRev} dot={false} strokeWidth={1} strokeDasharray="1 3" connectNulls />
                             </>
                           ) : activeSignal === 'quantile' ? (
                             <>
@@ -1293,7 +1395,7 @@ const QisView: React.FC = () => {
                     )}
                   </ChartZoomFrame>
                   <p className="text-[9px] text-slate-400 mt-1">
-                    {activeSignal === 'regime'
+                    {isRegimeSignalMode(activeSignal)
                       ? '黄线：CT-IV Spread。仅叠 FSM 决策用水平分位——紫：Fade 极端 lvl q10/q90；青：Momentum 加速区 lvl q08/q25/q75/q92；褐：均值带 [q40,q60]（Fade 出场 + Mom 衰竭）。分位与决策同一套（过去 W 日、shift(1)）。散点：Long 红 · Short 绿 · 平仓蓝。'
                       : activeSignal === 'garch_z'
                         ? '黄线：CT-IV Spread（vol pts）。本图不叠分位带——开平仓由上方 GARCH-z 决策分位决定。散点标在成交日 Spread 水平。'

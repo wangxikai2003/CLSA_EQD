@@ -105,3 +105,31 @@ def test_cooldown():
     dec = decide_regime_signal(st, S_t=0.8, z_t=1.5, level_q=level, shock_q=shock)
     assert dec.signal == 0 and dec.cooldown == 1
     assert dec.reason == "cooldown"
+
+
+def test_book_momentum_only_blocks_fade_entry():
+    level, shock = _bands()
+    st = RegimeState()
+    # Would be fade short under both, but momentum-only → flat
+    dec = decide_regime_signal(
+        st, S_t=1.5, z_t=0.5, level_q=level, shock_q=shock, z_prev=0.5, book="momentum"
+    )
+    assert dec.signal == 0 and dec.reason == "flat"
+    # Mom breakout still works
+    dec2 = decide_regime_signal(
+        st, S_t=0.8, z_t=1.5, level_q=level, shock_q=shock, book="momentum"
+    )
+    assert dec2.signal == -1 and dec2.regime_mode == "momentum"
+
+
+def test_book_fade_only_blocks_momentum_entry():
+    level, shock = _bands()
+    st = RegimeState()
+    dec = decide_regime_signal(
+        st, S_t=0.8, z_t=1.5, level_q=level, shock_q=shock, book="fade"
+    )
+    assert dec.signal == 0 and dec.reason == "flat"
+    dec2 = decide_regime_signal(
+        st, S_t=1.5, z_t=0.5, level_q=level, shock_q=shock, z_prev=0.5, book="fade"
+    )
+    assert dec2.signal == 1 and dec2.regime_mode == "fade"

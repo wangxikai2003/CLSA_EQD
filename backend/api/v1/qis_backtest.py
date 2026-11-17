@@ -340,7 +340,7 @@ def list_strategies():
             "blurb": (
                 f"{u['index_name']} Calendar Vol ATM CT-IV; tenor 3M−6M | 1M−3M; "
                 f"side both | long_only | short_only; spread iv | iv2; "
-                f"signal quantile | garch_z | regime; "
+                f"signal quantile | garch_z | regime | regime_momentum | regime_fade; "
                 f"t−1 signal / t close; {u['product']} straddles + {u['fut_root']} hedge"
             ),
             "family": "calendar_vol",
@@ -394,7 +394,7 @@ def backtest(
     ),
     signal_mode: str = Query(
         "quantile",
-        description="Signal: quantile | garch_z | regime",
+        description="Signal: quantile | garch_z | regime | regime_momentum | regime_fade",
     ),
 ):
     db = st._equity_db()
@@ -574,7 +574,7 @@ def download_holdings(
     ),
     signal_mode: str = Query(
         "quantile",
-        description="Signal: quantile | garch_z | regime",
+        description="Signal: quantile | garch_z | regime | regime_momentum | regime_fade",
     ),
     persist: bool = Query(
         True,

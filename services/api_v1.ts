@@ -429,7 +429,19 @@ export interface QisDailyGreeks {
 export type QisTenorPair = '3M-6M' | '1M-3M';
 export type QisSideMode = 'both' | 'long_only' | 'short_only';
 export type QisSpreadMode = 'iv' | 'iv2';
-export type QisSignalMode = 'quantile' | 'garch_z' | 'regime';
+export type QisSignalMode =
+  | 'quantile'
+  | 'garch_z'
+  | 'regime'
+  | 'regime_momentum'
+  | 'regime_fade';
+
+/** True for any Regime v2 book (both / momentum-only / fade-only). */
+export function isRegimeSignalMode(mode: string | null | undefined): boolean {
+  return (
+    mode === 'regime' || mode === 'regime_momentum' || mode === 'regime_fade'
+  );
+}
 
 export interface QisTradeMarker {
   d: string;

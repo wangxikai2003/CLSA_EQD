@@ -81,9 +81,11 @@ DEFAULT_SPREAD_MODE = "iv"
 # Signal operator on the chosen spread series.
 # quantile = rolling 10/90 enter & 40/60 exit on raw Spread;
 # garch_z = expanding GARCH(1,1)-t on ΔSpread → z, then same rolling quantiles on z;
-# regime = Fade / Momentum regime switch (v2) with cooldown.
-SIGNAL_MODES = ("quantile", "garch_z", "regime")
+# regime* = Fade / Momentum regime switch (v2) with cooldown;
+#   regime = both books; regime_momentum / regime_fade = single book.
+SIGNAL_MODES = ("quantile", "garch_z", "regime", "regime_momentum", "regime_fade")
 DEFAULT_SIGNAL_MODE = "quantile"
+REGIME_SIGNAL_MODES = ("regime", "regime_momentum", "regime_fade")
 BUDGET_FADE = 0.01
 BUDGET_MOMENTUM = 0.008
 
@@ -196,11 +198,38 @@ def normalize_signal_mode(signal_mode: str) -> str:
         "v2": "regime",
         "regime_v1": "regime",
         "v1": "regime",
+        "regime_both": "regime",
+        "mom": "regime_momentum",
+        "momentum": "regime_momentum",
+        "momentum_only": "regime_momentum",
+        "regime_mom": "regime_momentum",
+        "fade": "regime_fade",
+        "fade_only": "regime_fade",
+        "mr": "regime_fade",
+        "mean_reversion": "regime_fade",
+        "mean_revert": "regime_fade",
+        "meanreversion": "regime_fade",
     }
     key = aliases.get(key, key)
     if key not in SIGNAL_MODES:
         raise ValueError(f"unknown signal_mode {signal_mode!r}; choose {list(SIGNAL_MODES)}")
     return key
+
+
+def is_regime_signal(signal_mode: str) -> bool:
+    return normalize_signal_mode(signal_mode) in REGIME_SIGNAL_MODES
+
+
+def regime_book_for_signal(signal_mode: str) -> str:
+    """Map regime* signal_mode → both | momentum | fade."""
+    mode = normalize_signal_mode(signal_mode)
+    if mode == "regime_momentum":
+        return "momentum"
+    if mode == "regime_fade":
+        return "fade"
+    if mode == "regime":
+        return "both"
+    raise ValueError(f"{signal_mode!r} is not a regime signal")
 
 
 def compute_spread(iv_near: float, iv_far: float, spread_mode: str = DEFAULT_SPREAD_MODE) -> float:
@@ -615,7 +644,7 @@ class CalendarVolBacktestEngine:
     def _budget_for_mode(
         self, regime_mode: Optional[str], trade_date: Optional[str] = None
     ) -> float:
-        if self.signal_mode != "regime":
+        if not is_regime_signal(self.signal_mode):
             return float(VEGA_BUDGET_FRAC)
         if regime_mode == "momentum":
             return float(self.budget_momentum)
@@ -855,7 +884,7 @@ class CalendarVolBacktestEngine:
                 exit_lo_q=self.exit_lo_q,
                 exit_hi_q=self.exit_hi_q,
             )
-        elif self.signal_mode == "regime":
+        elif is_regime_signal(self.signal_mode):
             from engine.garch_signal import GARCH_WARM, expanding_garch_z
             from engine.regime_signal import LEVEL_QS, SHOCK_QS, rolling_quantile_map
 
@@ -919,7 +948,7 @@ class CalendarVolBacktestEngine:
             bands,
             spread_bands,
         ]
-        if garch_z_series is not None and self.signal_mode == "regime":
+        if garch_z_series is not None and is_regime_signal(self.signal_mode):
             join_parts.append(garch_z_series.rename("garch_z"))
         if regime_level_bands is not None:
             join_parts.append(regime_level_bands)
@@ -964,7 +993,7 @@ class CalendarVolBacktestEngine:
             zv = ct.loc[d, "z"]
             zv = float(zv) if pd.notna(zv) else float("nan")
             gz_f = float("nan")
-            if self.signal_mode == "regime" and "garch_z" in ct.columns:
+            if is_regime_signal(self.signal_mode) and "garch_z" in ct.columns:
                 gz_raw = ct.loc[d, "garch_z"]
                 gz_f = float(gz_raw) if pd.notna(gz_raw) else float("nan")
             elif self.signal_mode == "garch_z":
@@ -1038,7 +1067,7 @@ class CalendarVolBacktestEngine:
                 "q90": _band("shk_q90"),
             }
             sig_f = float("nan")
-            if self.signal_mode == "regime" and self._garch_sigma is not None and d in self._garch_sigma.index:
+            if is_regime_signal(self.signal_mode) and self._garch_sigma is not None and d in self._garch_sigma.index:
                 _sv = self._garch_sigma.loc[d]
                 if pd.notna(_sv):
                     sig_f = float(_sv)
@@ -1150,7 +1179,7 @@ class CalendarVolBacktestEngine:
 
             # 3) Emit signal for next day from post-trade state + today's close.
             signal_reason = "quantile"
-            if self.signal_mode == "regime":
+            if is_regime_signal(self.signal_mode):
                 from engine.regime_signal import RegimeState, decide_regime_signal
 
                 need_lvl = (
@@ -1192,6 +1221,7 @@ class CalendarVolBacktestEngine:
                         {k: float(lvl_q[k]) for k in need_lvl},  # type: ignore[index]
                         {k: float(shk_q[k]) for k in need_shk},  # type: ignore[index]
                         z_prev=z_prev if math.isfinite(z_prev) else None,
+                        book=regime_book_for_signal(self.signal_mode),
                     )
                     raw_next = int(dec.signal)
                     signal_next = self._apply_side_mode(raw_next, target)
@@ -1647,7 +1677,9 @@ class CalendarVolBacktestEngine:
         signal_label = {
             "quantile": "rolling quantile",
             "garch_z": "GARCH-z + rolling quantile",
-            "regime": "Regime v2 Fade/Momentum",
+            "regime": "Regime v2 both (Fade+Mom)",
+            "regime_momentum": "Regime v2 Momentum only",
+            "regime_fade": "Regime v2 Mean-reversion only",
         }[self.signal_mode]
         spread_formula = (
             "IV_near² − IV_far²"
@@ -1664,10 +1696,16 @@ class CalendarVolBacktestEngine:
                 f"(bands from {_mp}d; enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
                 f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}; no look-ahead)"
             )
-        elif self.signal_mode == "regime":
+        elif is_regime_signal(self.signal_mode):
+            _book = regime_book_for_signal(self.signal_mode)
+            _book_note = {
+                "both": "books=both (Mom then Fade)",
+                "momentum": "books=momentum-only (Fade entries off)",
+                "fade": "books=fade-only / mean-reversion (Mom entries off)",
+            }[_book]
             signal_desc = (
-                f"regime on prior {self.z_window}d: Momentum in accel zone "
-                f"(q75–q92 / q08–q25) with garch_z beyond 90/10; "
+                f"regime ({_book_note}) on prior {self.z_window}d: "
+                f"Momentum in accel zone (q75–q92 / q08–q25) with garch_z beyond 90/10; "
                 f"mom exits: mean-band exhaust 40–60 after ≥2d hold, adverse z 10/90, "
                 f"space 1/99, max 12d; "
                 f"Fade outside 10/90 when z≤q80/≥q20 and z_prev≤q80/≥q20; "
@@ -1730,7 +1768,7 @@ class CalendarVolBacktestEngine:
                         f"momentum={self.budget_momentum*100:.1f}% NAV per vol-pt on {fl}; "
                         f"N_{nl}=-N_{fl}*ν{fl}/ν{nl}"
                     )
-                    if self.signal_mode == "regime"
+                    if is_regime_signal(self.signal_mode)
                     else (
                         f"dollar vega={VEGA_BUDGET_FRAC*100:.0f}% NAV per vol-pt on {fl}; "
                         f"N_{nl}=-N_{fl}*ν{fl}/ν{nl}"
@@ -1741,6 +1779,11 @@ class CalendarVolBacktestEngine:
                 "side_mode": self.side_mode,
                 "spread_mode": self.spread_mode,
                 "signal_mode": self.signal_mode,
+                "regime_book": (
+                    regime_book_for_signal(self.signal_mode)
+                    if is_regime_signal(self.signal_mode)
+                    else None
+                ),
                 "level_scale": self.level_scale,
                 "budget_fade": self.budget_fade,
                 "budget_momentum": self.budget_momentum,

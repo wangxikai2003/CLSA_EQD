@@ -244,12 +244,16 @@ def test_holdings_excel_export(tmp_path):
 
 def test_normalize_signal_mode_regime():
     assert "regime" in SIGNAL_MODES
+    assert "regime_momentum" in SIGNAL_MODES
+    assert "regime_fade" in SIGNAL_MODES
     assert normalize_signal_mode("regime") == "regime"
     assert normalize_signal_mode("fade_momentum") == "regime"
     assert normalize_signal_mode("rs") == "regime"
     assert normalize_signal_mode("regime_v1") == "regime"
     assert normalize_signal_mode("regime_v2") == "regime"
     assert normalize_signal_mode("v2") == "regime"
+    assert normalize_signal_mode("momentum_only") == "regime_momentum"
+    assert normalize_signal_mode("mean_reversion") == "regime_fade"
 
 
 def test_regime_signal_mode_smoke():
@@ -264,6 +268,7 @@ def test_regime_signal_mode_smoke():
         signal_mode="regime",
     )
     assert payload["params"]["signal_mode"] == "regime"
+    assert payload["params"].get("regime_book") == "both"
     assert payload["params"]["budget_fade"] == 0.01
     assert payload["params"]["budget_momentum"] == 0.008
     assert payload["params"]["first_open"] < payload["params"]["perf_start"]
@@ -294,6 +299,32 @@ def test_regime_signal_mode_smoke():
         assert k in sig and len(sig[k]) == len(sig["dates"]), k
         assert any(v is not None for v in sig[k]), k
     assert float(payload["summary"]["final_nav_multiple"]) > 0
+
+
+def test_regime_books_differ():
+    """Momentum-only / fade-only / both produce distinct paths."""
+    common = dict(
+        initial_nav=100_000_000.0,
+        z_window=252,
+        tenor_pair="3M-6M",
+        side_mode="both",
+        spread_mode="iv",
+    )
+    both = run_calendar_vol("300", signal_mode="regime", **common)
+    mom = run_calendar_vol("300", signal_mode="regime_momentum", **common)
+    fade = run_calendar_vol("300", signal_mode="regime_fade", **common)
+    assert both["params"]["regime_book"] == "both"
+    assert mom["params"]["regime_book"] == "momentum"
+    assert fade["params"]["regime_book"] == "fade"
+    modes_mom = {m for m in mom["signal"]["regime_mode"] if m}
+    modes_fade = {m for m in fade["signal"]["regime_mode"] if m}
+    assert modes_mom <= {"momentum"}
+    assert modes_fade <= {"fade"}
+    assert float(both["summary"]["final_nav_multiple"]) != float(
+        mom["summary"]["final_nav_multiple"]
+    ) or float(both["summary"]["final_nav_multiple"]) != float(
+        fade["summary"]["final_nav_multiple"]
+    )
 
 
 def test_regime_button_matrix_smoke():

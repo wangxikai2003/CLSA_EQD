@@ -27,7 +27,34 @@ MAX_HOLD_MOMENTUM = 12
 # Don't exhaust Mom on day-0/1 noise; require this many held days first.
 MIN_HOLD_MOMENTUM_EXHAUST = 2
 
+# Which entry books are armed: both | momentum | fade (mean-reversion).
+REGIME_BOOKS = ("both", "momentum", "fade")
+DEFAULT_REGIME_BOOK = "both"
+
 RegimeMode = Optional[str]  # None | "fade" | "momentum"
+RegimeBook = str  # both | momentum | fade
+
+
+def normalize_regime_book(book: str) -> str:
+    key = str(book).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "both": "both",
+        "all": "both",
+        "combo": "both",
+        "mom": "momentum",
+        "momentum_only": "momentum",
+        "momentum": "momentum",
+        "fade": "fade",
+        "fade_only": "fade",
+        "mr": "fade",
+        "mean_reversion": "fade",
+        "mean_revert": "fade",
+        "meanreversion": "fade",
+    }
+    key = aliases.get(key, key)
+    if key not in REGIME_BOOKS:
+        raise ValueError(f"unknown regime_book {book!r}; choose {list(REGIME_BOOKS)}")
+    return key
 
 
 @dataclass
@@ -96,11 +123,17 @@ def decide_regime_signal(
     level_q: Mapping[str, float],
     shock_q: Mapping[str, float],
     z_prev: Optional[float] = None,
+    book: str = DEFAULT_REGIME_BOOK,
 ) -> RegimeDecision:
     """Emit next-day target from post-trade state + today's close levels.
 
-    Priority when flat: Momentum (A) before Fade (B).
+    Priority when flat: Momentum (A) before Fade (B), gated by ``book``.
+    ``book=momentum`` / ``fade`` disable the other entry path; exits for an
+    already-open mode still apply.
     """
+    book_n = normalize_regime_book(book)
+    allow_mom = book_n in ("both", "momentum")
+    allow_fade = book_n in ("both", "fade")
     pos = int(state.position)
     hold = int(state.hold_days)
     mode = state.regime_mode
@@ -188,20 +221,22 @@ def decide_regime_signal(
             pos, "momentum" if mode == "momentum" else mode, 0, "momentum_hold", entry
         )
 
-    # ---- Flat: cooldown then Momentum then Fade ----
+    # ---- Flat: cooldown then Momentum then Fade (gated by book) ----
     if cd > 0:
         return RegimeDecision(0, None, cd - 1, "cooldown", None)
 
     # Mode A: Momentum
-    if q75_l < S <= q92_l and z > q90_s:
-        return RegimeDecision(-1, "momentum", 0, "momentum_long_breakout", S)
-    if q08_l <= S < q25_l and z < q10_s:
-        return RegimeDecision(1, "momentum", 0, "momentum_short_breakout", S)
+    if allow_mom:
+        if q75_l < S <= q92_l and z > q90_s:
+            return RegimeDecision(-1, "momentum", 0, "momentum_long_breakout", S)
+        if q08_l <= S < q25_l and z < q10_s:
+            return RegimeDecision(1, "momentum", 0, "momentum_short_breakout", S)
 
     # Mode B: Fade — level extreme + dual-day shock calm (no fighting breakouts)
-    if S > q90_l and z <= q80_s and _finite(zp) and zp <= q80_s:
-        return RegimeDecision(1, "fade", 0, "fade_short_resistance", S)
-    if S < q10_l and z >= q20_s and _finite(zp) and zp >= q20_s:
-        return RegimeDecision(-1, "fade", 0, "fade_long_support", S)
+    if allow_fade:
+        if S > q90_l and z <= q80_s and _finite(zp) and zp <= q80_s:
+            return RegimeDecision(1, "fade", 0, "fade_short_resistance", S)
+        if S < q10_l and z >= q20_s and _finite(zp) and zp >= q20_s:
+            return RegimeDecision(-1, "fade", 0, "fade_long_support", S)
 
     return RegimeDecision(0, None, 0, "flat", None)
