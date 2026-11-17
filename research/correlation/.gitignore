@@ -4,6 +4,10 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
-# full panels stay local; keep small reports if force-added
-data/*.parquet
+# full panels stay local; keep small reports / NDX surface pilot
 data/*_panel.*
+data/spx_iv_*.parquet
+data/spx_weights*.parquet
+data/spx_top50*.parquet
+data/spx_spdr*.parquet
+data/cmds_*.parquet
