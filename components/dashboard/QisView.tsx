@@ -1421,7 +1421,7 @@ const QisView: React.FC = () => {
                               )}
                               <Line type="monotone" dataKey="q50" name="lvl q50 (mean)" stroke={CHART.meanRev} dot={false} strokeWidth={1.25} strokeDasharray="1 3" connectNulls />
                             </>
-                          ) : activeSignal === 'quantile' ? (
+                          ) : activeSignal === 'quantile' || isRegime2SignalMode(activeSignal) ? (
                             <>
                               <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
                               <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
@@ -1441,7 +1441,9 @@ const QisView: React.FC = () => {
                       ? '黄线：CT-IV Spread。紫：共享极端/外沿 lvl q10/q90；青：Momentum 内沿 lvl q25/q75；褐：均值 lvl q50（Fade 出场 + Mom 衰竭）。分位与决策同一套（过去 W 日、shift(1)）。散点：Long 红 · Short 绿 · 平仓蓝。'
                       : activeSignal === 'garch_z'
                         ? '黄线：CT-IV Spread（vol pts）。本图不叠分位带——开平仓由上方 GARCH-z 决策分位决定。散点标在成交日 Spread 水平。'
-                        : `黄线：CT-IV Spread（vol pts）。紫虚线：入场分位 ${enterPct}；灰虚线：出场带 ${exitPct}%。散点：Long 红 · Short 绿 · 平仓蓝。分位仅用过去 ${data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。`}
+                        : isRegime2SignalMode(activeSignal)
+                          ? `黄线：CT-IV Spread（vol pts）。紫虚线：入场分位 ${enterPct}；灰虚线：出场带 ${exitPct}%（与 Quantile 相同）。上方 GARCH-z 图为压力门。散点：Long 红 · Short 绿 · 平仓蓝。`
+                          : `黄线：CT-IV Spread（vol pts）。紫虚线：入场分位 ${enterPct}；灰虚线：出场带 ${exitPct}%。散点：Long 红 · Short 绿 · 平仓蓝。分位仅用过去 ${data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。`}
                   </p>
                 </div>
               )}
