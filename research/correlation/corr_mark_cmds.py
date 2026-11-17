@@ -33,16 +33,21 @@ DEFAULT_PANEL = ROOT / "data" / "corr_mark_cmds_panel.parquet"
 
 
 def build_price_wide(panel: pd.DataFrame, symbols: list[str], field: str) -> pd.DataFrame:
-    """field: close|open — prefers adj_* then raw."""
-    use = "adj_close" if field == "close" else "adj_open"
-    fallback = "close" if field == "close" else "open"
-    cols = [c for c in (use, fallback) if c in panel.columns]
-    if not cols:
-        raise ValueError(f"panel missing {use}/{fallback}")
+    """field: close|open — prefers adj_* then raw.
+
+    For open: adj_open → open → adj_close → close (HSTECH partial OPEN falls back to CLOSE).
+    """
     sub = panel[panel["symbol"].isin(symbols)].copy()
-    sub["_px"] = sub[cols[0]]
-    if len(cols) > 1:
-        sub["_px"] = sub["_px"].where(sub["_px"].notna(), sub[cols[1]])
+    if field == "close":
+        cascade = ["adj_close", "close"]
+    else:
+        cascade = ["adj_open", "open", "adj_close", "close"]
+    cascade = [c for c in cascade if c in sub.columns]
+    if not cascade:
+        raise ValueError(f"panel missing price columns for field={field}")
+    sub["_px"] = sub[cascade[0]]
+    for c in cascade[1:]:
+        sub["_px"] = sub["_px"].where(sub["_px"].notna(), sub[c])
     wide = (
         sub.pivot_table(index="trade_date", columns="symbol", values="_px", aggfunc="last")
         .sort_index()

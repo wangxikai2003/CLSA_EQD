@@ -59,3 +59,11 @@ python corr_mark_cmds.py --mode EQ.EQ --rules
 1. 若有 Pulse `CORRELATION_MATRIX` / Beidou `t_config_eq` dump → 扩写 `corr_mark_universe.csv` 对齐生产轴
 2. 全成份日频全样本 + Web API（NDX/SPX 研究链路）
 3. BBG COR* / 官方 IV 字段对照；更长历史期权价
+
+## Web 上线（Realized Corr）
+
+一键数据：`python build_web_realized_data.py --skip-cmds-fetch`  
+产出在 `CLSA_EQD/data/`：`corr_web_matrices.json`、`corr_realized_timeseries.parquet`、`corr_mark_cmds_panel.parquet`。
+
+后端：`GET/POST /api/v1/correlation/*`（universe / pairwise / matrix / spreads）  
+前端：Market Data → **Corr**；Spread → **Corr** 子 Tab。

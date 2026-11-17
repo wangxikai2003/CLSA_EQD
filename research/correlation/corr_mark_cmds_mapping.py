@@ -27,9 +27,15 @@ BEIDOU_TO_CALYPSO = {
 FORCE_PROXY = {
     "3750.HK": ("300750 C2", "HKDCNH", "HKD"),
     "CRCL.US": ("COIN US", None, "USD"),
-    "688795.CH": ("688256 C1", None, "CNY"),  # source says CH; CMDS uses C1
+    # Prefer CG (Wind-style); C1 kept as fallback candidate in fetch
+    "688795.CH": ("688256 CG", None, "CNY"),
     "SKHY.US": ("MU US", None, "USD"),
     "3308.HK": ("300308 C2", "HKDCNH", "HKD"),
+}
+
+# Extra BB_TICKER candidates when primary FORCE_PROXY miss (order = preference)
+FORCE_PROXY_BB_FALLBACKS = {
+    "688795.CH": ["688256 CG", "688256 C1", "688256 CH"],
 }
 
 # ADR ↔ HK proxy (region-dependent in source; store both legs)

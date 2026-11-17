@@ -6,6 +6,7 @@ import {
 import { fetchSynthTenors, SynthTenorsResponse } from '../../services/api_v1';
 import { SplitSquareHorizontal } from 'lucide-react';
 import VolSpreadPanel from './VolSpreadPanel';
+import CorrelationSpreadPanel from './CorrelationSpreadPanel';
 
 const COLORS = ['#000066', '#EAB308', '#E20000', '#16a34a', '#7c3aed', '#0891b2'];
 const FUT_TENORS = ['3M', '6M', '9M', '18M'] as const;
@@ -182,7 +183,7 @@ const SpreadView: React.FC = () => {
   const [loadStatus, setLoadStatus] = useState('加载合成期限…');
   const [assetFilter, setAssetFilter] = useState<'all' | 'equity' | 'commodity'>('all');
   const [volAssetFilter, setVolAssetFilter] = useState<'all' | 'equity' | 'commodity'>('equity');
-  const [spreadMode, setSpreadMode] = useState<'price' | 'vol'>('price');
+  const [spreadMode, setSpreadMode] = useState<'price' | 'vol' | 'corr'>('price');
 
   const [levelProducts, setLevelProducts] = useState<string[]>(['IM', 'IF']);
   const [levelKinds, setLevelKinds] = useState<LegKind[]>(['SPOT', '3M', '6M']);
@@ -328,6 +329,7 @@ const SpreadView: React.FC = () => {
             {([
               ['price', 'Price'],
               ['vol', 'Vol'],
+              ['corr', 'Corr'],
             ] as const).map(([id, lab]) => (
               <button
                 key={id}
@@ -340,6 +342,7 @@ const SpreadView: React.FC = () => {
               </button>
             ))}
           </div>
+          {spreadMode !== 'corr' && (
           <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
             {([
               ['all', 'All'],
@@ -362,6 +365,7 @@ const SpreadView: React.FC = () => {
               </button>
             ))}
           </div>
+          )}
         </div>
       </div>
 
@@ -391,6 +395,15 @@ const SpreadView: React.FC = () => {
             Spread1/2 与 SoS 同价格面板（左−右；SoS=S1−S2），图上为波动率 %。
           </p>
           <VolSpreadPanel assetClass={volAssetFilter} />
+        </div>
+      )}
+
+      {spreadMode === 'corr' && (
+        <div className="space-y-4">
+          <p className="text-[11px] text-slate-500">
+            Correlation：期限结构价差（长窗−短窗 Realized）与跨资产对相对价差；CRP（Implied vs Realized）预留。
+          </p>
+          <CorrelationSpreadPanel />
         </div>
       )}
 

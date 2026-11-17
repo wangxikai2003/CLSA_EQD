@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import YieldCurveView from './YieldCurveView';
 import VolAnalyticsView from './VolAnalyticsView';
 import OptionTQuoteBoard, { StrikePickPayload } from './OptionTQuoteBoard';
+import MarketDataCorrPanel from './MarketDataCorrPanel';
 import { ProductCode } from '../../services/api';
 
 interface Props {
@@ -12,14 +13,14 @@ interface Props {
 }
 
 const DashboardLayout: React.FC<Props> = ({ product, tradeDate, onProductChange, onStrikePick }) => {
-  const [sub, setSub] = useState<'yield' | 'vol' | 'tquote'>('vol');
+  const [sub, setSub] = useState<'yield' | 'vol' | 'tquote' | 'corr'>('vol');
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-bold text-[#000066]">Market Data</h2>
-          <p className="text-[11px] text-slate-500">Yield · JW-SVI Skew/Surface · Vol Cone · T-Quote</p>
+          <p className="text-[11px] text-slate-500">Yield · JW-SVI Skew/Surface · Vol Cone · T-Quote · Corr</p>
         </div>
         <div className="flex items-center gap-2">
           <div className="flex gap-1">
@@ -44,6 +45,7 @@ const DashboardLayout: React.FC<Props> = ({ product, tradeDate, onProductChange,
           ['yield', 'Yield Curve'],
           ['vol', 'Vol Analytics'],
           ['tquote', 'T-Quote'],
+          ['corr', 'Corr'],
         ] as const).map(([id, label]) => (
           <button
             key={id}
@@ -67,6 +69,7 @@ const DashboardLayout: React.FC<Props> = ({ product, tradeDate, onProductChange,
             onStrikePick={onStrikePick}
           />
         )}
+        {sub === 'corr' && <MarketDataCorrPanel />}
       </div>
     </div>
   );

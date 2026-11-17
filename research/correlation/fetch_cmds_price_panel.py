@@ -348,16 +348,20 @@ def fetch_corr_mark_universe_panel(universe_csv: str | Path, start: str, end: st
         parts = bb.split()
         if len(parts) >= 2:
             bb_to_symbol[bb] = f"{parts[0]}.{parts[1]}"
+    from corr_mark_cmds_mapping import FORCE_PROXY_BB_FALLBACKS
+
     for _src, (bb, _fx, _ccy) in FORCE_PROXY.items():
-        extra_bb.append(bb)
-        parts = bb.split()
-        if len(parts) >= 2:
-            # 300750 C2 → 300750.CH; COIN US → COIN.US; 688256 C1 → 688256.CH
-            suf = parts[1]
-            if suf in ("C1", "C2", "CH", "CG"):
-                bb_to_symbol[bb] = f"{parts[0]}.CH"
-            else:
-                bb_to_symbol[bb] = f"{parts[0]}.{suf}"
+        bbs = [bb] + list(FORCE_PROXY_BB_FALLBACKS.get(_src, []))
+        for bb_one in bbs:
+            extra_bb.append(bb_one)
+            parts = bb_one.split()
+            if len(parts) >= 2:
+                # 300750 C2 → 300750.CH; COIN US → COIN.US; 688256 CG/C1 → 688256.CH
+                suf = parts[1]
+                if suf in ("C1", "C2", "CH", "CG"):
+                    bb_to_symbol[bb_one] = f"{parts[0]}.CH"
+                else:
+                    bb_to_symbol[bb_one] = f"{parts[0]}.{suf}"
 
     sec_map = _resolve_bb_sec_ids(sorted(set(extra_bb)))
     for _, r in sec_map.iterrows():
