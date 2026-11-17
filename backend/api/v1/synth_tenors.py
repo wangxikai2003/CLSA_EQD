@@ -5,6 +5,8 @@ Bloomberg yellow-key generics (e.g. IHc1 Index, CUc1 Comdty) are exposed as `bbg
 """
 from __future__ import annotations
 
+import gzip
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -16,6 +18,12 @@ router = APIRouter(tags=["market"])
 
 ROOT = Path(__file__).resolve().parents[3]  # CLSA_EQD
 REPO = ROOT.parent
+# Keep recent history only — full tape makes cold /synth-tenors >20s on 1 vCPU.
+_HISTORY_YEARS = 5
+_DISK_CACHE_CANDIDATES = [
+    ROOT / "data" / "synth_tenors_cache.json.gz",
+    Path("/app/data/synth_tenors_cache.json.gz"),
+]
 
 _MONTH = 365.25 / 12.0
 _SYNTH_TENORS = {
@@ -240,18 +248,23 @@ def _month_end(ym: str) -> pd.Timestamp:
     return days[days.month == m][-1]
 
 
-def _lerp_settle(curve: List[tuple], target: float) -> Optional[Dict[str, Any]]:
+def _lerp_price(curve: List[tuple], target: float) -> Optional[Dict[str, Any]]:
+    """Linear combo of two listed contracts to a constant-maturity target DTM.
+
+    Curve points are (dtm, price, wind_code) with price = futures close (not settle).
+    Response key remains `settle` for API backward compatibility (= interpolated close).
+    """
     if len(curve) < 2:
         return None
 
     def _pair(t0, s0, c0, t1, s1, c1, extrapolated: bool):
         if t1 == t0:
-            settle, w0 = float(s0), 1.0
+            px, w0 = float(s0), 1.0
         else:
             w0 = (t1 - target) / (t1 - t0)
-            settle = w0 * float(s0) + (1.0 - w0) * float(s1)
+            px = w0 * float(s0) + (1.0 - w0) * float(s1)
         return {
-            "settle": settle,
+            "settle": px,  # legacy key; value is close-based
             "leg0_code": c0,
             "leg1_code": c1,
             "leg0_dtm": float(t0),
@@ -295,11 +308,11 @@ def _synth_from_futures(fut: pd.DataFrame, db_keys: Set[str], expiry_fn) -> Dict
         for td, day in g.groupby("trade_date"):
             by_t: Dict[float, tuple] = {}
             for r in day.itertuples():
-                by_t[float(r.dtm)] = (float(r.dtm), float(r.settle), str(r.wind_code))
+                by_t[float(r.dtm)] = (float(r.dtm), float(r.close), str(r.wind_code))
             curve = sorted(by_t.values(), key=lambda x: x[0])
             dstr = pd.Timestamp(td).strftime("%Y-%m-%d")
             for tlabel, tdays in _SYNTH_TENORS.items():
-                hit = _lerp_settle(curve, float(tdays))
+                hit = _lerp_price(curve, float(tdays))
                 if not hit:
                     continue
                 levels[pub][tlabel].append(
@@ -359,23 +372,37 @@ def _product_meta(u: Dict[str, Any], has_spot: bool) -> Dict[str, Any]:
     }
 
 
+def _history_cutoff() -> str:
+    return (pd.Timestamp.today() - pd.DateOffset(years=_HISTORY_YEARS)).strftime("%Y-%m-%d")
+
+
+def _read_futures(conn: sqlite3.Connection, cutoff: str) -> pd.DataFrame:
+    # Close-only constant-maturity curve (no settle fallback).
+    return pd.read_sql(
+        "SELECT product, trade_date, wind_code, contract_ym, close "
+        "FROM futures_eod "
+        "WHERE trade_date >= ? AND close IS NOT NULL AND close > 0",
+        conn,
+        params=[cutoff],
+    )
+
+
 def build_payload() -> Dict[str, Any]:
     tenor_keys = list(_SYNTH_TENORS.keys())
     levels: Dict[str, Dict[str, List]] = {}
     products_out: List[Dict[str, Any]] = []
+    cutoff = _history_cutoff()
 
     conn = sqlite3.connect(_equity_db())
-    eq = pd.read_sql(
-        "SELECT product, trade_date, wind_code, contract_ym, settle FROM futures_eod",
-        conn,
-    )
+    eq = _read_futures(conn, cutoff)
     conn.close()
     for p, tens in _synth_from_futures(eq, _EQUITY_DB_KEYS, _third_friday).items():
         levels[p] = tens
 
     for p, pts in _load_spot_levels().items():
+        # trim spot to same window
         levels.setdefault(p, {t: [] for t in tenor_keys})
-        levels[p]["SPOT"] = pts
+        levels[p]["SPOT"] = [row for row in pts if row["d"] >= cutoff]
 
     for u in _UNIVERSE:
         if u["asset_class"] != "equity" or u["product"] not in levels:
@@ -388,10 +415,7 @@ def build_payload() -> Dict[str, Any]:
     if cdb is not None:
         try:
             conn = sqlite3.connect(f"file:{cdb}?mode=ro", uri=True)
-            cm = pd.read_sql(
-                "SELECT product, trade_date, wind_code, contract_ym, settle FROM futures_eod",
-                conn,
-            )
+            cm = _read_futures(conn, cutoff)
             conn.close()
             for p, tens in _synth_from_futures(cm, _COMMODITY_DB_KEYS, _month_end).items():
                 if not any(tens[t] for t in tenor_keys):
@@ -414,20 +438,45 @@ def build_payload() -> Dict[str, Any]:
         "levels": levels,
         "commodity_enabled": commodity_enabled,
         "commodity_db": commodity_db_path,
+        "history_years": _HISTORY_YEARS,
+        "history_from": cutoff,
         "code_convention": "product=Wind futures root (IH not HO); bbg=Bloomberg generic; legs=full Wind codes",
         "spot_source": "WIND.AINDEXEODPRICES → data/index_spot.parquet (equity); commodity cash TBD",
         "method": (
-            "Futures DTM linear combo → 3M/6M/9M/18M. Equity expiry≈3rd Friday; "
-            "commodity≈month-end. SPOT=equity index close for 期现. Extrapolate ≤120d."
+            "Futures CLOSE DTM linear combo → 3M/6M/9M/18M (no settle). Equity expiry≈3rd Friday; "
+            f"commodity≈month-end. SPOT=equity index close for 期现. Last {_HISTORY_YEARS}y. Extrapolate ≤120d."
         ),
+        "price_field": "close",
     }
 
 
-@router.get("/synth-tenors")
-def synth_tenors(
-    refresh: bool = Query(False),
-    asset_class: str = Query("all", description="all|equity|commodity"),
-):
+def _disk_cache_path() -> Optional[Path]:
+    for p in _DISK_CACHE_CANDIDATES:
+        if p.exists():
+            return p
+    return None
+
+
+def _try_load_disk_cache() -> Optional[Dict[str, Any]]:
+    path = _disk_cache_path()
+    if path is None:
+        return None
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def write_disk_cache(payload: Dict[str, Any], path: Optional[Path] = None) -> Path:
+    out = path or (ROOT / "data" / "synth_tenors_cache.json.gz")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(out, "wt", encoding="utf-8") as f:
+        json.dump(payload, f, separators=(",", ":"))
+    return out
+
+
+def get_cached_payload(refresh: bool = False) -> Dict[str, Any]:
     db = _equity_db()
     spot = next((p for p in _SPOT_CANDIDATES if p.exists()), None)
     cdb = _commodity_db()
@@ -435,16 +484,41 @@ def synth_tenors(
         db.stat().st_mtime,
         spot.stat().st_mtime if spot else None,
         cdb.stat().st_mtime if cdb else None,
+        _HISTORY_YEARS,
     )
     if not refresh and _cache["payload"] is not None and _cache["key"] == key:
-        payload = _cache["payload"]
-    else:
-        payload = build_payload()
-        payload["coverage"] = {
-            p: {t: len(v) for t, v in tens.items()} for p, tens in payload["levels"].items()
-        }
-        _cache["key"] = key
-        _cache["payload"] = payload
+        return _cache["payload"]
+
+    if not refresh:
+        disk = _try_load_disk_cache()
+        if disk is not None:
+            disk.setdefault(
+                "coverage",
+                {p: {t: len(v) for t, v in tens.items()} for p, tens in disk.get("levels", {}).items()},
+            )
+            _cache["key"] = key
+            _cache["payload"] = disk
+            return disk
+
+    payload = build_payload()
+    payload["coverage"] = {
+        p: {t: len(v) for t, v in tens.items()} for p, tens in payload["levels"].items()
+    }
+    _cache["key"] = key
+    _cache["payload"] = payload
+    try:
+        write_disk_cache(payload)
+    except Exception:
+        pass
+    return payload
+
+
+@router.get("/synth-tenors")
+def synth_tenors(
+    refresh: bool = Query(False),
+    asset_class: str = Query("all", description="all|equity|commodity"),
+):
+    payload = get_cached_payload(refresh=refresh)
 
     if asset_class in ("equity", "commodity"):
         keep = {u["product"] for u in payload["products"] if u["asset_class"] == asset_class}
@@ -452,6 +526,6 @@ def synth_tenors(
             **payload,
             "products": [u for u in payload["products"] if u["product"] in keep],
             "levels": {p: payload["levels"][p] for p in keep if p in payload["levels"]},
-            "coverage": {p: payload["coverage"].get(p, {}) for p in keep},
+            "coverage": {p: payload.get("coverage", {}).get(p, {}) for p in keep},
         }
     return payload
