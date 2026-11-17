@@ -545,7 +545,9 @@ const QisView: React.FC = () => {
   const tenorLabel = CAL_VOL_TENORS.find((t) => t.key === activeTenor)?.label ?? activeTenor;
   const sideLabel = CAL_VOL_SIDES.find((s) => s.key === activeSide)?.label ?? activeSide;
   const spreadLabel = CAL_VOL_SPREADS.find((s) => s.key === activeSpread)?.label ?? activeSpread;
-  const signalLabel = CAL_VOL_SIGNALS.find((s) => s.key === activeSignal)?.label ?? activeSignal;
+  const signalLabel = isRegimeSignalMode(activeSignal)
+    ? `Regime · ${CAL_VOL_REGIME_BOOKS.find((b) => b.key === activeSignal)?.label ?? activeSignal}`
+    : CAL_VOL_SIGNAL_FAMILIES.find((s) => s.key === activeSignal)?.label ?? activeSignal;
   const sosLabel = isCalVol
     ? activeSignal === 'garch_z'
       ? `${tenorLabel} GARCH-z`
