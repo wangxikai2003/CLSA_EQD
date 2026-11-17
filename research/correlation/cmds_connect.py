@@ -11,10 +11,15 @@ from pathlib import Path
 import jaydebeapi
 import pandas as pd
 
-DEFAULT_DSN_HOST = os.environ.get("CMDS_HOST", "10.23.129.18")
-DEFAULT_DSN_PORT = int(os.environ.get("CMDS_PORT", "21010"))
+DEFAULT_DSN_HOST = os.environ.get("CMDS_HOST", "")
+DEFAULT_DSN_PORT = int(os.environ.get("CMDS_PORT", "0") or "0")
 DEFAULT_SERVICE = os.environ.get("CMDS_SERVICE", "cmds")
-DEFAULT_JAR = Path(__file__).resolve().parent / "lib" / "ojdbc8.jar"
+DEFAULT_JAR = Path(
+    os.environ.get(
+        "CMDS_OJDBC_JAR",
+        str(Path(__file__).resolve().parent / "lib" / "ojdbc8.jar"),
+    )
+)
 
 
 def _creds_from_docx(docx: Path) -> tuple[str, str]:
@@ -46,12 +51,17 @@ def get_cmds_creds() -> tuple[str, str]:
 
 
 def connect(
-    host: str = DEFAULT_DSN_HOST,
-    port: int = DEFAULT_DSN_PORT,
-    service: str = DEFAULT_SERVICE,
-    jar: Path | str = DEFAULT_JAR,
+    host: str | None = None,
+    port: int | None = None,
+    service: str | None = None,
+    jar: Path | str | None = None,
 ):
-    jar = Path(jar)
+    host = host or DEFAULT_DSN_HOST or os.environ.get("CMDS_HOST")
+    port = port or DEFAULT_DSN_PORT or int(os.environ.get("CMDS_PORT", "0") or "0")
+    service = service or DEFAULT_SERVICE
+    jar = Path(jar or DEFAULT_JAR)
+    if not host or not port:
+        raise RuntimeError("Set CMDS_HOST and CMDS_PORT environment variables")
     if not jar.exists():
         raise FileNotFoundError(f"ojdbc jar missing: {jar}")
     user, pwd = get_cmds_creds()

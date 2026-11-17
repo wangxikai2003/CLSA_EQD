@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -21,7 +22,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 ROOT = Path(__file__).resolve().parent
-VOL = Path("/Users/wangxikai/Desktop/CITICS CLSA/vol_trading")
+VOL = Path(os.environ.get("VOL_TRADING_ROOT", str(ROOT.parent / "vol_trading")))
 
 # --- Universes ---
 INDEX = ["SPX", "NDX"]

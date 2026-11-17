@@ -4,10 +4,26 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
-# full panels stay local; keep small reports / NDX surface pilot
+*.epub
+*.docx
+*.jar
+
+# large / regenerable panels
 data/*_panel.*
 data/spx_iv_*.parquet
 data/spx_weights*.parquet
 data/spx_top50*.parquet
 data/spx_spdr*.parquet
 data/cmds_*.parquet
+data/cmds_us_equity_panel.parquet
+
+# keep small surface / master outputs tracked when force-added
+!data/ndx_implied_corr_surface.parquet
+!data/ndx_implied_corr_surface.csv
+!data/ndx_realized_corr.parquet
+!data/ndx_realized_corr.csv
+!data/correlation_master_panel.parquet
+!data/correlation_master_panel.csv
+!data/explore_us_iv_coverage_report.json
+!data/corr_matrix_local.csv
+!data/corr_matrix_local_matrix.csv

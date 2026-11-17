@@ -10,6 +10,7 @@ Daily series: median IV of OTM near-ATM quotes, TTM in [tmin, tmax] days.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -19,9 +20,16 @@ import pyarrow.parquet as pq
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_PARQUET = Path(
-    "/Users/wangxikai/Desktop/CITICS CLSA/vol_trading/archive/spx_options.parquet"
+    os.environ.get(
+        "SPX_OPTIONS_PARQUET",
+        str(Path(__file__).resolve().parent.parent / "vol_trading" / "archive" / "spx_options.parquet"),
+    )
 )
-sys.path.insert(0, str(Path("/Users/wangxikai/Desktop/CITICS CLSA/vol_trading/pipeline")))
+_pipe = Path(os.environ.get("VOL_TRADING_PIPELINE", "")).expanduser()
+if not str(_pipe) or str(_pipe) in (".", "") or not _pipe.exists():
+    _pipe = Path(__file__).resolve().parent.parent / "vol_trading" / "pipeline"
+if _pipe.exists():
+    sys.path.insert(0, str(_pipe))
 from vol_lib import implied_vol  # noqa: E402
 
 

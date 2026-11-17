@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,9 +29,14 @@ import pyarrow.parquet as pq
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_PARQUET = Path(
-    "/Users/wangxikai/Desktop/CITICS CLSA/vol_trading/archive/spx_options.parquet"
+    os.environ.get(
+        "SPX_OPTIONS_PARQUET",
+        str(ROOT.parent / "vol_trading" / "archive" / "spx_options.parquet"),
+    )
 )
-sys.path.insert(0, str(Path("/Users/wangxikai/Desktop/CITICS CLSA/vol_trading/pipeline")))
+_pipe = Path(os.environ.get("VOL_TRADING_PIPELINE", str(ROOT.parent / "vol_trading" / "pipeline")))
+if _pipe.exists():
+    sys.path.insert(0, str(_pipe))
 from vol_lib import implied_vol  # noqa: E402
 
 RootPref = Literal["SPXW", "SPX", "auto"]
@@ -112,6 +118,7 @@ class ForwardResult:
     K_star: float
     r: float
     method: str
+    n_pcp_pairs: int = 0
 
 
 def rate_at_T(T: float, curve: Optional[pd.DataFrame], flat_r: float) -> float:
@@ -137,30 +144,54 @@ def implied_forward_pcp(
     T: float,
     r: float,
     spot: float,
+    top_n: int = 5,
 ) -> ForwardResult:
     """
-    F = K* + exp(rT)(C - P) at K* = argmin |C-P| among near-ATM strikes.
+    Robust PCP: median of F_k over Top-N near-ATM strikes with smallest |C-P|.
+    Prefer volume>0 pairs when a volume column is present.
     """
     if calls.empty or puts.empty:
-        return ForwardResult(F=float(spot), K_star=float(spot), r=r, method="spot_fallback")
+        return ForwardResult(
+            F=float(spot), K_star=float(spot), r=r, method="spot_fallback", n_pcp_pairs=0
+        )
 
     m = calls.merge(puts, on="strike_price", suffixes=("_c", "_p"))
     if m.empty:
-        return ForwardResult(F=float(spot), K_star=float(spot), r=r, method="spot_fallback")
+        return ForwardResult(
+            F=float(spot), K_star=float(spot), r=r, method="spot_fallback", n_pcp_pairs=0
+        )
 
-    # restrict to near spot to avoid deep wing PCP noise
     band = 0.05 * spot
-    m = m[(m["strike_price"] - spot).abs() <= band]
+    m = m[(m["strike_price"] - spot).abs() <= band].copy()
     if m.empty:
-        return ForwardResult(F=float(spot), K_star=float(spot), r=r, method="spot_fallback")
+        return ForwardResult(
+            F=float(spot), K_star=float(spot), r=r, method="spot_fallback", n_pcp_pairs=0
+        )
 
-    m = m.assign(diff=(m["price_c"] - m["price_p"]).abs())
-    row = m.loc[m["diff"].idxmin()]
-    K_star = float(row["strike_price"])
-    F = K_star + math.exp(r * T) * (float(row["price_c"]) - float(row["price_p"]))
-    if not np.isfinite(F) or F <= 0:
-        return ForwardResult(F=float(spot), K_star=K_star, r=r, method="spot_fallback")
-    return ForwardResult(F=F, K_star=K_star, r=r, method="pcp")
+    # optional volume filter (close-only dumps may lack it)
+    vol_cols = [c for c in m.columns if "volume" in c.lower()]
+    if vol_cols:
+        v = pd.to_numeric(m[vol_cols[0]], errors="coerce").fillna(0)
+        traded = m[v > 0]
+        if len(traded) >= 3:
+            m = traded
+
+    m["diff"] = (m["price_c"] - m["price_p"]).abs()
+    m = m.sort_values("diff").head(int(top_n))
+    Fs, Ks = [], []
+    for row in m.itertuples(index=False):
+        K = float(row.strike_price)
+        Fk = K + math.exp(r * T) * (float(row.price_c) - float(row.price_p))
+        if np.isfinite(Fk) and Fk > 0:
+            Fs.append(Fk)
+            Ks.append(K)
+    if not Fs:
+        return ForwardResult(
+            F=float(spot), K_star=float(spot), r=r, method="spot_fallback", n_pcp_pairs=0
+        )
+    F = float(np.median(Fs))
+    K_star = float(np.median(Ks))
+    return ForwardResult(F=F, K_star=K_star, r=r, method="pcp_median", n_pcp_pairs=int(len(Fs)))
 
 
 # ---------------------------------------------------------------------------
@@ -258,13 +289,16 @@ def atm_iv_from_slice(
     by_k = use.groupby("K", as_index=False)["iv"].median().sort_values("K")
     ks = by_k["K"].to_numpy(dtype=float)
     sigs = by_k["iv"].to_numpy(dtype=float)
+    if len(ks) == 0:
+        return None
+    lo, hi = float(ks[0]), float(ks[-1])
+    tol = 0.005
+    if K_tgt < lo * (1.0 - tol) or K_tgt > hi * (1.0 + tol):
+        return None  # no flat extrapolation
     if len(ks) == 1:
         return float(sigs[0])
-    if K_tgt <= ks[0]:
-        return float(sigs[0])
-    if K_tgt >= ks[-1]:
-        return float(sigs[-1])
-    return float(np.interp(K_tgt, ks, sigs))
+    K_clip = min(max(K_tgt, lo), hi)
+    return float(np.interp(K_clip, ks, sigs))
 
 
 # ---------------------------------------------------------------------------

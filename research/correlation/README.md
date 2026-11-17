@@ -27,15 +27,16 @@ US equity / SPX 相关性与 IV 研究进度，挂在 `CLSA_EQD` 的 `research/c
 2. CMDS 账号走环境变量 / 本地 handbook，**不要**写入仓库
 3. `python fetch_cmds_price_panel.py` → `python corr_mark_local.py` 等
 
-## NDX 隐含相关（已建模）
+## NDX 隐含 / 实现相关
 
-- 脚本：`ndx_implied_corr.py`（CMDS OPRA mid / LAST + 官方权重 → tenor×moneyness ρ 曲面）
+- `ndx_implied_corr.py` — AM/PM 分根、\(\sigma^2T\) 恒定期限、Clean/Dirty 隐含相关
+- `compute_us_realized_corr.py` — 等权 / Clean / Dirty 实现相关（同期+前瞻）
+- `validate_phase1_pipeline.py` — 偏斜 / CRP / 异常值体检 → `correlation_master_panel`
+- `fetch_cmds_price_panel.py --ndx-constituents` — 动态成分日线面板
 - 说明：`NDX_IMPLIED_CORR_MODEL.md`
-- 结果：`data/ndx_implied_corr_surface.parquet`（pilot：15 日 × 30/60/90D × 0.95/1.00/1.05）
 
 ## 下一步（未完成）
 
-- 全成份（`--top-n 0`）与更密日期网格
-- BBG 正式 GICS / IV / COR* 对照
-- Clean / Dirty correlation 模块对齐 desk `corr_mark.py`
+- 全成份（`--top-n 0`）日频全样本重跑并接入 Web API
+- BBG COR* / 官方 IV 字段对照
 - 更长历史期权价（>2y）若数据源可用

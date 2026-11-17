@@ -8,6 +8,7 @@ No Pulse / Bloomberg / trader_tool / email / RFQ.
 from __future__ import annotations
 
 import argparse
+import os
 from itertools import combinations
 from pathlib import Path
 
@@ -17,7 +18,10 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent
 DEFAULT_PANEL = ROOT / "data" / "cmds_price_panel.parquet"
 LOCAL_SPOT = Path(
-    "/Users/wangxikai/Desktop/CITICS CLSA/vol_trading/CLSA_EQD/data/index_spot.parquet"
+    os.environ.get(
+        "INDEX_SPOT_PARQUET",
+        str(ROOT.parent / "vol_trading" / "CLSA_EQD" / "data" / "index_spot.parquet"),
+    )
 )
 
 

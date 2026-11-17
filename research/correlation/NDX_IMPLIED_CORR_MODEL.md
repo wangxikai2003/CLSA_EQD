@@ -43,17 +43,17 @@
 ## 运行
 
 ```bash
-export CMDS_USER=... CMDS_PASSWORD=...
-# 或设置 CMDS_CREDS_DOCX
-/Users/wangxikai/anaconda3/bin/python ndx_implied_corr.py --pilot \
-  --tenors 30,60,90 --mny 0.95,1.00,1.05 --top-n 50
+export CMDS_USER=... CMDS_PASSWORD=... CMDS_HOST=... CMDS_PORT=...
+python ndx_implied_corr.py --pilot --tenors 30,60,90 --mny 0.95,1.00,1.05 --top-n 50
+python ndx_implied_corr.py --start 20240901 --end 20241130 --root-pref NDXP
+python validate_phase1_pipeline.py
 ```
 
-`--top-n 0` 使用全部成份（更慢、更全）。
+`--top-n 0` 使用全部成份（更慢、更全）。输出含 `rho_imp_clean` / `rho_imp_dirty`。
 
 ## 局限
 
 - 历史深度受 CMDS 期权 mid 覆盖限制（约 2024-09 起）
 - Top50 近似全指数（权重覆盖通常很高，但非 100 只全样本）
-- 预存 `30D/60D/90D` IV 字段不可用；恒定期限靠挂牌到期插值而非交易所官方合成期货
-- 未分离 NDX AM vs NDXW PM（当前过滤 `UNDERLYING='.NDX'`）
+- 预存 `30D/60D/90D` IV 字段不可用；恒定期限用挂牌到期的 \(\sigma^2 T\) 插值
+- 指数端按 RIC 区分 NDX（AM）/ NDXP（PM），默认优先 NDXP，禁止混根

@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from cmds_connect import read_sql
@@ -83,10 +84,17 @@ def main():
     us = fetch_ussahre(winds, args.start, args.end)
     print(f"  usshare rows={len(us):,}", flush=True)
 
-    # Prefer S_DQ_MV; else float shares * close (shares in 万股 → keep relative scale)
-    us["fmc"] = us["S_DQ_MV"]
+    # Unified float-adjusted FMC (S&P IWF-style). Do NOT prefer S_DQ_MV (scale mismatch risk).
+    us["fmc_old"] = us["S_DQ_MV"]
+    miss_old = us["fmc_old"].isna() | (us["fmc_old"] <= 0)
+    us.loc[miss_old, "fmc_old"] = (
+        us.loc[miss_old, "FLOAT_A_SHR_TODAY"] * us.loc[miss_old, "S_DQ_CLOSE_TODAY"]
+    )
+
+    us["fmc"] = us["FLOAT_A_SHR_TODAY"] * us["S_DQ_CLOSE_TODAY"]
     miss = us["fmc"].isna() | (us["fmc"] <= 0)
-    us.loc[miss, "fmc"] = us.loc[miss, "FLOAT_A_SHR_TODAY"] * us.loc[miss, "S_DQ_CLOSE_TODAY"]
+    us.loc[miss, "fmc"] = us.loc[miss, "TOT_SHR_TODAY"] * us.loc[miss, "S_DQ_CLOSE_TODAY"]
+    us["fmc_source"] = np.where(miss, "TOT_SHR*CLOSE", "FLOAT_A_SHR*CLOSE")
 
     merged = mem.merge(
         us,
@@ -95,10 +103,32 @@ def main():
         how="left",
     )
     merged["fmc"] = pd.to_numeric(merged["fmc"], errors="coerce")
-    # drop names without FMC that day
+    merged["fmc_old"] = pd.to_numeric(merged["fmc_old"], errors="coerce")
     valid = merged.dropna(subset=["fmc"]).copy()
     valid = valid[valid["fmc"] > 0]
     valid["weight"] = valid["fmc"] / valid.groupby("TRADE_DATE")["fmc"].transform("sum")
+
+    # diagnostic vs old S_DQ_MV-first path
+    diag = valid.dropna(subset=["fmc_old"]).copy()
+    diag = diag[diag["fmc_old"] > 0]
+    if len(diag):
+        diag["weight_old"] = diag["fmc_old"] / diag.groupby("TRADE_DATE")["fmc_old"].transform("sum")
+        diag["w_diff"] = diag["weight"] - diag["weight_old"]
+        latest_dt = diag["TRADE_DATE"].max()
+        d0 = diag[diag["TRADE_DATE"] == latest_dt].copy()
+        print("\n=== Weight dimension fix diagnostic ===", flush=True)
+        print(f"asof={latest_dt} names={len(d0)}", flush=True)
+        print(
+            f"  max|Δw|={d0['w_diff'].abs().max():.4f} "
+            f"mean|Δw|={d0['w_diff'].abs().mean():.4f}",
+            flush=True,
+        )
+        jumps = d0.reindex(d0["w_diff"].abs().sort_values(ascending=False).index).head(8)
+        print(
+            jumps[["BB_TICKER", "wind_code", "weight_old", "weight", "w_diff", "fmc_source"]]
+            .to_string(index=False),
+            flush=True,
+        )
 
     out = valid.rename(
         columns={
@@ -119,6 +149,7 @@ def main():
             "S_DQ_CLOSE_TODAY",
             "FLOAT_A_SHR_TODAY",
             "TOT_SHR_TODAY",
+            "fmc_source",
         ]
     ]
 
@@ -126,7 +157,6 @@ def main():
     path.parent.mkdir(parents=True, exist_ok=True)
     out.to_parquet(path, index=False)
 
-    # coverage report
     cov = (
         mem.groupby("TRADE_DATE")
         .size()
@@ -139,7 +169,7 @@ def main():
     print(f"mean coverage={cov['coverage'].mean():.3f}", flush=True)
     latest = out[out["trade_date"] == out["trade_date"].max()].nlargest(10, "weight")
     print("\nTop10 weights on", out["trade_date"].max(), flush=True)
-    print(latest[["bb_ticker", "weight", "fmc"]].to_string(index=False), flush=True)
+    print(latest[["bb_ticker", "weight", "fmc", "fmc_source"]].to_string(index=False), flush=True)
     print(f"\nWrote {len(out):,} rows -> {path}", flush=True)
 
 
