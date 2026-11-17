@@ -429,6 +429,8 @@ class CalendarVolBacktestEngine:
         budget_fade: float = BUDGET_FADE,
         budget_momentum: float = BUDGET_MOMENTUM,
         budget_fade_vol_scale: bool = False,
+        stress_streak_days: int = 2,
+        max_hold_reverse: int = MAX_HOLD_REVERSE,
     ):
         if universe not in UNIVERSES:
             raise ValueError(f"unknown universe {universe}; choose {list(UNIVERSES)}")
@@ -454,6 +456,8 @@ class CalendarVolBacktestEngine:
         self.budget_fade = float(budget_fade)
         self.budget_momentum = float(budget_momentum)
         self.budget_fade_vol_scale = bool(budget_fade_vol_scale)
+        self.stress_streak_days = max(1, int(stress_streak_days))
+        self.max_hold_reverse = max(1, int(max_hold_reverse))
         self.product = self.cfg["product"]
         self.spot_code = self.cfg["spot_code"]
         self.m_opt = float(self.cfg["m_opt"])
@@ -748,7 +752,7 @@ class CalendarVolBacktestEngine:
             return self._apply_side_mode(raw, position)
         if xl <= spread <= xh:
             return 0
-        if position == -1 and hold_days >= MAX_HOLD_REVERSE:
+        if position == -1 and hold_days >= self.max_hold_reverse:
             return 0
         return self._apply_side_mode(position, position)
 
@@ -1272,20 +1276,31 @@ class CalendarVolBacktestEngine:
             elif is_regime2_signal(self.signal_mode):
                 from engine.regime2_signal import decide_regime2_signal
 
-                z_prev = float("nan")
-                z_q10_prev: Optional[float] = None
-                z_q90_prev: Optional[float] = None
-                if i > 0 and "garch_z" in ct.columns:
-                    d_prev = dates[i - 1]
-                    gz_p = ct.loc[d_prev, "garch_z"]
-                    if pd.notna(gz_p):
-                        z_prev = float(gz_p)
-                    if "gz_enter_lo" in ct.columns and pd.notna(ct.loc[d_prev, "gz_enter_lo"]):
-                        z_q10_prev = float(ct.loc[d_prev, "gz_enter_lo"])
-                    if "gz_enter_hi" in ct.columns and pd.notna(ct.loc[d_prev, "gz_enter_hi"]):
-                        z_q90_prev = float(ct.loc[d_prev, "gz_enter_hi"])
                 z_q10_t = gz_el_f
                 z_q90_t = gz_eh_f
+                need_hist = max(1, int(self.stress_streak_days))
+                z_hist = []
+                for k in range(need_hist - 1, 0, -1):
+                    if i - k < 0 or "garch_z" not in ct.columns:
+                        z_hist.append((None, None, None))
+                        continue
+                    d_k = dates[i - k]
+                    gz_k = ct.loc[d_k, "garch_z"]
+                    z_k = float(gz_k) if pd.notna(gz_k) else None
+                    q10_k = None
+                    q90_k = None
+                    if "gz_enter_lo" in ct.columns and pd.notna(ct.loc[d_k, "gz_enter_lo"]):
+                        q10_k = float(ct.loc[d_k, "gz_enter_lo"])
+                    if "gz_enter_hi" in ct.columns and pd.notna(ct.loc[d_k, "gz_enter_hi"]):
+                        q90_k = float(ct.loc[d_k, "gz_enter_hi"])
+                    z_hist.append((z_k, q10_k, q90_k))
+                z_hist.append(
+                    (
+                        gz_f if math.isfinite(gz_f) else None,
+                        float(z_q10_t) if z_q10_t is not None else None,
+                        float(z_q90_t) if z_q90_t is not None else None,
+                    )
+                )
                 dec2 = decide_regime2_signal(
                     target,
                     hold,
@@ -1297,9 +1312,9 @@ class CalendarVolBacktestEngine:
                     gz_f,
                     float(z_q10_t) if z_q10_t is not None else float("nan"),
                     float(z_q90_t) if z_q90_t is not None else float("nan"),
-                    z_prev if math.isfinite(z_prev) else None,
-                    z_q10_prev,
-                    z_q90_prev,
+                    z_hist=z_hist,
+                    stress_streak_days=self.stress_streak_days,
+                    max_hold_reverse=self.max_hold_reverse,
                 )
                 raw_next = int(dec2.signal)
                 signal_next = self._apply_side_mode(raw_next, target)
@@ -1760,9 +1775,11 @@ class CalendarVolBacktestEngine:
                 f"regime2: identical Spread rolling quantiles "
                 f"(enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
                 f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}); "
-                f"stress when garch_z outside its prior-{self.z_window}d 10/90 "
-                f"for 2 consecutive closes → block new opens only "
-                f"(exits still allowed); GARCH warm {_garch_warm}d, bands from {_mp}d"
+                f"stress when garch_z outside its prior-{self.z_window}d "
+                f"{1-self.enter_q:.0%}/{self.enter_q:.0%} for "
+                f"{self.stress_streak_days} consecutive closes → block new opens only "
+                f"(exits still allowed; Reverse max hold {self.max_hold_reverse}d); "
+                f"GARCH warm {_garch_warm}d, bands from {_mp}d"
             )
         else:
             signal_desc = (
@@ -1844,7 +1861,8 @@ class CalendarVolBacktestEngine:
                 "enter_q": self.enter_q,
                 "exit_lo_q": self.exit_lo_q,
                 "exit_hi_q": self.exit_hi_q,
-                "max_hold_reverse": MAX_HOLD_REVERSE,
+                "max_hold_reverse": self.max_hold_reverse,
+                "stress_streak_days": self.stress_streak_days,
                 "max_abs_port_vega": round(max_vega_resid, 8),
                 "universe": self.universe,
                 "m_opt": self.m_opt,
@@ -1891,6 +1909,11 @@ def run_calendar_vol(
     side_mode: str = DEFAULT_SIDE_MODE,
     spread_mode: str = DEFAULT_SPREAD_MODE,
     signal_mode: str = DEFAULT_SIGNAL_MODE,
+    enter_q: float = ENTER_Q,
+    exit_lo_q: float = EXIT_LO_Q,
+    exit_hi_q: float = EXIT_HI_Q,
+    stress_streak_days: int = 2,
+    max_hold_reverse: int = MAX_HOLD_REVERSE,
 ) -> Dict[str, Any]:
     eng = CalendarVolBacktestEngine(
         universe=universe,
@@ -1900,6 +1923,11 @@ def run_calendar_vol(
         side_mode=side_mode,
         spread_mode=spread_mode,
         signal_mode=signal_mode,
+        enter_q=enter_q,
+        exit_lo_q=exit_lo_q,
+        exit_hi_q=exit_hi_q,
+        stress_streak_days=stress_streak_days,
+        max_hold_reverse=max_hold_reverse,
     )
     payload = eng.run()
     if export_holdings:

@@ -119,3 +119,45 @@ def test_stress_allows_hold_outside_exit_band():
     )
     assert dec.signal == 1 and dec.stress
     assert dec.reason == "quantile_hold"
+
+
+def test_stress_streak_three_requires_three_extremes():
+    hist2 = [
+        (2.0, -1.2, 1.2),
+        (2.1, -1.2, 1.2),
+    ]
+    dec2 = decide_regime2_signal(
+        position=0,
+        hold_days=0,
+        spread=1.5,
+        enter_hi=1.0,
+        enter_lo=-1.0,
+        exit_hi=0.6,
+        exit_lo=-0.6,
+        z_t=2.1,
+        z_q10_t=-1.2,
+        z_q90_t=1.2,
+        z_hist=hist2,
+        stress_streak_days=3,
+    )
+    assert dec2.signal == 1 and not dec2.stress
+    hist3 = [
+        (2.0, -1.2, 1.2),
+        (2.2, -1.2, 1.2),
+        (2.1, -1.2, 1.2),
+    ]
+    dec3 = decide_regime2_signal(
+        position=0,
+        hold_days=0,
+        spread=1.5,
+        enter_hi=1.0,
+        enter_lo=-1.0,
+        exit_hi=0.6,
+        exit_lo=-0.6,
+        z_t=2.1,
+        z_q10_t=-1.2,
+        z_q90_t=1.2,
+        z_hist=hist3,
+        stress_streak_days=3,
+    )
+    assert dec3.signal == 0 and dec3.stress and dec3.reason == "stress_block_entry"
