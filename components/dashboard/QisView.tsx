@@ -14,6 +14,7 @@ import {
   QisStrategyInfo,
   QisTenorPair,
   QisTradeMarker,
+  isRegime2SignalMode,
   isRegimeSignalMode,
 } from '../../services/api_v1';
 import ChartZoomFrame from './ChartZoomFrame';
@@ -35,10 +36,14 @@ const CAL_VOL_SPREADS: { key: QisSpreadMode; label: string }[] = [
 ];
 
 /** Top-level signal family (Regime expands into book sub-toggle). */
-const CAL_VOL_SIGNAL_FAMILIES: { key: 'quantile' | 'garch_z' | 'regime'; label: string }[] = [
+const CAL_VOL_SIGNAL_FAMILIES: {
+  key: 'quantile' | 'garch_z' | 'regime' | 'regime2';
+  label: string;
+}[] = [
   { key: 'quantile', label: 'Quantile' },
   { key: 'garch_z', label: 'GARCH-z' },
   { key: 'regime', label: 'Regime' },
+  { key: 'regime2', label: 'Regime2' },
 ];
 
 const CAL_VOL_REGIME_BOOKS: { key: QisSignalMode; label: string; hint: string }[] = [
@@ -412,7 +417,7 @@ const QisView: React.FC = () => {
     });
   }, [data, byKind, levelScale]);
 
-  /** GARCH-z chart: garch_z mode uses enter_*; regime uses decision shock bands shk_q*. */
+  /** GARCH-z chart: garch_z uses enter_*; regime uses shk_q*; regime2 uses gz_enter_* stress gate. */
   const garchZChart = useMemo(() => {
     const s = data?.signal;
     if (!s?.dates?.length) return [];
@@ -439,8 +444,29 @@ const QisView: React.FC = () => {
         };
       });
     }
-    // regime: garch_z + decision shock quantiles (same as FSM thresholds)
     if (!s.garch_z?.length) return [];
+    // regime2: stress gate = gz rolling 10/90 (gz_enter_*)
+    if (mode === 'regime2') {
+      const hasGz =
+        Array.isArray(s.gz_enter_hi) && s.gz_enter_hi.length === s.dates.length;
+      return s.dates.map((dt, i) => {
+        const zRaw = s.garch_z![i];
+        const z = zRaw == null || Number.isNaN(zRaw) ? 0 : (zRaw as number);
+        const kind = kindByD.get(dt);
+        return {
+          d: dt,
+          spread_pts: z,
+          enter_hi: hasGz && s.gz_enter_hi![i] != null ? (s.gz_enter_hi![i] as number) : null,
+          enter_lo: hasGz && s.gz_enter_lo![i] != null ? (s.gz_enter_lo![i] as number) : null,
+          exit_hi: hasGz && s.gz_exit_hi?.[i] != null ? (s.gz_exit_hi![i] as number) : null,
+          exit_lo: hasGz && s.gz_exit_lo?.[i] != null ? (s.gz_exit_lo![i] as number) : null,
+          long_pt: kind === 'long' ? z : null,
+          short_pt: kind === 'short' ? z : null,
+          close_pt: kind === 'close' ? z : null,
+        };
+      });
+    }
+    // regime: garch_z + decision shock quantiles (same as FSM thresholds)
     const useShk =
       Array.isArray(s.shk_q10) && s.shk_q10.length === s.dates.length;
     return s.dates.map((dt, i) => {
@@ -555,9 +581,13 @@ const QisView: React.FC = () => {
         ? activeSpread === 'iv2'
           ? `${tenorLabel} IV² · Regime v2`
           : `${tenorLabel} IV · Regime v2`
-        : activeSpread === 'iv2'
-          ? `${tenorLabel} IV² spread (var ×100)`
-          : `${tenorLabel} IV spread (vol pts)`
+        : isRegime2SignalMode(activeSignal)
+          ? activeSpread === 'iv2'
+            ? `${tenorLabel} IV² · Regime2`
+            : `${tenorLabel} IV · Regime2`
+          : activeSpread === 'iv2'
+            ? `${tenorLabel} IV² spread (var ×100)`
+            : `${tenorLabel} IV spread (vol pts)`
     : 'SoS (pts)';
   const ivSpreadLabel = isCalVol
     ? activeSpread === 'iv2'
@@ -565,12 +595,22 @@ const QisView: React.FC = () => {
       : `${tenorLabel} IV spread (vol pts)`
     : 'Spread (pts)';
   const showGarchSignalChart =
-    isCalVol && (activeSignal === 'garch_z' || isRegimeSignalMode(activeSignal));
+    isCalVol &&
+    (activeSignal === 'garch_z' ||
+      isRegimeSignalMode(activeSignal) ||
+      isRegime2SignalMode(activeSignal));
   const showSpreadBandChart = isCalVol && !!data?.signal;
   const garchChartData =
-    isRegimeSignalMode(activeSignal) || activeSignal === 'garch_z' ? garchZChart : signalChart;
+    isRegimeSignalMode(activeSignal) ||
+    activeSignal === 'garch_z' ||
+    isRegime2SignalMode(activeSignal)
+      ? garchZChart
+      : signalChart;
+  // Regime2 decisions use Spread 10/90·40/60 like quantile → signalChart.
   const spreadChartData =
-    activeSignal === 'garch_z' || isRegimeSignalMode(activeSignal) ? ivSpreadChart : signalChart;
+    activeSignal === 'garch_z' || isRegimeSignalMode(activeSignal)
+      ? ivSpreadChart
+      : signalChart;
   const regimeShowMom = activeSignal === 'regime' || activeSignal === 'regime_momentum';
   const regimeShowFade = activeSignal === 'regime' || activeSignal === 'regime_fade';
   const regimeLevelYKeys = [
@@ -616,7 +656,9 @@ const QisView: React.FC = () => {
         ? '对 ΔSpread 做 expanding GARCH(1,1)-t（预热 252 日、每 5 日重估参数，仅用截至当日历史）得到 garch_z；再对 garch_z 做滚动分位入场/出场（窗长默认 252，满半窗≈126 日即可出带；无未来数据；t−1 信号 → t close 成交）。'
         : isRegimeSignalMode(activeSignal)
           ? null
-          : '直接对 Spread 做滚动分位入场/出场（无未来数据；t−1 信号 → t close 成交）。';
+          : isRegime2SignalMode(activeSignal)
+            ? '基线与 Quantile 完全相同（Spread 滚动 10/90 进、40/60 出；无 crisis stop）。压力态：garch_z 连续 2 日越出其滚动 10/90 → 仅停新开，已有仓位仍按 Quantile 规则平仓。'
+            : '直接对 Spread 做滚动分位入场/出场（无未来数据；t−1 信号 → t close 成交）。';
 
     /** Structured Regime v2 logic for the docs card (applies to every tenor/side/spread/universe). */
     const regimeBookLabel =
@@ -1258,7 +1300,11 @@ const QisView: React.FC = () => {
                 <div className="bg-white rounded-lg border border-slate-200 p-4">
                   <h3 className="font-bold text-[#000066] text-sm mb-3">
                     {tenorLabel} GARCH-z &{' '}
-                    {isRegimeSignalMode(activeSignal) ? 'Decision Shock Bands' : 'Rolling Quantile Bands'}
+                    {isRegimeSignalMode(activeSignal)
+                      ? 'Decision Shock Bands'
+                      : isRegime2SignalMode(activeSignal)
+                        ? 'Stress Gate (10/90)'
+                        : 'Rolling Quantile Bands'}
                   </h3>
                   <ChartZoomFrame
                     data={garchChartData}
@@ -1311,9 +1357,13 @@ const QisView: React.FC = () => {
                   <p className="text-[9px] text-slate-400 mt-1">
                     {isRegimeSignalMode(activeSignal)
                       ? '黄线：garch_z。紫虚线：冲击极端 shk q10/q90（Mom 加速入场 / Mom 不利冲击出场 / Fade crisis）。青虚线：冷静带 shk q20/q80（Fade 双日冷静入场）。分位 = 过去 W 日、shift(1)，与 FSM 决策同一套。'
-                      : `黄线：garch_z。紫/灰虚线：对 garch_z 的滚动分位带（${enterPct} 入场 · ${exitPct} 出场口径）。`}
+                      : isRegime2SignalMode(activeSignal)
+                        ? '黄线：garch_z。紫虚线：压力门 10/90（连续 2 日越出 → 停新开）。灰虚线：参考 40/60。决策开平仓仍看上方 Spread Quantile 图。'
+                        : `黄线：garch_z。紫/灰虚线：对 garch_z 的滚动分位带（${enterPct} 入场 · ${exitPct} 出场口径）。`}
                     {' '}散点为实际成交：Long 红 · Short 绿 · 平仓蓝
-                    {isRegimeSignalMode(activeSignal) ? '（标在成交日 garch_z 水平）。' : '。'}
+                    {isRegimeSignalMode(activeSignal) || isRegime2SignalMode(activeSignal)
+                      ? '（标在成交日 garch_z 水平）。'
+                      : '。'}
                   </p>
                 </div>
               )}

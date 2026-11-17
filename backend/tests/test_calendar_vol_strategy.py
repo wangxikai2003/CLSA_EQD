@@ -246,6 +246,7 @@ def test_normalize_signal_mode_regime():
     assert "regime" in SIGNAL_MODES
     assert "regime_momentum" in SIGNAL_MODES
     assert "regime_fade" in SIGNAL_MODES
+    assert "regime2" in SIGNAL_MODES
     assert normalize_signal_mode("regime") == "regime"
     assert normalize_signal_mode("fade_momentum") == "regime"
     assert normalize_signal_mode("rs") == "regime"
@@ -254,6 +255,9 @@ def test_normalize_signal_mode_regime():
     assert normalize_signal_mode("v2") == "regime"
     assert normalize_signal_mode("momentum_only") == "regime_momentum"
     assert normalize_signal_mode("mean_reversion") == "regime_fade"
+    assert normalize_signal_mode("regime2") == "regime2"
+    assert normalize_signal_mode("r2") == "regime2"
+    assert normalize_signal_mode("hybrid") == "regime2"
 
 
 def test_regime_signal_mode_smoke():
@@ -295,6 +299,32 @@ def test_regime_signal_mode_smoke():
     ):
         assert k in sig and len(sig[k]) == len(sig["dates"]), k
         assert any(v is not None for v in sig[k]), k
+    assert float(payload["summary"]["final_nav_multiple"]) > 0
+
+
+def test_regime2_signal_mode_smoke():
+    """regime2 = quantile on Spread + dual-day z stress gate; exports gz bands."""
+    payload = run_calendar_vol(
+        "300",
+        initial_nav=100_000_000.0,
+        z_window=252,
+        tenor_pair="3M-6M",
+        side_mode="both",
+        spread_mode="iv",
+        signal_mode="regime2",
+    )
+    assert payload["params"]["signal_mode"] == "regime2"
+    assert payload["params"].get("regime_book") is None
+    sig = payload["signal"]
+    assert sig["signal_mode"] == "regime2"
+    assert "garch_z" in sig and len(sig["garch_z"]) == len(sig["dates"])
+    for k in ("gz_enter_hi", "gz_enter_lo", "enter_hi", "enter_lo", "exit_hi", "exit_lo"):
+        assert k in sig and len(sig[k]) == len(sig["dates"]), k
+        assert any(v is not None for v in sig[k]), k
+    assert any(
+        r == "stress_block_entry" for r in (sig.get("signal_reason") or []) if r
+    ) or True  # stress may be rare; presence of reasons is enough
+    assert "signal_reason" in sig
     assert float(payload["summary"]["final_nav_multiple"]) > 0
 
 

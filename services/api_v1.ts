@@ -434,13 +434,19 @@ export type QisSignalMode =
   | 'garch_z'
   | 'regime'
   | 'regime_momentum'
-  | 'regime_fade';
+  | 'regime_fade'
+  | 'regime2';
 
 /** True for any Regime v2 book (both / momentum-only / fade-only). */
 export function isRegimeSignalMode(mode: string | null | undefined): boolean {
   return (
     mode === 'regime' || mode === 'regime_momentum' || mode === 'regime_fade'
   );
+}
+
+/** Quantile base + dual-day garch_z stress gate. */
+export function isRegime2SignalMode(mode: string | null | undefined): boolean {
+  return mode === 'regime2';
 }
 
 export interface QisTradeMarker {

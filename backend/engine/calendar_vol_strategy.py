@@ -82,8 +82,16 @@ DEFAULT_SPREAD_MODE = "iv"
 # quantile = rolling 10/90 enter & 40/60 exit on raw Spread;
 # garch_z = expanding GARCH(1,1)-t on ΔSpread → z, then same rolling quantiles on z;
 # regime* = Fade / Momentum regime switch (v2) with cooldown;
-#   regime = both books; regime_momentum / regime_fade = single book.
-SIGNAL_MODES = ("quantile", "garch_z", "regime", "regime_momentum", "regime_fade")
+#   regime = both books; regime_momentum / regime_fade = single book;
+# regime2 = quantile base + dual-day garch_z stress gate (block new opens only).
+SIGNAL_MODES = (
+    "quantile",
+    "garch_z",
+    "regime",
+    "regime_momentum",
+    "regime_fade",
+    "regime2",
+)
 DEFAULT_SIGNAL_MODE = "quantile"
 REGIME_SIGNAL_MODES = ("regime", "regime_momentum", "regime_fade")
 BUDGET_FADE = 0.01
@@ -209,6 +217,12 @@ def normalize_signal_mode(signal_mode: str) -> str:
         "mean_reversion": "regime_fade",
         "mean_revert": "regime_fade",
         "meanreversion": "regime_fade",
+        "regime2": "regime2",
+        "r2": "regime2",
+        "regime_2": "regime2",
+        "hybrid": "regime2",
+        "quantile_stress": "regime2",
+        "quantile_gate": "regime2",
     }
     key = aliases.get(key, key)
     if key not in SIGNAL_MODES:
@@ -218,6 +232,16 @@ def normalize_signal_mode(signal_mode: str) -> str:
 
 def is_regime_signal(signal_mode: str) -> bool:
     return normalize_signal_mode(signal_mode) in REGIME_SIGNAL_MODES
+
+
+def is_regime2_signal(signal_mode: str) -> bool:
+    return normalize_signal_mode(signal_mode) == "regime2"
+
+
+def uses_garch_z(signal_mode: str) -> bool:
+    """True when the engine materializes expanding garch_z (decision or overlay)."""
+    mode = normalize_signal_mode(signal_mode)
+    return mode == "garch_z" or is_regime_signal(mode) or is_regime2_signal(mode)
 
 
 def regime_book_for_signal(signal_mode: str) -> str:
@@ -884,7 +908,7 @@ class CalendarVolBacktestEngine:
                 exit_lo_q=self.exit_lo_q,
                 exit_hi_q=self.exit_hi_q,
             )
-        elif is_regime_signal(self.signal_mode):
+        elif is_regime_signal(self.signal_mode) or is_regime2_signal(self.signal_mode):
             from engine.garch_signal import GARCH_WARM, expanding_garch_z
             from engine.regime_signal import LEVEL_QS, SHOCK_QS, rolling_quantile_map
 
@@ -907,14 +931,7 @@ class CalendarVolBacktestEngine:
                     "iv_exit_lo": "exit_lo",
                 }
             )
-            regime_level_bands = rolling_quantile_map(
-                ct["spread"], self.z_window, LEVEL_QS
-            ).add_prefix("lvl_")
-            regime_shock_bands = rolling_quantile_map(
-                garch_z_series, self.z_window, SHOCK_QS
-            ).add_prefix("shk_")
-            # Chart-only: same 10/90·40/60 rolling bands on garch_z as garch_z mode
-            # (decision still uses regime shock/level maps above).
+            # Chart + stress gate: same 10/90·40/60 rolling bands on garch_z.
             gz_chart_bands = rolling_quantile_bands(
                 garch_z_series,
                 self.z_window,
@@ -929,6 +946,13 @@ class CalendarVolBacktestEngine:
                     "exit_lo": "gz_exit_lo",
                 }
             )
+            if is_regime_signal(self.signal_mode):
+                regime_level_bands = rolling_quantile_map(
+                    ct["spread"], self.z_window, LEVEL_QS
+                ).add_prefix("lvl_")
+                regime_shock_bands = rolling_quantile_map(
+                    garch_z_series, self.z_window, SHOCK_QS
+                ).add_prefix("shk_")
         else:
             signal_level = ct["spread"].astype(float)
             min_hist = rolling_min_periods(self.z_window) + 30
@@ -948,7 +972,9 @@ class CalendarVolBacktestEngine:
             bands,
             spread_bands,
         ]
-        if garch_z_series is not None and is_regime_signal(self.signal_mode):
+        if garch_z_series is not None and (
+            is_regime_signal(self.signal_mode) or is_regime2_signal(self.signal_mode)
+        ):
             join_parts.append(garch_z_series.rename("garch_z"))
         if regime_level_bands is not None:
             join_parts.append(regime_level_bands)
@@ -993,7 +1019,9 @@ class CalendarVolBacktestEngine:
             zv = ct.loc[d, "z"]
             zv = float(zv) if pd.notna(zv) else float("nan")
             gz_f = float("nan")
-            if is_regime_signal(self.signal_mode) and "garch_z" in ct.columns:
+            if (
+                is_regime_signal(self.signal_mode) or is_regime2_signal(self.signal_mode)
+            ) and "garch_z" in ct.columns:
                 gz_raw = ct.loc[d, "garch_z"]
                 gz_f = float(gz_raw) if pd.notna(gz_raw) else float("nan")
             elif self.signal_mode == "garch_z":
@@ -1241,6 +1269,44 @@ class CalendarVolBacktestEngine:
                     else:
                         pending_cooldown = 0 if signal_next != 0 else live_cooldown
                     signal_reason = "bands_nan"
+            elif is_regime2_signal(self.signal_mode):
+                from engine.regime2_signal import decide_regime2_signal
+
+                z_prev = float("nan")
+                z_q10_prev: Optional[float] = None
+                z_q90_prev: Optional[float] = None
+                if i > 0 and "garch_z" in ct.columns:
+                    d_prev = dates[i - 1]
+                    gz_p = ct.loc[d_prev, "garch_z"]
+                    if pd.notna(gz_p):
+                        z_prev = float(gz_p)
+                    if "gz_enter_lo" in ct.columns and pd.notna(ct.loc[d_prev, "gz_enter_lo"]):
+                        z_q10_prev = float(ct.loc[d_prev, "gz_enter_lo"])
+                    if "gz_enter_hi" in ct.columns and pd.notna(ct.loc[d_prev, "gz_enter_hi"]):
+                        z_q90_prev = float(ct.loc[d_prev, "gz_enter_hi"])
+                z_q10_t = gz_el_f
+                z_q90_t = gz_eh_f
+                dec2 = decide_regime2_signal(
+                    target,
+                    hold,
+                    signal_level_f,
+                    eh_f,
+                    el_f,
+                    xh_f,
+                    xl_f,
+                    gz_f,
+                    float(z_q10_t) if z_q10_t is not None else float("nan"),
+                    float(z_q90_t) if z_q90_t is not None else float("nan"),
+                    z_prev if math.isfinite(z_prev) else None,
+                    z_q10_prev,
+                    z_q90_prev,
+                )
+                raw_next = int(dec2.signal)
+                signal_next = self._apply_side_mode(raw_next, target)
+                signal_reason = dec2.reason
+                pending_mode = None
+                pending_cooldown = 0
+                pending_entry_spread = None
             else:
                 signal_next = self._decide_signal(
                     target, hold, signal_level_f, eh_f, el_f, xh_f, xl_f
@@ -1652,6 +1718,7 @@ class CalendarVolBacktestEngine:
             "regime": "Regime v2 both (Fade+Mom)",
             "regime_momentum": "Regime v2 Momentum only",
             "regime_fade": "Regime v2 Mean-reversion only",
+            "regime2": "Regime2 quantile + dual-day z stress gate",
         }[self.signal_mode]
         spread_formula = (
             "IV_near² − IV_far²"
@@ -1684,6 +1751,18 @@ class CalendarVolBacktestEngine:
                 f"exit at q50 + crisis fuse; cooldown 3d; "
                 f"budget fade={self.budget_fade:.1%} momentum={self.budget_momentum:.1%} NAV"
                 + ("; fade vol-scaled" if self.budget_fade_vol_scale else "")
+            )
+        elif is_regime2_signal(self.signal_mode):
+            from engine.garch_signal import GARCH_WARM as _garch_warm
+
+            _mp = rolling_min_periods(self.z_window)
+            signal_desc = (
+                f"regime2: identical Spread rolling quantiles "
+                f"(enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
+                f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}); "
+                f"stress when garch_z outside its prior-{self.z_window}d 10/90 "
+                f"for 2 consecutive closes → block new opens only "
+                f"(exits still allowed); GARCH warm {_garch_warm}d, bands from {_mp}d"
             )
         else:
             signal_desc = (
