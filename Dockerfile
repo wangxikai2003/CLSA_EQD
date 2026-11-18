@@ -36,3 +36,5 @@ COPY --from=frontend /app/dist /app/dist
 ENV PORT=8080
 EXPOSE 8080
 CMD exec uvicorn backend.app:app --host 0.0.0.0 --port ${PORT:-8080}
+
+# deploy-stamp 20261118T005007Z
