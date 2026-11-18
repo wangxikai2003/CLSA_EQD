@@ -1,0 +1,6 @@
+{
+  "panel": "/Users/wangxikai/Desktop/CITICS CLSA/vol_trading/CLSA_EQD/data/corr_mark_cmds_panel.parquet",
+  "matrices_json": "/Users/wangxikai/Desktop/CITICS CLSA/vol_trading/CLSA_EQD/data/corr_web_matrices.json",
+  "timeseries": "/Users/wangxikai/Desktop/CITICS CLSA/vol_trading/CLSA_EQD/data/corr_realized_timeseries.parquet",
+  "built_at": "2026-11-17T18:12:03"
+}

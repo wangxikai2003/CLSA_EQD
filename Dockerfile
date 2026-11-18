@@ -22,6 +22,12 @@ COPY data/index_spot.parquet /app/data/index_spot.parquet
 # Slim commodity futures-only DB (~20MB); full commodity_vol.sqlite (~1.4G) not shipped
 COPY data/commodity_fut.sqlite /app/data/commodity_fut.sqlite
 COPY data/vol_spread_levels.parquet /app/data/vol_spread_levels.parquet
+# Realized Correlation web panels (Market/Spread Corr tabs)
+COPY data/corr_mark_cmds_panel.parquet /app/data/corr_mark_cmds_panel.parquet
+COPY data/corr_realized_timeseries.parquet /app/data/corr_realized_timeseries.parquet
+COPY data/corr_web_matrices.json /app/data/corr_web_matrices.json
+COPY data/corr_mark_universe.csv /app/data/corr_mark_universe.csv
+COPY research/correlation /app/research/correlation
 # Ship precomputed QIS results (also rebuilt below if missing / stale source)
 COPY data/qis_results.sqlite /app/data/qis_results.sqlite
 # Pre-bake synth-tenors JSON so first Spread request is near-instant

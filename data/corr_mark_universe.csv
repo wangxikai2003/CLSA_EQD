@@ -1,0 +1,200 @@
+calypso,type,status,sec_id,bb_ticker,wind_code,n_obs,d0,d1,fx_wind,invert_of,note
+CSI1000,IDX,active,pIB7wBqkOEnx,CSI1000 Index,000852.SH,2151,20180102,20261116,,,HIST_OK|OPEN_OK
+HSCEI,IDX,active,/bp8Cb2nUhla,HSCEI Index,HSCEI.HI,2183,20180102,20261116,,,HIST_OK|OPEN_OK
+HSI,IDX,active,mL86Di1Y246w,HSI Index,HSI.HI,2183,20180102,20261116,,,HIST_OK|OPEN_OK
+HSTECH,IDX,active,PO76ibspGVNw,HSTECH Index,HSTECH.HI,2096,20180102,20261116,,,HIST_OK|PARTIAL_OPEN
+KOSPI2,IDX,active,kHcRdNRDvIWB,KOSPI2,,559,20231220,20261116,,,HIST_SHORT|OPEN_OK
+KOSPI200,IDX,active,kHcRdNRDvIWB,KOSPI2,,559,20231220,20261116,,,HIST_SHORT|OPEN_OK
+NDX,IDX,active,6NL341kna8pu,NDX Index,NDX.GI,2230,20180102,20261116,,,HIST_OK|OPEN_OK
+NKY,IDX,active,4ZubA+EQ/p8+,NKY Index,N225.GI,2164,20180104,20261116,,,HIST_OK|OPEN_OK
+SH000905,IDX,active,wkShLaZ9wMGv,SH000905 Index,000905.SH,2151,20180102,20261116,,,HIST_OK|OPEN_OK
+SHSZ300,IDX,active,0NC636njubia,SHSZ300 Index,000300.SH,2151,20180102,20261116,,,HIST_OK|OPEN_OK
+SPX,IDX,active,E0pkktRNAxZJ,SPX Index,SPX.GI,2230,20180102,20261116,,,HIST_OK|OPEN_OK
+SSE50,IDX,active,4ENfsL1brFZ8,SSE50,000016.SH,2151,20180102,20261116,,,HIST_OK|OPEN_OK
+SX5E,IDX,active,GaxO0OGIAseS,SX5E,,2271,20180102,20261116,,,HIST_OK|OPEN_OK
+113519.CH,EQ,skip_no_security,ObEENkOIMq/m,113519 CG,113519.SH,,,,,,SEC_NO_EOD
+1169.HK,EQ,skip_no_security,,,,,,,,,NO_SECURITY
+1844972D.HK,EQ,skip_no_security,,,,,,,,,NO_SECURITY
+1886.HK,EQ,skip_no_security,,,,,,,,,NO_SECURITY
+2015.HK,EQ,active,Gix7BNmTEDJc,2015 HK,2015.HK,1293,20210812,20261116,,,HIST_OK|OPEN_OK
+2979.HK,EQ,skip_short_hist,y1euJCbVi+Du,2979 HK,2979.HK,51,20251125,20260810,,,HIST_VERY_SHORT|OPEN_OK
+3308.HK,EQ,skip_short_hist,AsaX+tHguOuW,3308 HK,3308.HK,76,20260730,20261116,,,HIST_VERY_SHORT|OPEN_OK
+3750.HK,EQ,skip_short_hist,uWHA30+o86CX,3750 HK,3750.HK,371,20250520,20261116,,,HIST_SHORT|OPEN_OK
+3939.HK,EQ,active,H2tmUI6uCVjb,3939 HK,3939.HK,2183,20180102,20261116,,,HIST_OK|OPEN_OK
+600804.C1,EQ,active,k1AfqOfBPn/a,600804 C1,600804.SH,1818,20180102,20250702,,,HIST_OK|OPEN_OK
+600804.CH,EQ,active,k1AfqOfBPn/a,600804 C1,600804.SH,1818,20180102,20250702,,,HIST_OK|OPEN_OK
+67.HK,EQ,skip_no_security,,,,,,,,,NO_SECURITY
+6837.HK,EQ,active,WYJdCNMIplXR,6837 HK,6837.HK,1762,20180102,20250303,,,HIST_OK|OPEN_OK
+688795.CH,EQ,skip_short_hist,u3XRd3KYSu6p,688795 CG,688795.SH,228,20251205,20261116,,,HIST_VERY_SHORT|OPEN_OK
+700.HK,EQ,active,29eZlG4CU3VT,700 HK,0700.HK,2183,20180102,20261116,,,HIST_OK|OPEN_OK
+885.HK,EQ,skip_no_security,,,,,,,,,NO_SECURITY
+9618.HK,EQ,active,G1Rzz4iIpIBZ,9618 HK,9618.HK,1577,20200618,20261116,,,HIST_OK|OPEN_OK
+9626.HK,EQ,active,HW7Pcw7gkCSE,9626 HK,9626.HK,1385,20210329,20261116,,,HIST_OK|OPEN_OK
+9866.HK,EQ,active,+uWg8KLLdDHw,9866 HK,9866.HK,1151,20220310,20261116,,,HIST_OK|OPEN_OK
+9868.HK,EQ,active,DA5J0GSJXsKu,9868 HK,9868.HK,1319,20210707,20261116,,,HIST_OK|OPEN_OK
+9888.HK,EQ,active,gEx4sv40HtNz,9888 HK,9888.HK,1389,20210323,20261116,,,HIST_OK|OPEN_OK
+9988.HK,EQ,active,4RX594R2+ryJ,9988 HK,9988.HK,1715,20191126,20261116,,,HIST_OK|OPEN_OK
+9999.HK,EQ,active,TfraLfqIgGuz,9999 HK,9999.HK,1582,20200611,20261116,,,HIST_OK|OPEN_OK
+AAPL.US,EQ,active,jfsyjnIlmMuO,AAPL US,AAPL.O,1735,20191220,20261116,,,HIST_OK|OPEN_OK
+ATVI.US,EQ,skip_no_security,,,,,,,,,NO_SECURITY
+B.US,EQ,active,uHOgHLx6nASC,B US,B.N,633,20220103,20261116,,,HIST_SHORT|OPEN_OK
+BABA.US,EQ,active,bzBC/w5z4T3q,BABA US,BABA.N,1321,20210812,20261116,,,HIST_OK|OPEN_OK
+BGNE.US,EQ,active,TX384PDFIcOq,BGNE US,BGNE.O,846,20210812,20241231,,,HIST_SHORT|OPEN_OK
+BIDU.US,EQ,active,RUY62Iq13MT6,BIDU US,BIDU.O,1321,20210812,20261116,,,HIST_OK|OPEN_OK
+BILI.US,EQ,active,3DRK63Gpa3yc,BILI US,BILI.O,1321,20210812,20261116,,,HIST_OK|OPEN_OK
+BITA.US,EQ,skip_short_hist,dgHcPPJivkpB,BITA US,BITA.O,107,20260616,20261116,,,HIST_VERY_SHORT|OPEN_OK
+CRCL.US,EQ,skip_short_hist,spk2NYrFOhec,CRCL US,CRCL.N,365,20250605,20261116,,,HIST_SHORT|OPEN_OK
+DRAM.US,EQ,skip_short_hist,gY/gtCXZARHf,DRAM US,DRAM.BAT,158,20260402,20261116,,,HIST_VERY_SHORT|OPEN_OK
+EWY.OC,EQ,active,IHLo911EArW4,EWY US,EWY.P,2231,20180102,20261116,,,HIST_OK|OPEN_OK
+FB.US,EQ,skip_short_hist,eCcQyLmXW2tV,FB US,FB.BAT,351,20250626,20261116,,,HIST_SHORT|OPEN_OK
+FNGA.US,EQ,skip_short_hist,pGzqDmC6qyqd,FNGA US,,52,20250303,20250514,,,HIST_VERY_SHORT|OPEN_OK
+GOLD.US,EQ,skip_short_hist,bYf0mK7hXMGB,GOLD US,GOLD.N,240,20251203,20261116,,,HIST_VERY_SHORT|OPEN_OK
+IWM.US,EQ,active,o/FF0I9pukJC,IWM US,IWM.P,2231,20180102,20261116,,,HIST_OK|OPEN_OK
+JD.US,EQ,active,oPPoioGws7Hw,JD US,,1321,20210812,20261116,,,HIST_OK|OPEN_OK
+JOBS.US,EQ,skip_no_security,,,,,,,,,NO_SECURITY
+JOYY.US,EQ,active,OAPt6lhe1X5o,JOYY US,JOYY.O,662,20220103,20261116,,,HIST_SHORT|OPEN_OK
+LI.US,EQ,active,RBEJfIMBrCe+,LI US,LI.O,1321,20210812,20261116,,,HIST_OK|OPEN_OK
+META.US,EQ,active,Xq5vnBcwsX1G,META US,,1223,20220103,20261116,,,HIST_OK|OPEN_OK
+MRVL.US,EQ,active,u319W7MLi0Ue,MRVL US,MRVL.O,1735,20191220,20261116,,,HIST_OK|OPEN_OK
+MU.US,EQ,active,V42EAZltWSnu,MU US,MU.O,1735,20191220,20261116,,,HIST_OK|OPEN_OK
+NIO.US,EQ,active,fv5HFxkPMsFv,NIO US,,1321,20210812,20261116,,,HIST_OK|OPEN_OK
+NTES.US,EQ,active,Tf438v88JiPp,NTES US,NTES.O,1321,20210812,20261116,,,HIST_OK|OPEN_OK
+NVDA.US,EQ,active,6r05MJzTbRvd,NVDA US,NVDA.O,1735,20191220,20261116,,,HIST_OK|OPEN_OK
+PDD.US,EQ,active,j6Vv1jOyL7i4,PDD US,PDD.O,1321,20210812,20261116,,,HIST_OK|OPEN_OK
+QQQ.US,EQ,active,fCMuU/oLe2mO,QQQ US,QQQ.O,2231,20180102,20261116,,,HIST_OK|OPEN_OK
+ROG.SW,EQ,active,tUfUwRhCqSUZ,ROG SE,ROG.SIX,673,20230629,20260313,,,HIST_SHORT|OPEN_OK
+SINA.US,EQ,skip_no_security,,,,,,,,,NO_SECURITY
+SKHY.US,EQ,skip_short_hist,9Khd6PD7qO/Y,SKHY US,SKHY.O,90,20260713,20261116,,,HIST_VERY_SHORT|OPEN_OK
+SKHYV.US,EQ,skip_short_hist,+W5TMVIfX+vL,SKHYV US,,1,20260710,20260710,,,HIST_VERY_SHORT|OPEN_OK
+SOXL.US,EQ,active,5uLwZcMCRNCR,SOXL US,SOXL.P,2231,20180102,20261116,,,HIST_OK|OPEN_OK
+SOXX.US,EQ,active,yzxiM5GKI7SQ,SOXX US,SOXX.O,2231,20180102,20261116,,,HIST_OK|OPEN_OK
+SPY.UP,EQ,active,+sEgDm9KXC64,SPY UP,SPY.P,2222,20180102,20261116,,,HIST_OK|OPEN_OK
+SPY.US,EQ,active,scFeSXlmy0GB,SPY US,SPY.P,2231,20180102,20261116,,,HIST_OK|OPEN_OK
+SQ.US,EQ,active,YpPZy2l19EWp,SQ US,SQ.N,1271,20191220,20250117,,,HIST_OK|OPEN_OK
+TWTR.US,EQ,skip_no_security,,,,,,,,,NO_SECURITY
+WUBA.US,EQ,skip_no_security,,,,,,,,,NO_SECURITY
+XLE.US,EQ,active,IWHEiYnh5mjI,XLE US,XLE.P,2231,20180102,20261116,,,HIST_OK|OPEN_OK
+XLY.US,EQ,active,J3RTzgpdTvTF,XLY US,XLY.P,2231,20180102,20261116,,,HIST_OK|OPEN_OK
+XPEV.US,EQ,active,FFRCWfaClPJJ,XPEV US,XPEV.N,1321,20210812,20261116,,,HIST_OK|OPEN_OK
+XYZ.US,EQ,active,XAqwSGQnfAw9,XYZ US,XYZ.N,710,20220103,20261116,,,HIST_SHORT|OPEN_OK
+YY.US,EQ,active,NyAjdOMQouSj,YY US,YY.O,905,20210812,20250328,,,HIST_SHORT|OPEN_OK
+AUD/USD,FX,active,,,,2313,20180101.0,20261116.0,AUDUSD.FX,,direct
+CHF/USD,FX,active,,,,,,,,USD/CHF,invert_1x
+CNH/USD,FX,active,,,,,,,,USD/CNH,invert_1x
+CNY/USD,FX,active,,,,,,,,USD/CNY,invert_1x
+EUR/USD,FX,active,,,,2314,20180101.0,20261116.0,EURUSD.FX,,direct
+GBP/USD,FX,active,,,,2314,20180101.0,20261116.0,GBPUSD.FX,,direct
+HKD/CNH,FX,active,,,,749,20240102.0,20261116.0,HKDCNH.FX,,direct
+HKD/USD,FX,active,,,,,,,,USD/HKD,invert_1x
+JPY/USD,FX,active,,,,2305,20180101.0,20261116.0,JPYUSD.FX,,direct
+KRW/USD,FX,active,,,,,,,,USD/KRW,invert_1x
+SGD/USD,FX,active,,,,,,,,USD/SGD,invert_1x
+USD/AUD,FX,active,,,,2315,20180101.0,20261116.0,USDAUD.FX,,direct
+USD/CHF,FX,active,,,,2313,20180101.0,20261116.0,USDCHF.FX,,direct
+USD/CNH,FX,active,,,,2314,20180101.0,20261116.0,USDCNH.FX,,direct
+USD/CNY,FX,active,,,,1858,20180101.0,20250214.0,USDCNY.FX,,direct
+USD/EUR,FX,active,,,,2315,20180101.0,20261116.0,USDEUR.FX,,direct
+USD/GBP,FX,active,,,,1888,20180101.0,20261116.0,USDGBP.FX,,direct
+USD/HKD,FX,active,,,,2314,20180101.0,20261116.0,USDHKD.FX,,direct
+USD/JPY,FX,active,,,,2314,20180101.0,20261116.0,USDJPY.FX,,direct
+USD/KRW,FX,active,,,,2314,20180101.0,20261116.0,USDKRW.FX,,direct
+USD/SGD,FX,active,,,,2314,20180101.0,20261116.0,USDSGD.FX,,direct
+CACDI,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CBEST2,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCFVTRIG,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCGGAS,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCGMATAF,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZACE,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZADS,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZAPN,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZARB,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZAXS,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZBAF,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZBHA,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZBHI,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZBJA,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZBOS,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZBPC,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZCIP,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZCOA,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZDRR,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZEIM,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZGAI,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZHCL,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZHDB,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZHMC,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZHND,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZHPC,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZHUV,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZICI,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZIHF,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZIIB,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZINF,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZIOC,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZITD,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZKMB,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZLPC,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZLT,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZMM,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZMSI,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZNTP,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZONG,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZPWG,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZRIL,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZSBI,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZSUN,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZTAT,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZTCS,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZTEC,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZTTM,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZUPL,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZUTC,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZVED,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZWPR,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZYES,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCINZZEE,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCKVS001,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCKVS002,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCKVS003,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCKVS004,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCKVS005,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCKVS006,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CCLC5V30,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CSCTAUSD,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CSIH1140,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CSIN0852,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+CSIN0905,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+DHCZ4,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+EXUSMTM,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+F1DV,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+GMAT2,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+GMAT3,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+GMATAUD3,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+GMATSGD3,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+GMATUSD2,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+GMATUSD3,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+GMS,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+GMSUSD,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+GSCB500P,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+GSCBC300,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+GSCBC500,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+HSCEIDPI,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+HSIDPI,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+MACH1,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+MLFIRPV9,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+MMA,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+MSCICS3X,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+MSDL,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+MSTARESG,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+MXGC25DH,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+NKYDIV,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+NKYEDP,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+QCMAT3Z,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+SD3E,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+SMIDP,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+SOCNQQUT,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+SPXDIVAN,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+SWAP2,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+SX5ED,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+SX7EDA,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
+XAUC,BASKET,skip_exclude_basket,,,,,,,,,exclude_list_internal
