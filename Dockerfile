@@ -30,7 +30,9 @@ COPY data/corr_mark_cmds_panel.parquet /app/data/corr_mark_cmds_panel.parquet
 COPY data/corr_realized_timeseries.parquet /app/data/corr_realized_timeseries.parquet
 COPY data/corr_web_matrices.json /app/data/corr_web_matrices.json
 COPY data/corr_mark_universe.csv /app/data/corr_mark_universe.csv
-# Slim runtime tree only. Full Corr research lives on research/correlation-phase1.
+# Runtime imports corr_mark_cmds.py / corr_mark_local.py / corr_mark_cmds_mapping.py
+# from this tree (pairwise 500s with "No module named corr_mark_cmds" if they are absent).
+# The rest of the Corr research pipeline stays on research/correlation-phase1.
 COPY research/correlation /app/research/correlation
 # Ship precomputed QIS results (also rebuilt below if missing / stale source)
 COPY data/qis_results.sqlite /app/data/qis_results.sqlite
