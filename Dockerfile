@@ -22,11 +22,15 @@ COPY data/index_spot.parquet /app/data/index_spot.parquet
 # Slim commodity futures-only DB (~20MB); full commodity_vol.sqlite (~1.4G) not shipped
 COPY data/commodity_fut.sqlite /app/data/commodity_fut.sqlite
 COPY data/vol_spread_levels.parquet /app/data/vol_spread_levels.parquet
-# Realized Correlation web panels (Market/Spread Corr tabs)
+# Realized Correlation web panels (Market/Spread Corr tabs).
+# Runtime reads corr_web_matrices.json (see realized_corr_service). Do not COPY
+# data/corr_web_matrices.parquet or data/corr_web_build_manifest.json unless that
+# loader is switched off JSON — they are research artifacts, not image inputs.
 COPY data/corr_mark_cmds_panel.parquet /app/data/corr_mark_cmds_panel.parquet
 COPY data/corr_realized_timeseries.parquet /app/data/corr_realized_timeseries.parquet
 COPY data/corr_web_matrices.json /app/data/corr_web_matrices.json
 COPY data/corr_mark_universe.csv /app/data/corr_mark_universe.csv
+# Slim runtime tree only. Full Corr research lives on research/correlation-phase1.
 COPY research/correlation /app/research/correlation
 # Ship precomputed QIS results (also rebuilt below if missing / stale source)
 COPY data/qis_results.sqlite /app/data/qis_results.sqlite

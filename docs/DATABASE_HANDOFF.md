@@ -29,22 +29,24 @@ CLSA_EQD/data/*.sqlite      ← 本地 API / Cloud Run 部署用副本
 | 项 | 值 |
 |----|-----|
 | 驱动 | `oracledb`（需本机 Instant Client；推荐 Anaconda Python） |
-| DSN | `10.23.153.15:21010/wind` |
-| User | `eqquant` |
-| Password | `eqquant`（写死在各 `pipeline/fetch_*.py`；内网账号） |
+| DSN | 环境变量 `WIND_DSN`（内网 Oracle，形如 `host:port/service`） |
+| User | 环境变量 `WIND_USER` |
+| Password | 环境变量 `WIND_PASSWORD`（**禁止**写入仓库、脚本或聊天记录） |
 
-连接示例（与脚本一致）：
+连接示例：
 
 ```python
+import os
 import oracledb
 conn = oracledb.connect(
-    user="eqquant",
-    password="eqquant",
-    dsn="10.23.153.15:21010/wind",
+    user=os.environ["WIND_USER"],
+    password=os.environ["WIND_PASSWORD"],
+    dsn=os.environ["WIND_DSN"],
 )
 ```
 
-> 仅内网可达。外网 / Cloud Run **不能**直连 Wind。
+> 仅内网可达。外网 / Cloud Run **不能**直连 Wind。  
+> 历史文档曾把账号写进本文件。该口令视为已泄露，必须在 Wind 侧轮换，并改掉上级仓库 `pipeline/fetch_*.py` 里的硬编码。
 
 ---
 

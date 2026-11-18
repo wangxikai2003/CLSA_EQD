@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Push to GitHub + deploy to Cloud Run (us-west1).
+# Deploy main to Cloud Run (us-west1). Does not push git.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -25,10 +25,19 @@ if [[ -z "${CLOUDSDK_PYTHON:-}" && -x "${HOME}/anaconda3/bin/python3" ]]; then
   export CLOUDSDK_PYTHON="${HOME}/anaconda3/bin/python3"
 fi
 
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+if [[ "$BRANCH" != "main" && "${ALLOW_NON_MAIN_DEPLOY:-}" != "1" ]]; then
+  echo "Refusing to deploy from '$BRANCH'."
+  echo "Cloud Run ships only from main. Set ALLOW_NON_MAIN_DEPLOY=1 to override."
+  exit 1
+fi
+
 if [[ ! -f data/cffex_vol.sqlite ]]; then
-  echo "Missing data/cffex_vol.sqlite"
-  echo "From repo root run:  bash scripts/sync_db_to_app.sh"
-  echo "Or:  python pipeline/build_vol_db.py && python pipeline/materialize_svi_matrices.py"
+  echo "Missing data/cffex_vol.sqlite (not in git; ~150MB local copy)."
+  echo "From the parent vol_trading repo (one level up, not this git root):"
+  echo "  cd .. && bash scripts/sync_db_to_app.sh"
+  echo "Or rebuild then sync:"
+  echo "  cd .. && python pipeline/build_vol_db.py && python pipeline/materialize_svi_matrices.py && bash scripts/sync_db_to_app.sh"
   exit 1
 fi
 
@@ -48,7 +57,9 @@ if [[ -z "$PROJECT" || "$PROJECT" == "(unset)" ]]; then
   exit 1
 fi
 
-echo "==> Deploying $SERVICE to $REGION (project=$PROJECT) from local source (includes sqlite)"
+PREV="$(gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT" --format='value(status.latestReadyRevisionName)' 2>/dev/null || true)"
+
+echo "==> Deploying $SERVICE to $REGION (project=$PROJECT) with no traffic shift"
 gcloud run deploy "$SERVICE" \
   --source . \
   --region "$REGION" \
@@ -58,15 +69,57 @@ gcloud run deploy "$SERVICE" \
   --cpu 2 \
   --concurrency 40 \
   --timeout 300 \
+  --no-traffic \
   --quiet
 
-# AI Studio mounts GCS over /app/dist — strip so Vite build from image is served
-echo "==> Removing AI Studio /app/dist volume mount (if present)"
+# AI Studio mounts GCS over /app/dist — strip so Vite build from image is served.
+# --no-traffic keeps the previous ready revision at 100% until smoke passes.
+echo "==> Removing AI Studio /app/dist volume mount (no traffic shift)"
 gcloud run services update "$SERVICE" \
   --region "$REGION" \
   --project "$PROJECT" \
   --clear-volume-mounts \
   --clear-volumes \
+  --no-traffic \
+  --quiet
+
+REV="$(gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT" --format='value(status.latestCreatedRevisionName)')"
+echo "==> Candidate revision $REV (previous ready: ${PREV:-none})"
+gcloud run services update-traffic "$SERVICE" \
+  --region "$REGION" \
+  --project "$PROJECT" \
+  --update-tags "smoke=${REV}" \
+  --quiet
+
+SMOKE_URL="$(gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT" --format=json | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+for item in doc.get("status", {}).get("traffic", []):
+    if item.get("tag") == "smoke" and item.get("url"):
+        print(item["url"])
+        break
+')"
+
+if [[ -z "$SMOKE_URL" ]]; then
+  echo "Could not resolve smoke tag URL. Traffic stays on ${PREV:-previous revision}."
+  exit 1
+fi
+
+if ! bash scripts/smoke_live.sh "$SMOKE_URL"; then
+  echo "Smoke failed. Traffic stays on ${PREV:-previous revision}."
+  gcloud run services update-traffic "$SERVICE" \
+    --region "$REGION" \
+    --project "$PROJECT" \
+    --remove-tags smoke \
+    --quiet || true
+  exit 1
+fi
+
+gcloud run services update-traffic "$SERVICE" \
+  --region "$REGION" \
+  --project "$PROJECT" \
+  --to-revisions "${REV}=100" \
+  --remove-tags smoke \
   --quiet
 
 echo "==> Service URL:"
