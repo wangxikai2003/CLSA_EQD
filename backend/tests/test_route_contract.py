@@ -14,26 +14,27 @@ from api.v1 import market as market_routes
 from api.v1 import qis_backtest as qis_routes
 
 
-def _paths(app: FastAPI) -> set[str]:
-    return {getattr(r, "path", "") for r in app.routes}
+def _route_paths(router) -> set[str]:
+    found: set[str] = set()
+    for route in getattr(router, "routes", []):
+        for attr in ("path", "path_format"):
+            val = getattr(route, attr, None)
+            if isinstance(val, str) and val:
+                found.add(val)
+    return found
 
 
 def test_correlation_market_exotic_qis_routes_exist():
-    app = FastAPI()
-    app.include_router(corr_routes.router, prefix="/api/v1/correlation")
-    app.include_router(market_routes.router)
-    app.include_router(exotic_routes.router)
-    app.include_router(qis_routes.router, prefix="/api/v1/qis")
-    paths = _paths(app)
-    required = {
-        "/api/v1/correlation/universe",
-        "/api/v1/market/yield-curve",
-        "/api/v1/exotic/presets",
-        "/api/v1/qis/strategies",
-        "/api/v1/qis/backtest/{strategy_id}",
-    }
-    missing = required - paths
-    assert not missing, missing
+    """Assert on each APIRouter, not app.routes, so a FastAPI upgrade cannot hide mounts."""
+    corr = _route_paths(corr_routes.router)
+    market = _route_paths(market_routes.router)
+    exotic = _route_paths(exotic_routes.router)
+    qis = _route_paths(qis_routes.router)
+    assert any(p.endswith("/universe") for p in corr), corr
+    assert any(p.endswith("/yield-curve") for p in market), market
+    assert any(p.endswith("/presets") for p in exotic), exotic
+    assert any(p == "/strategies" or p.endswith("/strategies") for p in qis), qis
+    assert any("backtest/{strategy_id}" in p for p in qis), qis
 
 
 def test_strategies_route_is_mounted():

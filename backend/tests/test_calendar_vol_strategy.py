@@ -12,6 +12,13 @@ BACKEND = Path(__file__).resolve().parents[1]
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+# Full backtests read data/cffex_vol.sqlite, which is intentionally not in git.
+_VOL_DB = Path(__file__).resolve().parents[2] / "data" / "cffex_vol.sqlite"
+needs_vol_db = pytest.mark.skipif(
+    not (_VOL_DB.exists() and _VOL_DB.stat().st_size > 0),
+    reason="data/cffex_vol.sqlite is local-only; sync from the parent vol_trading repo",
+)
+
 from engine.black76 import black76_greeks
 from engine.calendar_vol_strategy import (
     CalendarVolBacktestEngine,
@@ -99,6 +106,7 @@ def test_black76_call_put_vega_equal():
 
 @pytest.mark.parametrize("universe", list(UNIVERSES.keys()))
 @pytest.mark.parametrize("tenor_pair", list(TENOR_PAIRS.keys()))
+@needs_vol_db
 def test_full_backtest_invariants(universe, tenor_pair):
     payload = run_calendar_vol(
         universe, initial_nav=100_000_000.0, z_window=252, tenor_pair=tenor_pair
@@ -150,6 +158,7 @@ def test_compute_spread_iv_vs_iv2():
     assert set(SPREAD_MODES) == {"iv", "iv2"}
 
 
+@needs_vol_db
 def test_300_36_nav_regression():
     """Locked 3M–6M CSI300 final NAV multiple (~1.163945) after warm/min_periods cut."""
     payload = run_calendar_vol(
@@ -166,6 +175,7 @@ def test_300_36_nav_regression():
     assert payload.get("yearly_metrics"), "yearly_metrics missing"
 
 
+@needs_vol_db
 def test_spread_mode_iv2_differs_from_iv():
     """iv2 rebuilds Spread from CT-IV squares; NAV path differs from iv."""
     iv = run_calendar_vol(
@@ -187,6 +197,7 @@ def test_spread_mode_iv2_differs_from_iv():
     )
 
 
+@needs_vol_db
 def test_side_mode_filters_positions():
     """long_only never holds −1; short_only never holds +1; both has both sides."""
     both = run_calendar_vol("300", tenor_pair="3M-6M", side_mode="both")
@@ -213,6 +224,7 @@ def test_side_mode_filters_positions():
     )
 
 
+@needs_vol_db
 def test_signal_lag_t_minus_1_execution():
     """Signal emitted on day t-1 must equal position executed on day t."""
     eng = CalendarVolBacktestEngine(universe="300", z_window=252)
@@ -232,6 +244,7 @@ def test_signal_lag_t_minus_1_execution():
         assert rows[i]["position"] == rows[i - 1]["signal_next"]
 
 
+@needs_vol_db
 def test_holdings_excel_export(tmp_path):
     from engine.calendar_vol_strategy import export_holdings_for_universe
 
@@ -260,6 +273,7 @@ def test_normalize_signal_mode_regime():
     assert normalize_signal_mode("hybrid") == "regime2"
 
 
+@needs_vol_db
 def test_regime_signal_mode_smoke():
     """regime mode runs end-to-end; payload carries regime_mode / cooldown / garch_z."""
     payload = run_calendar_vol(
@@ -302,6 +316,7 @@ def test_regime_signal_mode_smoke():
     assert float(payload["summary"]["final_nav_multiple"]) > 0
 
 
+@needs_vol_db
 def test_regime2_signal_mode_smoke():
     """regime2 = quantile on Spread + dual-day z stress gate; exports gz bands."""
     payload = run_calendar_vol(
@@ -328,6 +343,7 @@ def test_regime2_signal_mode_smoke():
     assert float(payload["summary"]["final_nav_multiple"]) > 0
 
 
+@needs_vol_db
 def test_regime_books_differ():
     """Momentum-only / fade-only / both produce distinct paths."""
     common = dict(
@@ -354,6 +370,7 @@ def test_regime_books_differ():
     )
 
 
+@needs_vol_db
 def test_regime_button_matrix_smoke():
     """Regime v2 runs across other Calendar Vol buttons (universe/tenor/side/spread)."""
     combos = [
