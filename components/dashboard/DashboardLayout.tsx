@@ -23,19 +23,22 @@ const DashboardLayout: React.FC<Props> = ({ product, tradeDate, onProductChange,
           <p className="text-[11px] text-slate-500">Yield · JW-SVI Skew/Surface · Vol Cone · T-Quote · Corr</p>
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex gap-1">
-            {(['HO', 'IO', 'MO'] as ProductCode[]).map((p) => (
-              <button
-                key={p}
-                onClick={() => onProductChange?.(p)}
-                className={`px-2 py-1 text-[10px] font-bold rounded border ${
-                  product === p ? 'bg-[#000066] text-white border-[#000066]' : 'bg-white text-slate-500 border-slate-200'
-                }`}
-              >
-                {p}
-              </button>
-            ))}
-          </div>
+          {/* HO/IO/MO only for CFFEX product tabs (Vol Analytics / T-Quote) */}
+          {(sub === 'vol' || sub === 'tquote') && (
+            <div className="flex gap-1">
+              {(['HO', 'IO', 'MO'] as ProductCode[]).map((p) => (
+                <button
+                  key={p}
+                  onClick={() => onProductChange?.(p)}
+                  className={`px-2 py-1 text-[10px] font-bold rounded border ${
+                    product === p ? 'bg-[#000066] text-white border-[#000066]' : 'bg-white text-slate-500 border-slate-200'
+                  }`}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          )}
           <span className="text-[10px] font-mono text-slate-400">{tradeDate || 'latest'}</span>
         </div>
       </div>
