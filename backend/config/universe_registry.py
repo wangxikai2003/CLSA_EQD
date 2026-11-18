@@ -1,4 +1,10 @@
-"""Multi-market / multi-asset registry for Realized Correlation UI."""
+"""Multi-asset registry for Realized Correlation UI.
+
+Cascade: AssetClass (EQUITY / COMMODITY / FX)
+      → Market (US / HK / CN / …)
+      → Instrument (INDEX / SINGLE_STOCK / FX / BASKET)
+      → Target
+"""
 
 from __future__ import annotations
 
@@ -13,7 +19,7 @@ UNIVERSE_CANDIDATES = [
     ROOT / "data" / "corr_mark_universe.csv",
 ]
 
-# Market buckets
+# Market buckets (region)
 _SUBREGION_MARKET = {
     "US": "US",
     "UP": "US",
@@ -31,6 +37,9 @@ _SUBREGION_MARKET = {
     "SG": "HK",
     "FX": "FX",
 }
+
+# Top-level asset-class families (peer of COMMODITY / FX)
+ASSET_CLASSES = ("EQUITY", "COMMODITY", "FX")
 
 PRESETS: dict[str, list[str]] = {
     "Global Major Indices": [
@@ -92,7 +101,6 @@ def _subregion(calypso: str, typ: str) -> str:
         return "FX"
     if "." in calypso:
         return calypso.rsplit(".", 1)[1]
-    # indices
     idx_map = {
         "SPX": "US",
         "NDX": "US",
@@ -131,14 +139,23 @@ def _currency(sub: str) -> str:
     }.get(sub, "USD")
 
 
-def _asset_class(typ: str, calypso: str) -> str:
-    if typ == "BASKET":
-        return "BASKET"
+def _classify(typ: str, calypso: str) -> tuple[str, str]:
+    """Return (asset_class family, instrument kind).
+
+    Families: EQUITY | COMMODITY | FX
+    Instruments under EQUITY: INDEX | SINGLE_STOCK | BASKET
+    Under FX: FX
+    """
     if typ == "FX" or "/" in calypso:
-        return "FX"
+        return "FX", "FX"
+    if typ == "BASKET":
+        return "EQUITY", "BASKET"
+    if typ == "CMD" or typ == "COMMODITY":
+        return "COMMODITY", "SINGLE_STOCK"
     if typ == "IDX" or ("." not in calypso and "/" not in calypso):
-        return "INDEX"
-    return "EQUITY"
+        return "EQUITY", "INDEX"
+    # listed equities / ETFs with exchange suffix
+    return "EQUITY", "SINGLE_STOCK"
 
 
 @lru_cache(maxsize=1)
@@ -157,9 +174,9 @@ def load_registry() -> dict[str, Any]:
             typ = (row.get("type") or "").strip() or "EQ"
             sub = _subregion(cal, typ)
             market = _SUBREGION_MARKET.get(sub, "US")
-            ac = _asset_class(typ, cal)
+            asset_class, instrument = _classify(typ, cal)
             caps = ["pairwise_corr", "corr_matrix", "corr_spread"]
-            if ac == "BASKET":
+            if instrument == "BASKET":
                 caps = ["corr_matrix"]
             targets.append(
                 {
@@ -167,7 +184,10 @@ def load_registry() -> dict[str, Any]:
                     "name": cal,
                     "type": typ,
                     "market": market,
-                    "asset_class": ac,
+                    "asset_class": asset_class,
+                    "instrument": instrument,
+                    # backward-compatible alias used by older clients
+                    "kind": instrument,
                     "subregion": sub,
                     "currency": _currency(sub),
                     "sec_id": row.get("sec_id") or "",
@@ -176,17 +196,25 @@ def load_registry() -> dict[str, Any]:
                 }
             )
 
-    # tree: Market → AssetClass → targets
-    tree: dict[str, Any] = {}
+    # tree: AssetClass → Market → Instrument → targets
+    tree: dict[str, Any] = {ac: {} for ac in ASSET_CLASSES}
     for t in targets:
-        m = t["market"]
         ac = t["asset_class"]
-        tree.setdefault(m, {}).setdefault(ac, []).append(
-            {k: t[k] for k in ("symbol", "name", "subregion", "currency", "capabilities")}
+        m = t["market"]
+        inst = t["instrument"]
+        tree.setdefault(ac, {}).setdefault(m, {}).setdefault(inst, []).append(
+            {
+                k: t[k]
+                for k in ("symbol", "name", "subregion", "currency", "capabilities", "instrument")
+            }
         )
-    for m in tree:
-        for ac in tree[m]:
-            tree[m][ac] = sorted(tree[m][ac], key=lambda x: x["symbol"])
+    for ac in tree:
+        for m in tree[ac]:
+            for inst in tree[ac][m]:
+                tree[ac][m][inst] = sorted(tree[ac][m][inst], key=lambda x: x["symbol"])
+
+    # Ensure empty COMMODITY placeholder so UI can show the family
+    tree.setdefault("COMMODITY", {})
 
     presets = []
     sym_set = {t["symbol"] for t in targets}
@@ -199,6 +227,7 @@ def load_registry() -> dict[str, Any]:
         "targets": targets,
         "presets": presets,
         "rolling_windows": ROLLING_WINDOWS,
+        "asset_classes": list(ASSET_CLASSES),
         "source": str(path),
     }
 

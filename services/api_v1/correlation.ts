@@ -8,13 +8,26 @@ export interface CorrTarget {
   subregion: string;
   currency: string;
   capabilities: string[];
+  instrument?: string;
 }
 
+/** AssetClass → Market → Instrument (INDEX / SINGLE_STOCK / FX) → targets */
+export type CorrUniverseTree = Record<string, Record<string, Record<string, CorrTarget[]>>>;
+
 export interface CorrUniverseResponse {
-  tree: Record<string, Record<string, CorrTarget[]>>;
-  targets: Array<CorrTarget & { market: string; asset_class: string; type?: string }>;
+  tree: CorrUniverseTree;
+  targets: Array<
+    CorrTarget & {
+      market: string;
+      asset_class: string;
+      instrument?: string;
+      kind?: string;
+      type?: string;
+    }
+  >;
   presets: { id: string; label: string; symbols: string[] }[];
   rolling_windows: number[];
+  asset_classes?: string[];
   source: string;
 }
 
