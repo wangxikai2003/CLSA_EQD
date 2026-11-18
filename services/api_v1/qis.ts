@@ -211,6 +211,9 @@ export function fetchQisBacktest(
   sideMode: QisSideMode = 'both',
   spreadMode: QisSpreadMode = 'iv',
   signalMode: QisSignalMode = 'quantile',
+  stopLoss = false,
+  maxDrawdownTarget = 0.1,
+  reboundRatio = 0.9,
 ) {
   const q = new URLSearchParams();
   if (refresh) q.set('refresh', 'true');
@@ -219,6 +222,11 @@ export function fetchQisBacktest(
   q.set('side_mode', sideMode);
   q.set('spread_mode', spreadMode);
   q.set('signal_mode', signalMode);
+  if (stopLoss) {
+    q.set('stop_loss', 'true');
+    q.set('max_drawdown_target', String(maxDrawdownTarget));
+    q.set('rebound_ratio', String(reboundRatio));
+  }
   const qs = q.toString();
   return getJsonWithRetry<QisBacktestResponse>(
     `/api/v1/qis/backtest/${strategyId}?${qs}`,
@@ -234,6 +242,9 @@ export function qisHoldingsExcelUrl(
   sideMode: QisSideMode = 'both',
   spreadMode: QisSpreadMode = 'iv',
   signalMode: QisSignalMode = 'quantile',
+  stopLoss = false,
+  maxDrawdownTarget = 0.1,
+  reboundRatio = 0.9,
 ) {
   const q = new URLSearchParams();
   q.set('z_window', String(zWindow));
@@ -241,6 +252,11 @@ export function qisHoldingsExcelUrl(
   q.set('side_mode', sideMode);
   q.set('spread_mode', spreadMode);
   q.set('signal_mode', signalMode);
+  if (stopLoss) {
+    q.set('stop_loss', 'true');
+    q.set('max_drawdown_target', String(maxDrawdownTarget));
+    q.set('rebound_ratio', String(reboundRatio));
+  }
   q.set('persist', 'true');
   return `/api/v1/qis/backtest/${encodeURIComponent(strategyId)}/holdings.xlsx?${q}`;
 }

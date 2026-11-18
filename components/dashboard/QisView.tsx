@@ -192,6 +192,9 @@ const QisView: React.FC = () => {
   const [sideMode, setSideMode] = useState<QisSideMode>('both');
   const [spreadMode, setSpreadMode] = useState<QisSpreadMode>('iv');
   const [signalMode, setSignalMode] = useState<QisSignalMode>('quantile');
+  const [stopLoss, setStopLoss] = useState(false);
+  const [maxDdPct, setMaxDdPct] = useState(10);
+  const [reboundRatio, setReboundRatio] = useState(0.9);
   const [data, setData] = useState<QisBacktestResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadStatus, setLoadStatus] = useState('Running backtest…');
@@ -201,6 +204,11 @@ const QisView: React.FC = () => {
     if (family === 'cross_calendar_carry') return 'cross_calendar_carry';
     return CAL_VOL_UNIVERSES.find((u) => u.key === universe)?.id ?? 'equity_3_6_calendar_vol_300';
   }, [family, universe]);
+
+  const stopApplies =
+    family === 'calendar_vol' &&
+    (signalMode === 'quantile' || isRegime2SignalMode(signalMode));
+  const stopOn = stopApplies && stopLoss;
 
   const load = (refresh = false, signal?: AbortSignal) => {
     setLoading(true);
@@ -222,6 +230,9 @@ const QisView: React.FC = () => {
       family === 'calendar_vol' ? sideMode : 'both',
       family === 'calendar_vol' ? spreadMode : 'iv',
       family === 'calendar_vol' ? signalMode : 'quantile',
+      stopOn,
+      maxDdPct / 100,
+      reboundRatio,
     )
       .then((d) => {
         if (signal?.aborted) return;
@@ -274,7 +285,7 @@ const QisView: React.FC = () => {
     load(false, ac.signal);
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [strategyId, tenorPair, sideMode, spreadMode, signalMode]);
+  }, [strategyId, tenorPair, sideMode, spreadMode, signalMode, stopOn, maxDdPct, reboundRatio]);
 
   const levelScale = useMemo(() => {
     const fromSignal = data?.signal?.level_scale;
@@ -790,7 +801,17 @@ const QisView: React.FC = () => {
             </button>
             {isCalVol && (
               <a
-                href={qisHoldingsExcelUrl(strategyId, 252, tenorPair, sideMode, spreadMode, signalMode)}
+                href={qisHoldingsExcelUrl(
+                  strategyId,
+                  252,
+                  tenorPair,
+                  sideMode,
+                  spreadMode,
+                  signalMode,
+                  stopOn,
+                  maxDdPct / 100,
+                  reboundRatio,
+                )}
                 className={`inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-md border border-slate-200 bg-white text-[#000066] hover:bg-slate-50 ${
                   loading ? 'pointer-events-none opacity-60' : ''
                 }`}
@@ -914,6 +935,57 @@ const QisView: React.FC = () => {
                     </div>
                   </div>
                 )}
+                {stopApplies && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Stop</span>
+                    <button
+                      type="button"
+                      disabled={loading}
+                      title="开仓后净值相对开仓日回撤到达阈值则平仓，并等到价差从极值收回后再恢复开仓"
+                      onClick={() => setStopLoss((on) => !on)}
+                      className={segBtnClass(stopLoss, loading)}
+                    >
+                      止损 {stopLoss ? 'ON' : 'OFF'}
+                    </button>
+                    {stopLoss && (
+                      <>
+                        <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                          回撤
+                          <input
+                            type="number"
+                            min={1}
+                            max={50}
+                            step={1}
+                            disabled={loading}
+                            value={maxDdPct}
+                            onChange={(e) => {
+                              const v = Number(e.target.value);
+                              if (Number.isFinite(v) && v > 0 && v < 80) setMaxDdPct(v);
+                            }}
+                            className="w-12 px-1 py-0.5 border border-slate-200 rounded text-[10px] font-bold text-[#000066]"
+                          />
+                          %
+                        </label>
+                        <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                          反弹
+                          <input
+                            type="number"
+                            min={0.05}
+                            max={1}
+                            step={0.05}
+                            disabled={loading}
+                            value={reboundRatio}
+                            onChange={(e) => {
+                              const v = Number(e.target.value);
+                              if (Number.isFinite(v) && v > 0 && v <= 1) setReboundRatio(v);
+                            }}
+                            className="w-14 px-1 py-0.5 border border-slate-200 rounded text-[10px] font-bold text-[#000066]"
+                          />
+                        </label>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1016,6 +1088,13 @@ const QisView: React.FC = () => {
                         </>
                       )}
                     </p>
+                    {stopApplies && (
+                      <p className="mt-1">
+                        {stopOn
+                          ? `止损开：持仓净值相对开仓日下跌 ${(maxDdPct).toFixed(0)}% 就在下一收盘平仓，并进入观察期（不再开新仓）。价差从开仓后的最不利点收回不利波幅的 ${(reboundRatio * 100).toFixed(0)}% 后，观察结束，恢复原信号。`
+                          : '止损关。打开后，持仓净值相对开仓日回撤到阈值就平仓，并等到价差从最不利点反弹到设定比例再恢复开仓。'}
+                      </p>
+                    )}
                   </div>
                 )}
                 <div>

@@ -396,6 +396,22 @@ def backtest(
         "quantile",
         description="Signal: quantile | garch_z | regime | regime_momentum | regime_fade | regime2",
     ),
+    stop_loss: bool = Query(
+        False,
+        description="Quantile/regime2 only: flatten after entry-NAV drawdown, then wait for a spread retrace",
+    ),
+    max_drawdown_target: float = Query(
+        0.10,
+        gt=0,
+        lt=1,
+        description="Stop when NAV is this fraction below the entry-day NAV",
+    ),
+    rebound_ratio: float = Query(
+        0.90,
+        gt=0,
+        le=1,
+        description="Leave the stop once the spread has retraced this fraction of its adverse move",
+    ),
 ):
     db = st._equity_db()
     from api.v1 import qis_results_store as qrs
@@ -488,7 +504,8 @@ def backtest(
             sig = normalize_signal_mode(signal_mode)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
-        if not refresh:
+        use_stop = bool(stop_loss) and sig in ("quantile", "regime2")
+        if not use_stop and not refresh:
             hit = qrs.get_cached(
                 strategy_id,
                 z_window,
@@ -502,7 +519,19 @@ def backtest(
             if hit is not None:
                 return hit
         # in-process short cache
-        mem_key = (strategy_id, z_window, src, _INITIAL_NAV, tp, sm, spm, sig)
+        mem_key = (
+            strategy_id,
+            z_window,
+            src,
+            _INITIAL_NAV,
+            tp,
+            sm,
+            spm,
+            sig,
+            use_stop,
+            round(float(max_drawdown_target), 4) if use_stop else None,
+            round(float(rebound_ratio), 4) if use_stop else None,
+        )
         mem = _cache.get("cal_vol_map") or {}
         if not refresh and mem_key in mem:
             return qrs.attach_cache_meta(
@@ -524,18 +553,22 @@ def backtest(
             side_mode=sm,
             spread_mode=spm,
             signal_mode=sig,
+            stop_loss=use_stop,
+            max_drawdown_target=max_drawdown_target,
+            rebound_ratio=rebound_ratio,
         )
-        qrs.put_cached(
-            strategy_id,
-            z_window,
-            _INITIAL_NAV,
-            src,
-            payload,
-            tenor_pair=tp,
-            side_mode=sm,
-            spread_mode=spm,
-            signal_mode=sig,
-        )
+        if not use_stop:
+            qrs.put_cached(
+                strategy_id,
+                z_window,
+                _INITIAL_NAV,
+                src,
+                payload,
+                tenor_pair=tp,
+                side_mode=sm,
+                spread_mode=spm,
+                signal_mode=sig,
+            )
         clean = {k: v for k, v in payload.items() if not str(k).startswith("_")}
         mem[mem_key] = clean
         _cache["cal_vol_map"] = mem
@@ -544,7 +577,7 @@ def backtest(
             hit=False,
             source="miss",
             source_key=src,
-            persisted=True,
+            persisted=not use_stop,
             tenor_pair=tp,
             side_mode=sm,
             spread_mode=spm,
@@ -576,6 +609,9 @@ def download_holdings(
         "quantile",
         description="Signal: quantile | garch_z | regime | regime_momentum | regime_fade | regime2",
     ),
+    stop_loss: bool = Query(False),
+    max_drawdown_target: float = Query(0.10, gt=0, lt=1),
+    rebound_ratio: float = Query(0.90, gt=0, le=1),
     persist: bool = Query(
         True,
         description="Also write Excel under data/exports/ on the server/local disk",
@@ -613,6 +649,9 @@ def download_holdings(
         side_mode=sm,
         spread_mode=spm,
         signal_mode=sig,
+        stop_loss=bool(stop_loss) and sig in ("quantile", "regime2"),
+        max_drawdown_target=max_drawdown_target,
+        rebound_ratio=rebound_ratio,
     )
     eng.run()
     if persist:

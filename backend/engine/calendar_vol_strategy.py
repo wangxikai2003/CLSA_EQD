@@ -432,6 +432,9 @@ class CalendarVolBacktestEngine:
         budget_fade_vol_scale: bool = False,
         stress_streak_days: int = 2,
         max_hold_reverse: int = MAX_HOLD_REVERSE,
+        stop_loss: bool = False,
+        max_drawdown_target: float = 0.10,
+        rebound_ratio: float = 0.90,
     ):
         if universe not in UNIVERSES:
             raise ValueError(f"unknown universe {universe}; choose {list(UNIVERSES)}")
@@ -459,6 +462,14 @@ class CalendarVolBacktestEngine:
         self.budget_fade_vol_scale = bool(budget_fade_vol_scale)
         self.stress_streak_days = max(1, int(stress_streak_days))
         self.max_hold_reverse = max(1, int(max_hold_reverse))
+        self.max_drawdown_target = float(max_drawdown_target)
+        self.rebound_ratio = float(rebound_ratio)
+        self.stop_loss = bool(stop_loss) and self.signal_mode in ("quantile", "regime2")
+        if self.stop_loss:
+            if not (0.0 < self.max_drawdown_target < 1.0):
+                raise ValueError("max_drawdown_target must be in (0, 1)")
+            if not (0.0 < self.rebound_ratio <= 1.0):
+                raise ValueError("rebound_ratio must be in (0, 1]")
         self.product = self.cfg["product"]
         self.spot_code = self.cfg["spot_code"]
         self.m_opt = float(self.cfg["m_opt"])
@@ -1006,6 +1017,10 @@ class CalendarVolBacktestEngine:
         nav = self.initial_nav
         state = DayState()
         pending_signal = 0  # day-0: observe only; first trade earliest on day 1
+        from engine.stop_loss import StopBook, step_stop
+
+        stop_book = StopBook()
+        stop_events = 0
         pending_mode: Optional[str] = None
         pending_cooldown = 0
         pending_entry_spread: Optional[float] = None
@@ -1362,6 +1377,20 @@ class CalendarVolBacktestEngine:
                 pending_mode = None
                 pending_cooldown = 0
                 pending_entry_spread = None
+            if self.stop_loss:
+                signal_next, stop_reason, stop_book = step_stop(
+                    stop_book,
+                    position=target,
+                    nav=nav,
+                    spread=signal_level_f,
+                    raw_signal=signal_next,
+                    max_drawdown_target=self.max_drawdown_target,
+                    rebound_ratio=self.rebound_ratio,
+                )
+                if stop_reason:
+                    signal_reason = stop_reason
+                    if stop_reason == "stop_drawdown":
+                        stop_events += 1
             pending_signal = signal_next
 
             if target != 0 or executed:
@@ -1412,6 +1441,7 @@ class CalendarVolBacktestEngine:
                     "cooldown": int(state.cooldown),
                     "entry_spread": state.entry_spread,
                     "signal_reason": signal_reason,
+                    "stop_phase": stop_book.phase if self.stop_loss else "off",
                     "n_near": n_near,
                     "n_far": n_far,
                     "n_if": n_if,
@@ -1433,6 +1463,7 @@ class CalendarVolBacktestEngine:
                 }
             )
 
+        self._stop_events = stop_events
         return self._pack_payload(rows, first_open_i)
 
     def _window_metrics(self, nav: pd.Series, daily_ret: pd.Series) -> Dict[str, Any]:
@@ -1717,6 +1748,7 @@ class CalendarVolBacktestEngine:
             "cooldown": [int(rows[i].get("cooldown") or 0) for i in sig_idx],
             "entry_spread": [_opt(rows[i].get("entry_spread")) for i in sig_idx],
             "signal_reason": [rows[i].get("signal_reason") for i in sig_idx],
+            "stop_phase": [rows[i].get("stop_phase") for i in sig_idx],
             "trade_markers": trade_markers,
             "enter_q": self.enter_q,
             "exit_lo_q": self.exit_lo_q,
@@ -1824,6 +1856,12 @@ class CalendarVolBacktestEngine:
                 f"exit when Spread returns to prior-window q50, "
                 f"long if spread<=q50 and short if spread>=q50; no look-ahead)"
             )
+        if self.stop_loss:
+            signal_desc += (
+                f" Stop-loss: NAV down {self.max_drawdown_target:.0%} from the entry-day NAV "
+                f"flattens next close and blocks new opens until the spread retraces "
+                f"{self.rebound_ratio:.0%} of its adverse move from the extreme back to the entry spread."
+            )
 
         return {
             "strategy_id": cfg["strategy_id"],
@@ -1900,6 +1938,10 @@ class CalendarVolBacktestEngine:
                 "exit_hi_q": self.exit_hi_q,
                 "max_hold_reverse": self.max_hold_reverse,
                 "stress_streak_days": self.stress_streak_days,
+                "stop_loss": self.stop_loss,
+                "max_drawdown_target": self.max_drawdown_target,
+                "rebound_ratio": self.rebound_ratio,
+                "stop_events": int(getattr(self, "_stop_events", 0)),
                 "max_abs_port_vega": round(max_vega_resid, 8),
                 "universe": self.universe,
                 "m_opt": self.m_opt,
@@ -1951,6 +1993,9 @@ def run_calendar_vol(
     exit_hi_q: float = EXIT_HI_Q,
     stress_streak_days: int = 2,
     max_hold_reverse: int = MAX_HOLD_REVERSE,
+    stop_loss: bool = False,
+    max_drawdown_target: float = 0.10,
+    rebound_ratio: float = 0.90,
 ) -> Dict[str, Any]:
     eng = CalendarVolBacktestEngine(
         universe=universe,
@@ -1965,6 +2010,9 @@ def run_calendar_vol(
         exit_hi_q=exit_hi_q,
         stress_streak_days=stress_streak_days,
         max_hold_reverse=max_hold_reverse,
+        stop_loss=stop_loss,
+        max_drawdown_target=max_drawdown_target,
+        rebound_ratio=rebound_ratio,
     )
     payload = eng.run()
     if export_holdings:
@@ -1997,6 +2045,9 @@ def run_by_strategy_id(
     side_mode: str = DEFAULT_SIDE_MODE,
     spread_mode: str = DEFAULT_SPREAD_MODE,
     signal_mode: str = DEFAULT_SIGNAL_MODE,
+    stop_loss: bool = False,
+    max_drawdown_target: float = 0.10,
+    rebound_ratio: float = 0.90,
 ) -> Dict[str, Any]:
     if strategy_id not in STRATEGY_BY_ID:
         raise KeyError(strategy_id)
@@ -2010,6 +2061,9 @@ def run_by_strategy_id(
         side_mode=side_mode,
         spread_mode=spread_mode,
         signal_mode=signal_mode,
+        stop_loss=stop_loss,
+        max_drawdown_target=max_drawdown_target,
+        rebound_ratio=rebound_ratio,
     )
 
 
