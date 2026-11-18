@@ -5,12 +5,12 @@ import { ZERO_JW_DELTA } from '../services/volatilityService';
 
 type Key = keyof JwParams;
 
-const PARAMS: { key: Key; label: string; step: number }[] = [
-  { key: 'v', label: 'v', step: 0.002 },
-  { key: 'psi', label: 'ψ', step: 0.005 },
-  { key: 'p', label: 'p', step: 0.02 },
-  { key: 'c', label: 'c', step: 0.02 },
-  { key: 'vtild', label: 'ṽ', step: 0.002 },
+const PARAMS: { key: Key; symbol: string; word: string; step: number }[] = [
+  { key: 'v', symbol: 'v', word: 'ATM', step: 0.002 },
+  { key: 'psi', symbol: 'ψ', word: 'Skew', step: 0.005 },
+  { key: 'p', symbol: 'p', word: 'Put', step: 0.02 },
+  { key: 'c', symbol: 'c', word: 'Call', step: 0.02 },
+  { key: 'vtild', symbol: 'ṽ', word: 'Floor', step: 0.002 },
 ];
 
 interface Props {
@@ -52,35 +52,39 @@ const JwParamPanel: React.FC<Props> = ({ base, delta, onChange, compact }) => {
           <RotateCcw size={10} /> Reset
         </button>
       </div>
-      <div className={`space-y-1.5`}>
-        {PARAMS.map(({ key, label }) => {
-          const val = base[key] + delta[key];
+      <div className="space-y-1.5">
+        {PARAMS.map(({ key, symbol, word }) => {
+          const d = delta[key];
+          const val = base[key] + d;
+          const shifted = Math.abs(d) > 1e-12;
           return (
             <div key={key} className="flex items-center gap-1">
-              <span className="w-4 text-[10px] font-bold text-amber-900 font-serif">{label}</span>
+              <span className="w-4 text-[10px] font-bold text-amber-900 font-serif shrink-0">{symbol}</span>
               <button
                 type="button"
                 onClick={() => bump(key, -1)}
-                className="w-5 h-5 flex items-center justify-center rounded border border-amber-300 bg-white text-amber-800 hover:bg-amber-100"
+                className="w-5 h-5 flex items-center justify-center rounded border border-amber-300 bg-white text-amber-800 hover:bg-amber-100 shrink-0"
               >
                 <Minus size={10} />
               </button>
-              <span className="flex-1 text-center font-mono text-[10px] font-bold text-[#000066] tabular-nums">
-                {val.toFixed(4)}
+              <span className="flex-1 flex items-baseline justify-center gap-1 min-w-0 px-0.5">
+                <span className="text-[9px] font-bold text-amber-800/80 shrink-0">{word}</span>
+                <span className="font-mono text-[10px] font-bold text-[#000066] tabular-nums">
+                  {val.toFixed(4)}
+                </span>
+                {shifted && (
+                  <span className="text-[9px] font-semibold text-amber-700 font-mono">
+                    ({d > 0 ? '+' : ''}{d.toFixed(3)})
+                  </span>
+                )}
               </span>
               <button
                 type="button"
                 onClick={() => bump(key, 1)}
-                className="w-5 h-5 flex items-center justify-center rounded border border-amber-300 bg-white text-amber-800 hover:bg-amber-100"
+                className="w-5 h-5 flex items-center justify-center rounded border border-amber-300 bg-white text-amber-800 hover:bg-amber-100 shrink-0"
               >
                 <Plus size={10} />
               </button>
-              {Math.abs(delta[key]) > 1e-12 && (
-                <span className="w-10 text-[9px] font-mono text-amber-700 text-right">
-                  {delta[key] > 0 ? '+' : ''}
-                  {delta[key].toFixed(3)}
-                </span>
-              )}
             </div>
           );
         })}

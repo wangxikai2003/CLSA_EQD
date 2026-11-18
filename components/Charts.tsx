@@ -8,11 +8,11 @@ import {
   Tooltip,
   ResponsiveContainer,
   ReferenceLine,
-  AreaChart,
   Area,
   ComposedChart,
 } from 'recharts';
-import { PayoffPoint, OptionLeg } from '../types';
+import { OptionLeg } from '../types';
+import { StrikeAxisMode } from '../utils/strikeAxis';
 
 interface ChartProps {
   data: any[];
@@ -21,6 +21,8 @@ interface ChartProps {
   height?: number | string;
   legs?: OptionLeg[]; // Optional: For Decomposition
   legOpacity?: number; // Optional: Opacity for decomposition legs
+  /** sticky_delta = moneyness %; strike = absolute spot/strike axis */
+  xAxisMode?: StrikeAxisMode;
 }
 
 const LEG_COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#6366f1'];
@@ -51,8 +53,13 @@ interface PayoffChartProps extends ChartProps {
     referenceLineY?: number;
 }
 
-export const PayoffChart: React.FC<PayoffChartProps> = ({ data, marketSpot, yScale = 1.1, height = 300, legs, dataKey = 'pnl', referenceLineY = 0, legOpacity }) => {
+export const PayoffChart: React.FC<PayoffChartProps> = ({
+  data, marketSpot, yScale = 1.1, height = 300, legs, dataKey = 'pnl', referenceLineY = 0, legOpacity,
+  xAxisMode = 'sticky_delta',
+}) => {
   const yDomain = useMemo(() => getDomain(data, dataKey, yScale), [data, yScale, dataKey]);
+  const xKey = xAxisMode === 'strike' ? 'spot' : 'moneyness';
+  const atmX = xAxisMode === 'strike' ? marketSpot : 100;
 
   return (
     <div className="w-full" style={{ height: height }}>
@@ -67,11 +74,13 @@ export const PayoffChart: React.FC<PayoffChartProps> = ({ data, marketSpot, ySca
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" strokeOpacity={1} />
           
           <XAxis 
-            dataKey="moneyness" 
+            dataKey={xKey}
             stroke="#64748b" 
-            tickFormatter={(val) => `${val.toFixed(0)}%`}
+            tickFormatter={(val) =>
+              xAxisMode === 'strike' ? `${Number(val).toFixed(0)}` : `${Number(val).toFixed(0)}%`
+            }
             type="number"
-            domain={['auto', 'auto']}
+            domain={['dataMin', 'dataMax']}
             allowDataOverflow
             tick={{ fill: '#64748b', fontSize: 12 }}
           />
@@ -95,10 +104,14 @@ export const PayoffChart: React.FC<PayoffChartProps> = ({ data, marketSpot, ySca
                 dataKey === 'pnl' ? 'PnL' : 'Payoff'
                ]
             }}
-            labelFormatter={(label: number) => `K%: ${label.toFixed(0)}%`}
+            labelFormatter={(label: number) =>
+              xAxisMode === 'strike'
+                ? `S: ${Number(label).toFixed(0)}`
+                : `K%: ${Number(label).toFixed(0)}%`
+            }
           />
           <ReferenceLine y={referenceLineY} stroke="#EAB308" strokeWidth={2} strokeDasharray="3 3" label={{ value: referenceLineY !== 0 ? 'Net Cost' : '0', fill: '#EAB308', fontSize: 9, position: 'insideTopLeft' }} />
-          <ReferenceLine x={100} stroke="#000066" strokeDasharray="3 3" />
+          <ReferenceLine x={atmX} stroke="#000066" strokeDasharray="3 3" />
           
           {/* Main Strategy Area */}
           <Area
@@ -116,8 +129,6 @@ export const PayoffChart: React.FC<PayoffChartProps> = ({ data, marketSpot, ySca
              <Line 
                 key={leg.id}
                 type="monotone"
-                // If plotting PnL, use pnl_id. If plotting Intrinsic, we might need a different metric or disable decomp for now.
-                // Assuming PnL chart decomp is mainly used.
                 dataKey={`pnl_${leg.id}`}
                 stroke={LEG_COLORS[idx % LEG_COLORS.length]}
                 strokeWidth={1}
@@ -149,8 +160,11 @@ interface GreeksChartProps extends ChartProps {
 export const GreeksChart: React.FC<GreeksChartProps> = ({
   data, marketSpot, dataKey, color, name, yScale = 1.1, legs, legOpacity,
   altDataKey, altColor = '#EAB308', altName = 'Desk', showPrimary = true, showAlt = true,
+  xAxisMode = 'sticky_delta',
 }) => {
   const yDomain = useMemo(() => getDomain(data, dataKey, yScale), [data, dataKey, yScale]);
+  const xKey = xAxisMode === 'strike' ? 'spot' : 'moneyness';
+  const atmX = xAxisMode === 'strike' ? marketSpot : 100;
 
   return (
     <div className="h-[200px] w-full">
@@ -158,11 +172,13 @@ export const GreeksChart: React.FC<GreeksChartProps> = ({
         <LineChart data={data} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" strokeOpacity={1} />
           <XAxis 
-            dataKey="moneyness" 
+            dataKey={xKey}
             stroke="#64748b" 
-            tickFormatter={(val) => `${val.toFixed(0)}%`}
+            tickFormatter={(val) =>
+              xAxisMode === 'strike' ? `${Number(val).toFixed(0)}` : `${Number(val).toFixed(0)}%`
+            }
             type="number"
-            domain={['auto', 'auto']}
+            domain={['dataMin', 'dataMax']}
             allowDataOverflow
             tick={{ fill: '#64748b', fontSize: 10 }}
             interval="preserveStartEnd"
@@ -182,11 +198,15 @@ export const GreeksChart: React.FC<GreeksChartProps> = ({
                 if (nameProp.includes('_')) return [value.toFixed(4), 'Leg'];
                 return [value.toFixed(4), nameProp];
             }}
-            labelFormatter={(label: number) => `K%: ${label.toFixed(0)}%`}
+            labelFormatter={(label: number) =>
+              xAxisMode === 'strike'
+                ? `S: ${Number(label).toFixed(0)}`
+                : `K%: ${Number(label).toFixed(0)}%`
+            }
             itemStyle={{ padding: 0, margin: 0 }}
           />
           <ReferenceLine y={0} stroke="#64748b" strokeWidth={1} />
-          <ReferenceLine x={100} stroke="#000066" strokeDasharray="3 3" />
+          <ReferenceLine x={atmX} stroke="#000066" strokeDasharray="3 3" />
           
           {showPrimary && (
             <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2} dot={false} isAnimationActive={false} name={name} />

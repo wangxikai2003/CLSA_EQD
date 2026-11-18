@@ -10,10 +10,12 @@ import DashboardLayout from './components/dashboard/DashboardLayout';
 import SpreadView from './components/dashboard/SpreadView';
 import QisView from './components/dashboard/QisView';
 import { PayoffChart, GreeksChart } from './components/Charts';
+import StrikeAxisToggle from './components/StrikeAxisToggle';
 import { generateAnalysisData, calculateStrategyGreeks, calculateProbabilities } from './services/pricingEngine';
 import { fitVolSurface, fitJwSviSurface, RAW_VOL_DATA, applyJwDeltas, ZERO_JW_DELTA } from './services/volatilityService';
 import { fetchSurface, fetchProducts, fetchDates, ProductCode, SurfaceResponse, ProductInfo, JwParams, SurfaceSide } from './services/api';
 import JwParamPanel from './components/JwParamPanel';
+import { StrikeAxisMode } from './utils/strikeAxis';
 import { Activity, BarChart2, TrendingUp, Settings, Zap, ChevronDown, Anchor, Shield, TrendingDown, ZoomIn, Maximize2, MoveHorizontal, MoveVertical, Layers, Grid, BarChart3, Microscope, Split, RefreshCw, Calculator, Copy, Link2, Database, Globe, Server, LineChart, SplitSquareHorizontal } from 'lucide-react';
 
 // Tabs Enum
@@ -68,6 +70,8 @@ const App: React.FC = () => {
   // Market Intel → Exotic barrier sync
   const [barrierFill, setBarrierFill] = useState<{ ko?: number; ki?: number; barrier?: number; strike?: number } | null>(null);
   const [showLegacyExotic, setShowLegacyExotic] = useState(false);
+  // Bumped when entering Volatility Surface so dates/surface re-fetch after GCS hot updates
+  const [surfaceDataEpoch, setSurfaceDataEpoch] = useState(0);
 
   // Load product catalog once
   useEffect(() => {
@@ -85,6 +89,13 @@ const App: React.FC = () => {
         });
   }, []);
 
+  // Enter Volatility Surface tab → pull latest dates/surface (page refresh also remounts)
+  useEffect(() => {
+      if (activeTab === ActiveTab.VOL_SURFACE) {
+        setSurfaceDataEpoch((e) => e + 1);
+      }
+  }, [activeTab]);
+
   // Load dates when product changes
   useEffect(() => {
       if (apiStatus !== 'live') return;
@@ -95,7 +106,7 @@ const App: React.FC = () => {
           setTradeDate(prev => (prev && ds.includes(prev) ? prev : latest));
         })
         .catch(err => setApiError(String(err)));
-  }, [product, surfaceSide, apiStatus]);
+  }, [product, surfaceSide, apiStatus, surfaceDataEpoch]);
 
   // Reset JW deltas when product/date/side changes
   useEffect(() => {
@@ -123,7 +134,7 @@ const App: React.FC = () => {
           if (!cancelled) setSurfaceLoading(false);
         });
       return () => { cancelled = true; };
-  }, [product, tradeDate, surfaceSide, apiStatus]);
+  }, [product, tradeDate, surfaceSide, apiStatus, surfaceDataEpoch]);
 
   // Rebuild vol model from cached surface + method + JW deltas
   useEffect(() => {
@@ -140,6 +151,7 @@ const App: React.FC = () => {
   const [chartRangeX, setChartRangeX] = useState<number>(0.20); 
   const [chartRangeY, setChartRangeY] = useState<number>(1.1);  
   const [showDecomposition, setShowDecomposition] = useState<boolean>(false);
+  const [vanillaXAxisMode, setVanillaXAxisMode] = useState<StrikeAxisMode>('sticky_delta');
 
   // Strategy State (Tab 1)
   const [legs, setLegs] = useState<OptionLeg[]>([]);
@@ -403,18 +415,20 @@ const App: React.FC = () => {
 
                 <div className="xl:col-span-6 space-y-6">
                     <div className="bg-white rounded-lg p-6 shadow-md border border-slate-200 min-h-[400px]">
-                        <div className="flex justify-between items-center mb-6">
+                        <div className="flex flex-wrap justify-between items-center gap-2 mb-6">
                             <h2 className="text-xl font-bold text-[#000066] flex items-center gap-2">
                                 <TrendingUp className="text-[#000066]" />
                                 Payoff & Greeks
                             </h2>
-                            
-                            <button 
-                                onClick={() => setShowDecomposition(!showDecomposition)}
-                                className={`flex items-center gap-2 text-xs font-bold px-3 py-1.5 rounded-full border transition ${showDecomposition ? 'bg-[#000066] text-white border-[#000066]' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'}`}
-                            >
-                                <Split size={14} /> Decomposition
-                            </button>
+                            <div className="flex items-center gap-2">
+                              <StrikeAxisToggle mode={vanillaXAxisMode} onChange={setVanillaXAxisMode} />
+                              <button 
+                                  onClick={() => setShowDecomposition(!showDecomposition)}
+                                  className={`flex items-center gap-2 text-xs font-bold px-3 py-1.5 rounded-full border transition ${showDecomposition ? 'bg-[#000066] text-white border-[#000066]' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'}`}
+                              >
+                                  <Split size={14} /> Decomposition
+                              </button>
+                            </div>
                         </div>
                         {effectiveLegs.length > 0 ? (
                             <div className="space-y-6">
@@ -424,6 +438,7 @@ const App: React.FC = () => {
                                         marketSpot={spotPrice} 
                                         yScale={chartRangeY} 
                                         legs={showDecomposition ? effectiveLegs : undefined}
+                                        xAxisMode={vanillaXAxisMode}
                                     />
                                 </div>
 
@@ -466,7 +481,8 @@ const App: React.FC = () => {
                                             dataKey="delta" 
                                             color={COLORS.CITIC_RED} 
                                             name="Delta" 
-                                            yScale={chartRangeY} 
+                                            yScale={chartRangeY}
+                                            xAxisMode={vanillaXAxisMode} 
                                             legs={showDecomposition ? effectiveLegs : undefined}
                                         />
                                     </div>
@@ -479,7 +495,8 @@ const App: React.FC = () => {
                                             dataKey="vega" 
                                             color={COLORS.CLSA_BLUE} 
                                             name="Vega" 
-                                            yScale={chartRangeY} 
+                                            yScale={chartRangeY}
+                                            xAxisMode={vanillaXAxisMode} 
                                             legs={showDecomposition ? effectiveLegs : undefined}
                                         />
                                     </div>
@@ -498,7 +515,8 @@ const App: React.FC = () => {
                                             dataKey="correlationRisk" 
                                             color={COLORS.CLSA_YELLOW} // Yellow
                                             name="Correlation Risk" 
-                                            yScale={chartRangeY} 
+                                            yScale={chartRangeY}
+                                            xAxisMode={vanillaXAxisMode} 
                                             // No leg decomposition for correlation risk (basket property)
                                         />
                                     </div>
@@ -511,7 +529,8 @@ const App: React.FC = () => {
                                             dataKey="skewRisk" 
                                             color={COLORS.GREEN_RISK} 
                                             name="Skew Risk" 
-                                            yScale={chartRangeY} 
+                                            yScale={chartRangeY}
+                                            xAxisMode={vanillaXAxisMode} 
                                             legs={showDecomposition ? effectiveLegs : undefined}
                                         />
                                     </div>
@@ -525,7 +544,8 @@ const App: React.FC = () => {
                                             dataKey="theta" 
                                             color={COLORS.CLSA_YELLOW} 
                                             name="Theta" 
-                                            yScale={chartRangeY} 
+                                            yScale={chartRangeY}
+                                            xAxisMode={vanillaXAxisMode} 
                                             legs={showDecomposition ? effectiveLegs : undefined}
                                         />
                                     </div>
@@ -538,7 +558,8 @@ const App: React.FC = () => {
                                             dataKey="gamma" 
                                             color={COLORS.CLSA_BLUE} 
                                             name="Gamma" 
-                                            yScale={chartRangeY} 
+                                            yScale={chartRangeY}
+                                            xAxisMode={vanillaXAxisMode} 
                                             legs={showDecomposition ? effectiveLegs : undefined}
                                         />
                                     </div>
@@ -552,7 +573,8 @@ const App: React.FC = () => {
                                             dataKey="vanna" 
                                             color="#9333ea" 
                                             name="Vanna" 
-                                            yScale={chartRangeY} 
+                                            yScale={chartRangeY}
+                                            xAxisMode={vanillaXAxisMode} 
                                             legs={showDecomposition ? effectiveLegs : undefined}
                                         />
                                     </div>
@@ -565,7 +587,8 @@ const App: React.FC = () => {
                                             dataKey="volga" 
                                             color="#0d9488" 
                                             name="Volga" 
-                                            yScale={chartRangeY} 
+                                            yScale={chartRangeY}
+                                            xAxisMode={vanillaXAxisMode} 
                                             legs={showDecomposition ? effectiveLegs : undefined}
                                         />
                                     </div>
@@ -895,8 +918,8 @@ const App: React.FC = () => {
 
         {/* --- TAB 3: VOLATILITY SURFACE --- */}
         <div className={activeTab === ActiveTab.VOL_SURFACE ? 'block' : 'hidden'}>
-            <div className="grid grid-cols-1 xl:grid-cols-4 gap-6 h-[600px]">
-                <div className="xl:col-span-3 h-full">
+            <div className="grid grid-cols-1 xl:grid-cols-4 gap-6 xl:h-[820px]">
+                <div className="xl:col-span-3 h-[560px] xl:h-full min-h-0">
                     {volModel ? (
                         <VolatilitySurfaceChart 
                             model={volModel} 

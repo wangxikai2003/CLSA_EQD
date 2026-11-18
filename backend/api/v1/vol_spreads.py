@@ -15,6 +15,11 @@ _PARQUET_CANDIDATES = [
     Path("/app/data/vol_spread_levels.parquet"),
 ]
 
+try:
+    from data_paths import vol_spread_levels as _dp_vsl
+except Exception:  # pragma: no cover
+    _dp_vsl = None  # type: ignore
+
 _TENORS = ["1M", "3M", "6M", "12M"]
 _MNY = ["ATM", "OTM", "ITM"]
 
@@ -22,6 +27,10 @@ _cache: Dict[str, Any] = {"mtime": None, "df": None}
 
 
 def _parquet() -> Path:
+    if _dp_vsl is not None:
+        p = _dp_vsl()
+        if p is not None and p.exists() and p.stat().st_size > 0:
+            return p
     for p in _PARQUET_CANDIDATES:
         if p.exists() and p.stat().st_size > 0:
             return p

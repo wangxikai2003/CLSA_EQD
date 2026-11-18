@@ -1017,3 +1017,16 @@ export function fetchCorrSpreads(
     short_win?: number;
     long_win?: number;
   },
+  opts?: AbortSignal | FetchRetryOpts
+) {
+  const q = new URLSearchParams({
+    mode: params.mode,
+    symbol1: params.symbol1,
+    symbol2: params.symbol2,
+    short_win: String(params.short_win ?? 21),
+    long_win: String(params.long_win ?? 126),
+  });
+  if (params.symbol3) q.set('symbol3', params.symbol3);
+  if (params.symbol4) q.set('symbol4', params.symbol4);
+  return getJsonWithRetry<CorrSpreadsResponse>(`/api/v1/correlation/spreads?${q}`, _asRetryOpts(opts));
+}

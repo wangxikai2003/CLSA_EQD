@@ -17,3 +17,4 @@ data/exports/*.xlsx
 !data/exports/.gitkeep
 *.log
 .npm/
+.env.hotupdate

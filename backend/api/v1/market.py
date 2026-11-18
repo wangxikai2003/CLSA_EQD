@@ -24,8 +24,18 @@ _RATES_CANDIDATES = [
     REPO / "data" / "rates_eod.parquet",
 ]
 
+try:
+    from data_paths import cffex_vol as _dp_cffex, rates_eod as _dp_rates
+except Exception:  # pragma: no cover
+    _dp_cffex = _dp_rates = None  # type: ignore
+
 
 def _db() -> Path:
+    if _dp_cffex is not None:
+        try:
+            return _dp_cffex()
+        except FileNotFoundError:
+            pass
     for p in _DB_CANDIDATES:
         if p.exists():
             return p
@@ -33,38 +43,97 @@ def _db() -> Path:
 
 
 def _rates_path() -> Path:
+    if _dp_rates is not None:
+        p = _dp_rates()
+        if p is not None and p.exists():
+            return p
     for p in _RATES_CANDIDATES:
         if p.exists():
             return p
     raise HTTPException(503, "rates_eod.parquet not found")
 
 
+# Preset curves: China money-market + 10Y; US SOFR term structure
+_MARKET_PRESETS = {
+    "CN": [
+        "SHIBORON.IR",
+        "SHIBOR1W.IR",
+        "SHIBOR1M.IR",
+        "SHIBOR3M.IR",
+        "SHIBOR6M.IR",
+        "SHIBOR1Y.IR",
+        "TB10Y.WI",
+    ],
+    "US": [
+        "SOFR.IR",
+        "SOFR1M.IR",
+        "SOFR3M.IR",
+        "SOFR6M.IR",
+        "SOFR12M.IR",
+    ],
+}
+
+_TENOR_MAP = {
+    "SHIBORON.IR": 1 / 365,
+    "SHIBOR1W.IR": 7 / 365,
+    "SHIBOR1M.IR": 1 / 12,
+    "SHIBOR3M.IR": 0.25,
+    "SHIBOR6M.IR": 0.5,
+    "SHIBOR1Y.IR": 1.0,
+    "TB10Y.WI": 10.0,
+    "CGB1Y.WI": 1.0,
+    "CGB5Y.WI": 5.0,
+    "CGB10Y.WI": 10.0,
+    "SOFR.IR": 1 / 365,
+    "SOFR1M.IR": 1 / 12,
+    "SOFR3M.IR": 0.25,
+    "SOFR6M.IR": 0.5,
+    "SOFR12M.IR": 1.0,
+}
+
+_TENOR_SHORT = {
+    "SHIBORON.IR": "ON",
+    "SHIBOR1W.IR": "1W",
+    "SHIBOR1M.IR": "1M",
+    "SHIBOR3M.IR": "3M",
+    "SHIBOR6M.IR": "6M",
+    "SHIBOR1Y.IR": "1Y",
+    "TB10Y.WI": "10Y",
+    "CGB1Y.WI": "CGB1Y",
+    "CGB5Y.WI": "CGB5Y",
+    "CGB10Y.WI": "CGB10Y",
+    "SOFR.IR": "SOFR",
+    "SOFR1M.IR": "1M",
+    "SOFR3M.IR": "3M",
+    "SOFR6M.IR": "6M",
+    "SOFR12M.IR": "12M",
+}
+
+
 @router.get("/yield-curve")
 def yield_curve(
-    codes: str = Query("SHIBORON.IR,SHIBOR1M.IR,SHIBOR3M.IR,SHIBOR6M.IR,SHIBOR1Y.IR,TB10Y.WI"),
+    market: str = Query("CN", description="CN|US preset; ignored if codes set"),
+    codes: Optional[str] = Query(None, description="comma wind codes; overrides market"),
     asof: Optional[str] = None,
     history: str = Query("1W,1M,1Y", description="comma offsets to overlay"),
 ):
-    df = pd.read_parquet(_rates_path())
-    code_list = [c.strip() for c in codes.split(",") if c.strip()]
-    df = df[df["wind_code"].isin(code_list)].copy()
+    df_all = pd.read_parquet(_rates_path())
+    available = sorted({str(c) for c in df_all["wind_code"].unique()})
+    mkt = (market or "CN").upper()
+    if codes and codes.strip():
+        code_list = [c.strip() for c in codes.split(",") if c.strip()]
+        mkt = "CUSTOM"
+    else:
+        code_list = list(_MARKET_PRESETS.get(mkt, _MARKET_PRESETS["CN"]))
+
+    df = df_all[df_all["wind_code"].isin(code_list)].copy()
+    if df.empty:
+        raise HTTPException(404, f"no rates for codes={code_list}")
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     if asof:
         asof_ts = pd.Timestamp(asof)
     else:
         asof_ts = df["trade_date"].max()
-
-    TENOR_MAP = {
-        "SHIBORON.IR": 1 / 365,
-        "SHIBOR1W.IR": 7 / 365,
-        "SHIBOR1M.IR": 1 / 12,
-        "SHIBOR3M.IR": 0.25,
-        "SHIBOR6M.IR": 0.5,
-        "SHIBOR1Y.IR": 1.0,
-        "TB10Y.WI": 10.0,
-        "CGB10Y.WI": 10.0,
-        "SOFR.IR": 1 / 365,
-    }
 
     def curve_at(ts: pd.Timestamp) -> List[Dict[str, Any]]:
         pts = []
@@ -74,12 +143,15 @@ def yield_curve(
             if sub.empty:
                 continue
             row = sub.loc[sub["trade_date"].idxmax()]
+            rate = float(row["rate"])
+            rate_pct = float(row["rate"]) * 100.0
             pts.append(
                 {
                     "code": code,
-                    "tenor_years": TENOR_MAP.get(code, 1.0),
-                    "rate": float(row["rate"]),
-                    "rate_pct": float(row["rate"]) * 100,
+                    "label": _TENOR_SHORT.get(code, code.split(".")[0]),
+                    "tenor_years": _TENOR_MAP.get(code, 1.0),
+                    "rate": rate,
+                    "rate_pct": rate_pct,
                     "trade_date": pd.Timestamp(row["trade_date"]).strftime("%Y-%m-%d"),
                 }
             )
@@ -95,15 +167,32 @@ def yield_curve(
     want = {"Current"} | {h.strip() for h in history.split(",") if h.strip()}
     series = {k: curve_at(v) for k, v in offsets.items() if k in want or k == "Current"}
 
-    # spreads
     cur = {p["code"]: p["rate"] for p in series.get("Current", [])}
-    spreads = {}
-    if "TB10Y.WI" in cur and "SHIBOR1Y.IR" in cur:
-        spreads["10Y_1Y_bp"] = (cur["TB10Y.WI"] - cur["SHIBOR1Y.IR"]) * 1e4
-    if "SHIBOR1Y.IR" in cur and "SHIBOR3M.IR" in cur:
-        spreads["1Y_3M_bp"] = (cur["SHIBOR1Y.IR"] - cur["SHIBOR3M.IR"]) * 1e4
+    spreads: Dict[str, float] = {}
+    if mkt == "CN" or "TB10Y.WI" in cur:
+        if "TB10Y.WI" in cur and "SHIBOR1Y.IR" in cur:
+            spreads["10Y−1Y"] = (cur["TB10Y.WI"] - cur["SHIBOR1Y.IR"]) * 1e4
+        if "SHIBOR1Y.IR" in cur and "SHIBOR3M.IR" in cur:
+            spreads["1Y−3M"] = (cur["SHIBOR1Y.IR"] - cur["SHIBOR3M.IR"]) * 1e4
+        if "SHIBOR3M.IR" in cur and "SHIBORON.IR" in cur:
+            spreads["3M−ON"] = (cur["SHIBOR3M.IR"] - cur["SHIBORON.IR"]) * 1e4
+    if mkt == "US" or "SOFR12M.IR" in cur:
+        if "SOFR12M.IR" in cur and "SOFR3M.IR" in cur:
+            spreads["12M−3M"] = (cur["SOFR12M.IR"] - cur["SOFR3M.IR"]) * 1e4
+        if "SOFR3M.IR" in cur and "SOFR.IR" in cur:
+            spreads["3M−SOFR"] = (cur["SOFR3M.IR"] - cur["SOFR.IR"]) * 1e4
+        if "SOFR6M.IR" in cur and "SOFR1M.IR" in cur:
+            spreads["6M−1M"] = (cur["SOFR6M.IR"] - cur["SOFR1M.IR"]) * 1e4
 
-    return {"asof": asof_ts.strftime("%Y-%m-%d"), "curves": series, "spreads": spreads}
+    return {
+        "asof": asof_ts.strftime("%Y-%m-%d"),
+        "market": mkt,
+        "codes": code_list,
+        "curves": series,
+        "spreads": spreads,
+        "presets": {k: v for k, v in _MARKET_PRESETS.items()},
+        "available_codes": available,
+    }
 
 
 _TENOR_LABELS = {

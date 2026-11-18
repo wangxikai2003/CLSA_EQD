@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   BarChart, Bar, ReferenceLine, Cell,
@@ -194,12 +194,16 @@ const SpreadView: React.FC = () => {
   const [s2L, setS2L] = useState<LegSel>({ product: 'IM', kind: 'SPOT' });
   const [s2R, setS2R] = useState<LegSel>({ product: 'IM', kind: '3M' });
 
+  // Tab remount / page refresh → refresh=true busts stale synth disk cache after GCS hot update.
+  const synthMounted = useRef(false);
   useEffect(() => {
+    const refresh = !synthMounted.current;
+    synthMounted.current = true;
     const ac = new AbortController();
     setLoading(true);
     setErr(null);
-    setLoadStatus('加载合成期限…');
-    fetchSynthTenors(false, assetFilter, {
+    setLoadStatus(refresh ? '刷新合成期限…' : '加载合成期限…');
+    fetchSynthTenors(refresh, assetFilter, {
       signal: ac.signal,
       onRetry: ({ attempt, maxAttempts, delayMs }) => {
         setLoadStatus(

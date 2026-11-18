@@ -6,6 +6,8 @@ import {
 } from 'recharts';
 import { fetchSurface, ProductCode } from '../../services/api';
 import { calibrateJwSvi, fetchVolCone } from '../../services/api_v1';
+import StrikeAxisToggle from '../StrikeAxisToggle';
+import { StrikeAxisMode, paddedDomain } from '../../utils/strikeAxis';
 
 interface Props {
   product?: ProductCode;
@@ -50,6 +52,7 @@ const VolAnalyticsView: React.FC<Props> = ({ product = 'IO', tradeDate }) => {
   const [tenorIdx, setTenorIdx] = useState(0);
   const [termSide, setTermSide] = useState<TermMoneyness>('ATM');
   const [coneAxis, setConeAxis] = useState<'days' | 'tenor'>('tenor');
+  const [xAxisMode, setXAxisMode] = useState<StrikeAxisMode>('sticky_delta');
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -91,31 +94,59 @@ const VolAnalyticsView: React.FC<Props> = ({ product = 'IO', tradeDate }) => {
   }, [surface, slice?.expiry, slice?.ttm, slice?.forward]);
 
   const skewChart = useMemo(() => {
-    if (!slice || !surface) return { scatter: [] as any[], line: [] as any[] };
+    if (!slice || !surface) {
+      return { scatter: [] as any[], line: [] as any[], xDomain: [ -0.2, 0.2 ] as [number, number], xKey: 'k' as const };
+    }
+    const F = slice.forward || surface.spot || 1;
+    const sticky = xAxisMode === 'sticky_delta';
+    const xKey = sticky ? 'k' : 'strike';
     const mkt = (surface.market_points || []).filter((p: any) => p.expiry === slice.expiry);
-    const scatter = mkt.map((p: any) => ({
-      k: Math.log(p.strike / slice.forward),
-      strike: p.strike,
-      iv: p.iv * 100,
-      bidVol: (p.iv * 0.995) * 100,
-      askVol: (p.iv * 1.005) * 100,
-      midVol: p.iv * 100,
-      oi: p.oi ?? null,
-      volume: p.volume ?? null,
-      cp: p.cp,
-    }));
+    const scatter = mkt.map((p: any) => {
+      const logK = Math.log(p.strike / F);
+      return {
+        k: logK,
+        x: sticky ? logK : p.strike,
+        strike: p.strike,
+        iv: p.iv * 100,
+        bidVol: (p.iv * 0.995) * 100,
+        askVol: (p.iv * 1.005) * 100,
+        midVol: p.iv * 100,
+        oi: p.oi ?? null,
+        volume: p.volume ?? null,
+        cp: p.cp,
+      };
+    });
+    const xVals = scatter.map((p) => p.x).filter((v) => Number.isFinite(v));
+    // Axis hugs quotes; yellow fit extends a bit past both wings
+    const quoteDomain = paddedDomain(
+      xVals.length ? xVals : sticky ? [-0.15, 0.15] : [F * 0.9, F * 1.1],
+      0.04,
+      sticky ? 0.01 : F * 0.005
+    );
+    const span = quoteDomain[1] - quoteDomain[0];
+    const wing = Math.max(span * 0.12, sticky ? 0.02 : F * 0.01);
+    const lineDomain: [number, number] = [quoteDomain[0] - wing, quoteDomain[1] + wing];
+    const xDomain = lineDomain;
     const line: any[] = [];
     if (fit?.raw) {
       const { a, b, rho, m, sigma } = fit.raw;
-      for (let i = -50; i <= 50; i++) {
-        const k = i / 80;
-        const x = k - m;
-        const w = a + b * (rho * x + Math.sqrt(x * x + sigma * sigma));
-        line.push({ k, iv: Math.sqrt(Math.max(w, 1e-12) / slice.ttm) * 100 });
+      const [x0, x1] = lineDomain;
+      const n = 80;
+      for (let i = 0; i <= n; i++) {
+        const xPlot = x0 + ((x1 - x0) * i) / n;
+        const logK = sticky ? xPlot : Math.log(Math.max(xPlot, 1e-8) / F);
+        const dx = logK - m;
+        const w = a + b * (rho * dx + Math.sqrt(dx * dx + sigma * sigma));
+        line.push({
+          k: logK,
+          x: xPlot,
+          strike: sticky ? F * Math.exp(logK) : xPlot,
+          iv: Math.sqrt(Math.max(w, 1e-12) / slice.ttm) * 100,
+        });
       }
     }
-    return { scatter, line };
-  }, [slice, surface, fit]);
+    return { scatter, line, xDomain, xKey };
+  }, [slice, surface, fit, xAxisMode]);
 
   const fitStats = useMemo(() => {
     if (!fit || !skewChart.scatter.length || !fit.raw || !slice) return null;
@@ -217,12 +248,32 @@ const VolAnalyticsView: React.FC<Props> = ({ product = 'IO', tradeDate }) => {
   const surface3d = useMemo(() => {
     if (!surface?.matrix?.iv) return null;
     const mat = surface.matrix;
+    const sticky = xAxisMode === 'sticky_delta';
+    const rawX: number[] = sticky
+      ? (mat.moneyness?.length ? mat.moneyness.map((m: number) => m * 100) : mat.strikes.map((k: number) => (k / (mat.spot || surface.spot || 1)) * 100))
+      : mat.strikes;
+    // Clip grid to market ATM neighbourhood when quotes exist
+    const mktK = (surface.market_points || []).map((p: any) => p.strike).filter((k: number) => k > 0);
+    let x = rawX;
+    let z = mat.iv.map((row: (number | null)[]) => row.map((v) => (v == null ? null : v * 100)));
+    if (mktK.length >= 2) {
+      const spot = mat.spot || surface.spot || 1;
+      const [kLo, kHi] = paddedDomain(mktK, 0.03, spot * 0.005);
+      const xLo = sticky ? (kLo / spot) * 100 : kLo;
+      const xHi = sticky ? (kHi / spot) * 100 : kHi;
+      const keep = rawX.map((v, i) => ({ v, i })).filter(({ v }) => v >= xLo && v <= xHi);
+      if (keep.length >= 3) {
+        x = keep.map(({ v }) => v);
+        z = z.map((row: (number | null)[]) => keep.map(({ i }) => row[i]));
+      }
+    }
     return {
-      x: mat.strikes,
+      x,
       y: mat.ttms,
-      z: mat.iv.map((row: (number | null)[]) => row.map((v) => (v == null ? null : v * 100))),
+      z,
+      xTitle: sticky ? 'Moneyness % (δ-sticky)' : 'Strike',
     };
-  }, [surface]);
+  }, [surface, xAxisMode]);
 
   return (
     <div className="space-y-4">
@@ -231,7 +282,9 @@ const VolAnalyticsView: React.FC<Props> = ({ product = 'IO', tradeDate }) => {
       <div className="bg-white rounded-lg border border-slate-200 p-4 relative">
         <div className="flex flex-wrap justify-between items-center gap-2 mb-2">
           <h3 className="font-bold text-[#000066] text-sm">JW-SVI Skew (Scatter + Fit)</h3>
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <StrikeAxisToggle mode={xAxisMode} onChange={setXAxisMode} />
+            <div className="flex flex-wrap gap-1">
             {TENOR_PRESETS.map((p) => (
               <button
                 key={p.id}
@@ -255,6 +308,7 @@ const VolAnalyticsView: React.FC<Props> = ({ product = 'IO', tradeDate }) => {
                 <option key={s.expiry} value={i}>{s.expiry} (T={s.ttm.toFixed(3)})</option>
               ))}
             </select>
+            </div>
           </div>
         </div>
 
@@ -275,7 +329,22 @@ const VolAnalyticsView: React.FC<Props> = ({ product = 'IO', tradeDate }) => {
           <ResponsiveContainer width="100%" height="100%">
             <ComposedChart>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="k" type="number" domain={['auto', 'auto']} tick={{ fontSize: 10 }} label={{ value: 'log-moneyness', fontSize: 10, position: 'insideBottom', offset: -2 }} />
+              <XAxis
+                dataKey="x"
+                type="number"
+                domain={skewChart.xDomain}
+                allowDataOverflow
+                tick={{ fontSize: 10 }}
+                tickFormatter={(v) =>
+                  xAxisMode === 'sticky_delta' ? Number(v).toFixed(2) : Number(v).toFixed(0)
+                }
+                label={{
+                  value: xAxisMode === 'sticky_delta' ? 'log-moneyness (δ-sticky)' : 'Strike',
+                  fontSize: 10,
+                  position: 'insideBottom',
+                  offset: -2,
+                }}
+              />
               <YAxis tick={{ fontSize: 10 }} unit="%" />
               <Tooltip
                 content={({ active, payload }) => {
@@ -285,6 +354,7 @@ const VolAnalyticsView: React.FC<Props> = ({ product = 'IO', tradeDate }) => {
                   return (
                     <div className="bg-white border border-slate-200 rounded px-2 py-1 text-[10px] font-mono shadow">
                       <div>Strike: {d.strike}</div>
+                      <div>k: {d.k?.toFixed?.(3)}</div>
                       <div>Bid Vol: {d.bidVol?.toFixed?.(2)}%</div>
                       <div>Ask Vol: {d.askVol?.toFixed?.(2)}%</div>
                       <div>Mid Vol: {d.midVol?.toFixed?.(2)}%</div>
@@ -444,7 +514,10 @@ const VolAnalyticsView: React.FC<Props> = ({ product = 'IO', tradeDate }) => {
       </div>
 
       <div className="bg-white rounded-lg border border-slate-200 p-4">
-        <h3 className="font-bold text-[#000066] text-sm mb-2">3D Volatility Surface</h3>
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <h3 className="font-bold text-[#000066] text-sm">3D Volatility Surface</h3>
+          <StrikeAxisToggle mode={xAxisMode} onChange={setXAxisMode} />
+        </div>
         <div className="h-[320px]">
           {surface3d ? (
             <Plot
@@ -460,7 +533,12 @@ const VolAnalyticsView: React.FC<Props> = ({ product = 'IO', tradeDate }) => {
                 autosize: true,
                 margin: { l: 0, r: 0, b: 0, t: 10 },
                 scene: {
-                  xaxis: { title: 'Strike' },
+                  xaxis: {
+                    title: surface3d.xTitle,
+                    range: surface3d.x.length
+                      ? [Math.min(...surface3d.x), Math.max(...surface3d.x)]
+                      : undefined,
+                  },
                   yaxis: { title: 'TTM' },
                   zaxis: { title: 'IV %' },
                 },
