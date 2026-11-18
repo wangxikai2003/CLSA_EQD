@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Light Regime2 parameter sweep (OFAT ±delta step 1) → local parquet/csv/json.
 
-Default baseline (percent ints): enter=90, exit_lo=40, exit_hi=60, stress_streak=2,
-max_hold_reverse=20. One-factor-at-a-time around baseline keeps compute mild.
+Baseline: enter=90, stress_streak=2, max_hold_reverse=20.
+Quantile and regime2 exits are fixed at prior-window q50 and ignore exit_lo/exit_hi.
+Those two knobs still move the garch_z chart bands only.
 
 Usage (from CLSA_EQD/):
   PYTHONPATH=backend python scripts/regime2_param_sweep.py

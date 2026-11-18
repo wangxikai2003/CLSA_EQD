@@ -83,7 +83,7 @@ DEFAULT_SPREAD_MODE = "iv"
 # garch_z = expanding GARCH(1,1)-t on ΔSpread → z, then same rolling quantiles on z;
 # regime* = Fade / Momentum regime switch (v2) with cooldown;
 #   regime = both books; regime_momentum / regime_fade = single book;
-# regime2 = quantile base + dual-day garch_z stress gate (block new opens only).
+# regime2 = quantile base (exit at q50) + garch_z stress gate (block new opens only).
 SIGNAL_MODES = (
     "quantile",
     "garch_z",
@@ -378,6 +378,7 @@ def rolling_quantile_bands(
             "enter_lo": roll.quantile(1.0 - enter_q),
             "exit_hi": roll.quantile(exit_hi_q),
             "exit_lo": roll.quantile(exit_lo_q),
+            "q50": roll.quantile(0.50),
         },
         index=s.index,
     )
@@ -893,6 +894,7 @@ class CalendarVolBacktestEngine:
                 "enter_lo": "iv_enter_lo",
                 "exit_hi": "iv_exit_hi",
                 "exit_lo": "iv_exit_lo",
+                "q50": "iv_q50",
             }
         )
         regime_level_bands = None
@@ -933,9 +935,10 @@ class CalendarVolBacktestEngine:
                     "iv_enter_lo": "enter_lo",
                     "iv_exit_hi": "exit_hi",
                     "iv_exit_lo": "exit_lo",
+                    "iv_q50": "q50",
                 }
             )
-            # Chart + stress gate: same 10/90·40/60 rolling bands on garch_z.
+            # Chart + stress gate: 10/90 on garch_z. q50 here is not the book exit.
             gz_chart_bands = rolling_quantile_bands(
                 garch_z_series,
                 self.z_window,
@@ -948,6 +951,7 @@ class CalendarVolBacktestEngine:
                     "enter_lo": "gz_enter_lo",
                     "exit_hi": "gz_exit_hi",
                     "exit_lo": "gz_exit_lo",
+                    "q50": "gz_q50",
                 }
             )
             if is_regime_signal(self.signal_mode):
@@ -967,6 +971,7 @@ class CalendarVolBacktestEngine:
                     "iv_enter_lo": "enter_lo",
                     "iv_exit_hi": "exit_hi",
                     "iv_exit_lo": "exit_lo",
+                    "iv_q50": "q50",
                 }
             )
         join_parts = [
@@ -1038,6 +1043,8 @@ class CalendarVolBacktestEngine:
             el_f = float(el) if pd.notna(el) else float("nan")
             xh_f = float(xh) if pd.notna(xh) else float("nan")
             xl_f = float(xl) if pd.notna(xl) else float("nan")
+            q50_raw = ct.loc[d, "q50"] if "q50" in ct.columns else float("nan")
+            q50_f = float(q50_raw) if pd.notna(q50_raw) else float("nan")
             iv_eh = ct.loc[d, "iv_enter_hi"]
             iv_el = ct.loc[d, "iv_enter_lo"]
             iv_xh = ct.loc[d, "iv_exit_hi"]
@@ -1307,8 +1314,7 @@ class CalendarVolBacktestEngine:
                     signal_level_f,
                     eh_f,
                     el_f,
-                    xh_f,
-                    xl_f,
+                    q50_f,
                     gz_f,
                     float(z_q10_t) if z_q10_t is not None else float("nan"),
                     float(z_q90_t) if z_q90_t is not None else float("nan"),
@@ -1319,6 +1325,33 @@ class CalendarVolBacktestEngine:
                 raw_next = int(dec2.signal)
                 signal_next = self._apply_side_mode(raw_next, target)
                 signal_reason = dec2.reason
+                pending_mode = None
+                pending_cooldown = 0
+                pending_entry_spread = None
+            elif self.signal_mode == "quantile":
+                from engine.regime2_signal import quantile_raw_signal, returned_to_q50
+
+                raw_next = quantile_raw_signal(
+                    target,
+                    hold,
+                    signal_level_f,
+                    eh_f,
+                    el_f,
+                    q50_f,
+                    max_hold_reverse=self.max_hold_reverse,
+                )
+                signal_next = self._apply_side_mode(raw_next, target)
+                if raw_next == 0 and target != 0:
+                    if (
+                        target == -1
+                        and hold >= self.max_hold_reverse
+                        and not returned_to_q50(target, signal_level_f, q50_f)
+                    ):
+                        signal_reason = "quantile_max_hold_reverse"
+                    else:
+                        signal_reason = "quantile_exit_q50"
+                else:
+                    signal_reason = "quantile"
                 pending_mode = None
                 pending_cooldown = 0
                 pending_entry_spread = None
@@ -1351,6 +1384,7 @@ class CalendarVolBacktestEngine:
                     "enter_lo": el_f if math.isfinite(el_f) else None,
                     "exit_hi": xh_f if math.isfinite(xh_f) else None,
                     "exit_lo": xl_f if math.isfinite(xl_f) else None,
+                    "q50": q50_f if math.isfinite(q50_f) else None,
                     "iv_enter_hi": iv_eh_f if math.isfinite(iv_eh_f) else None,
                     "iv_enter_lo": iv_el_f if math.isfinite(iv_el_f) else None,
                     "iv_exit_hi": iv_xh_f if math.isfinite(iv_xh_f) else None,
@@ -1654,6 +1688,7 @@ class CalendarVolBacktestEngine:
             "enter_lo": [_opt(rows[i]["enter_lo"]) for i in sig_idx],
             "exit_hi": [_opt(rows[i]["exit_hi"]) for i in sig_idx],
             "exit_lo": [_opt(rows[i]["exit_lo"]) for i in sig_idx],
+            "q50": [_opt(rows[i].get("q50")) for i in sig_idx],
             # CT-IV spread rolling bands (reference chart; = decision bands when quantile mode)
             "iv_enter_hi": [_opt(rows[i].get("iv_enter_hi")) for i in sig_idx],
             "iv_enter_lo": [_opt(rows[i].get("iv_enter_lo")) for i in sig_idx],
@@ -1733,7 +1768,7 @@ class CalendarVolBacktestEngine:
             "regime": "Regime v2 both (Fade+Mom)",
             "regime_momentum": "Regime v2 Momentum only",
             "regime_fade": "Regime v2 Mean-reversion only",
-            "regime2": "Regime2 quantile + dual-day z stress gate",
+            "regime2": "Regime2 quantile q50 exit + z stress gate",
         }[self.signal_mode]
         spread_formula = (
             "IV_near² − IV_far²"
@@ -1774,7 +1809,8 @@ class CalendarVolBacktestEngine:
             signal_desc = (
                 f"regime2: identical Spread rolling quantiles "
                 f"(enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
-                f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}); "
+                f"exit when Spread returns to prior-window q50, "
+                f"long if spread<=q50 and short if spread>=q50); "
                 f"stress when garch_z outside its prior-{self.z_window}d "
                 f"{1-self.enter_q:.0%}/{self.enter_q:.0%} for "
                 f"{self.stress_streak_days} consecutive closes → block new opens only "
@@ -1785,7 +1821,8 @@ class CalendarVolBacktestEngine:
             signal_desc = (
                 f"rolling quantiles of Spread on prior {self.z_window}d "
                 f"(enter outside {1-self.enter_q:.0%}/{self.enter_q:.0%}; "
-                f"exit inside {self.exit_lo_q:.0%}–{self.exit_hi_q:.0%}; no look-ahead)"
+                f"exit when Spread returns to prior-window q50, "
+                f"long if spread<=q50 and short if spread>=q50; no look-ahead)"
             )
 
         return {

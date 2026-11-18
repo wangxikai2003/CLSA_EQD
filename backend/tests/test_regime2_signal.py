@@ -12,12 +12,18 @@ from engine.regime2_signal import decide_regime2_signal, quantile_raw_signal
 
 
 def test_quantile_raw_matches_enter_exit():
-    assert quantile_raw_signal(0, 0, 1.5, 1.0, -1.0, 0.6, -0.6) == 1
-    assert quantile_raw_signal(0, 0, -1.5, 1.0, -1.0, 0.6, -0.6) == -1
-    assert quantile_raw_signal(0, 0, 0.0, 1.0, -1.0, 0.6, -0.6) == 0
-    assert quantile_raw_signal(1, 3, 0.0, 1.0, -1.0, 0.6, -0.6) == 0
-    assert quantile_raw_signal(1, 3, 0.8, 1.0, -1.0, 0.6, -0.6) == 1
-    assert quantile_raw_signal(-1, 20, 0.8, 1.0, -1.0, 0.6, -0.6) == 0
+    assert quantile_raw_signal(0, 0, 1.5, 1.0, -1.0, 0.0) == 1
+    assert quantile_raw_signal(0, 0, -1.5, 1.0, -1.0, 0.0) == -1
+    assert quantile_raw_signal(0, 0, 0.0, 1.0, -1.0, 0.0) == 0
+    # Long exits at or through q50, including an overshoot below it.
+    assert quantile_raw_signal(1, 3, 0.0, 1.0, -1.0, 0.0) == 0
+    assert quantile_raw_signal(1, 3, -0.4, 1.0, -1.0, 0.0) == 0
+    # Still above the median: keep the long.
+    assert quantile_raw_signal(1, 3, 0.8, 1.0, -1.0, 0.0) == 1
+    # Short exits once spread rises to q50; max-hold still flats a short that has not.
+    assert quantile_raw_signal(-1, 3, 0.0, 1.0, -1.0, 0.0) == 0
+    assert quantile_raw_signal(-1, 3, -0.4, 1.0, -1.0, 0.0) == -1
+    assert quantile_raw_signal(-1, 20, -0.4, 1.0, -1.0, 0.0) == 0
 
 
 def test_calm_identical_to_quantile_entry():
@@ -27,8 +33,7 @@ def test_calm_identical_to_quantile_entry():
         spread=1.5,
         enter_hi=1.0,
         enter_lo=-1.0,
-        exit_hi=0.6,
-        exit_lo=-0.6,
+        q50=0.0,
         z_t=0.0,
         z_q10_t=-1.2,
         z_q90_t=1.2,
@@ -48,8 +53,7 @@ def test_single_day_extreme_does_not_block():
         spread=1.5,
         enter_hi=1.0,
         enter_lo=-1.0,
-        exit_hi=0.6,
-        exit_lo=-0.6,
+        q50=0.0,
         z_t=2.0,
         z_q10_t=-1.2,
         z_q90_t=1.2,
@@ -68,8 +72,7 @@ def test_dual_day_stress_blocks_new_open():
         spread=1.5,
         enter_hi=1.0,
         enter_lo=-1.0,
-        exit_hi=0.6,
-        exit_lo=-0.6,
+        q50=0.0,
         z_t=2.0,
         z_q10_t=-1.2,
         z_q90_t=1.2,
@@ -88,8 +91,7 @@ def test_stress_still_allows_quantile_exit():
         spread=0.0,
         enter_hi=1.0,
         enter_lo=-1.0,
-        exit_hi=0.6,
-        exit_lo=-0.6,
+        q50=0.0,
         z_t=2.0,
         z_q10_t=-1.2,
         z_q90_t=1.2,
@@ -98,7 +100,7 @@ def test_stress_still_allows_quantile_exit():
         z_q90_prev=1.1,
     )
     assert dec.signal == 0 and dec.stress
-    assert dec.reason == "quantile_exit_band"
+    assert dec.reason == "quantile_exit_q50"
 
 
 def test_stress_allows_hold_outside_exit_band():
@@ -108,8 +110,7 @@ def test_stress_allows_hold_outside_exit_band():
         spread=0.8,
         enter_hi=1.0,
         enter_lo=-1.0,
-        exit_hi=0.6,
-        exit_lo=-0.6,
+        q50=0.0,
         z_t=2.0,
         z_q10_t=-1.2,
         z_q90_t=1.2,
@@ -132,8 +133,7 @@ def test_stress_streak_three_requires_three_extremes():
         spread=1.5,
         enter_hi=1.0,
         enter_lo=-1.0,
-        exit_hi=0.6,
-        exit_lo=-0.6,
+        q50=0.0,
         z_t=2.1,
         z_q10_t=-1.2,
         z_q90_t=1.2,
@@ -152,8 +152,7 @@ def test_stress_streak_three_requires_three_extremes():
         spread=1.5,
         enter_hi=1.0,
         enter_lo=-1.0,
-        exit_hi=0.6,
-        exit_lo=-0.6,
+        q50=0.0,
         z_t=2.1,
         z_q10_t=-1.2,
         z_q90_t=1.2,

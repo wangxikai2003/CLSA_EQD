@@ -30,8 +30,7 @@ def decide_block_only(
     spread: float,
     enter_hi: float,
     enter_lo: float,
-    exit_hi: float,
-    exit_lo: float,
+    q50: float,
     z_t: float,
     z_q10_t: float,
     z_q90_t: float,
@@ -57,14 +56,13 @@ def decide_block_only(
         spread,
         enter_hi,
         enter_lo,
-        exit_hi,
-        exit_lo,
+        q50,
         max_hold_reverse=max_hold_reverse,
     )
     pos = int(position)
     import math
 
-    if not all(math.isfinite(x) for x in (enter_hi, enter_lo, exit_hi, exit_lo, spread)):
+    if not all(math.isfinite(x) for x in (enter_hi, enter_lo, q50, spread)):
         return Regime2Decision(pos, stress, "bands_nan_hold" if pos != 0 else "bands_nan")
     if pos == 0:
         if stress and raw != 0:
@@ -75,9 +73,9 @@ def decide_block_only(
             return Regime2Decision(-1, stress, "quantile_enter_lo")
         return Regime2Decision(0, stress, "stress_flat" if stress else "quantile_flat")
     if raw == 0:
-        reason = "quantile_exit_band"
+        reason = "quantile_exit_q50"
         if pos == -1 and int(hold_days) >= int(max_hold_reverse):
-            if not (exit_lo <= spread <= exit_hi):
+            if not (math.isfinite(q50) and float(spread) >= float(q50)):
                 reason = "quantile_max_hold_reverse"
         return Regime2Decision(0, stress, reason)
     return Regime2Decision(pos, stress, "quantile_hold")

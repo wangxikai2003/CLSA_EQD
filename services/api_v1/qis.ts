@@ -98,6 +98,8 @@ export interface QisSignalSeries {
   enter_lo?: (number | null)[];
   exit_hi?: (number | null)[];
   exit_lo?: (number | null)[];
+  /** Prior-window median. Quantile and regime2 exit when spread returns to this level. */
+  q50?: (number | null)[];
   /** CT-IV spread rolling bands (reference; equals enter_* when signal_mode=quantile). */
   iv_enter_hi?: (number | null)[];
   iv_enter_lo?: (number | null)[];

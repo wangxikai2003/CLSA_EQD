@@ -409,6 +409,7 @@ const QisView: React.FC = () => {
         enter_lo: hasBands && s.enter_lo![i] != null ? (s.enter_lo![i] as number) * levelScale : null,
         exit_hi: hasBands && s.exit_hi![i] != null ? (s.exit_hi![i] as number) * levelScale : null,
         exit_lo: hasBands && s.exit_lo![i] != null ? (s.exit_lo![i] as number) * levelScale : null,
+        q50: s.q50?.[i] != null ? (s.q50[i] as number) * levelScale : null,
         position: s.position[i],
         long_pt: kind === 'long' ? spreadPts : null,
         short_pt: kind === 'short' ? spreadPts : null,
@@ -606,7 +607,7 @@ const QisView: React.FC = () => {
     isRegime2SignalMode(activeSignal)
       ? garchZChart
       : signalChart;
-  // Regime2 decisions use Spread 10/90·40/60 like quantile → signalChart.
+  // Regime2 and quantile exit when Spread returns to q50; chart is signalChart.
   const spreadChartData =
     activeSignal === 'garch_z' || isRegimeSignalMode(activeSignal)
       ? ivSpreadChart
@@ -657,7 +658,7 @@ const QisView: React.FC = () => {
         : isRegimeSignalMode(activeSignal)
           ? null
           : isRegime2SignalMode(activeSignal)
-            ? '基线与 Quantile 完全相同（Spread 滚动 10/90 进、40/60 出；无 crisis stop）。压力态：garch_z 连续 N 日越出其滚动 10/90 → 仅停新开，已有仓位仍按 Quantile 规则平仓。'
+            ? '基线与 Quantile 完全相同（Spread 滚动 10/90 进；多头 Spread≤q50、空头 Spread≥q50 即平；无 crisis stop）。压力态：garch_z 连续 N 日越出其滚动 10/90 → 仅停新开，已有仓位仍按 Quantile 规则平仓。'
             : '直接对 Spread 做滚动分位入场/出场（无未来数据；t−1 信号 → t close 成交）。';
 
     /** Structured Regime v2 logic for the docs card (applies to every tenor/side/spread/universe). */
@@ -1002,9 +1003,18 @@ const QisView: React.FC = () => {
                       信号算子
                     </div>
                     <p>
-                      {calVolDocs.signalModeNote}
-                      入场 {enterPct}（level &gt; hi → Normal/+1；&lt; lo → Reverse/−1）；
-                      出场落入 {exitPct}% 带平仓。Reverse max hold = 20 交易日。
+                      {calVolDocs.signalModeNote}{' '}
+                      {activeSignal === 'garch_z' ? (
+                        <>
+                          入场 {enterPct}；出场落入 {exitPct}% 带平仓。
+                        </>
+                      ) : (
+                        <>
+                          入场 {enterPct}（level &gt; hi → Normal/+1；&lt; lo → Reverse/−1）；
+                          出场回到过去窗口 q50（多头 Spread ≤ q50，空头 Spread ≥ q50）。
+                          Reverse max hold = 20 交易日。
+                        </>
+                      )}
                     </p>
                   </div>
                 )}
@@ -1311,7 +1321,9 @@ const QisView: React.FC = () => {
                     yKeys={
                       isRegimeSignalMode(activeSignal)
                         ? [...regimeShockYKeys]
-                        : ['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']
+                        : isRegime2SignalMode(activeSignal)
+                          ? ['spread_pts', 'enter_hi', 'enter_lo']
+                          : ['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']
                     }
                     height={300}
                   >
@@ -1343,8 +1355,12 @@ const QisView: React.FC = () => {
                             <>
                               <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
                               <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                              <Line type="monotone" dataKey="exit_hi" name="Exit hi" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
-                              <Line type="monotone" dataKey="exit_lo" name="Exit lo" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                              {!isRegime2SignalMode(activeSignal) && (
+                                <>
+                                  <Line type="monotone" dataKey="exit_hi" name="Exit hi" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                                  <Line type="monotone" dataKey="exit_lo" name="Exit lo" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                                </>
+                              )}
                             </>
                           )}
                           <Line type="monotone" dataKey="long_pt" name="Long" stroke={CHART.long} strokeWidth={0} dot={markerDot(CHART.long)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
@@ -1358,7 +1374,7 @@ const QisView: React.FC = () => {
                     {isRegimeSignalMode(activeSignal)
                       ? '黄线：garch_z。紫虚线：冲击极端 shk q10/q90（Mom 加速入场 / Mom 不利冲击出场 / Fade crisis）。青虚线：冷静带 shk q20/q80（Fade 双日冷静入场）。分位 = 过去 W 日、shift(1)，与 FSM 决策同一套。'
                       : isRegime2SignalMode(activeSignal)
-                        ? '黄线：garch_z。紫虚线：压力门 10/90（连续 N 日越出 → 停新开）。灰虚线：参考 40/60。决策开平仓仍看上方 Spread Quantile 图。'
+                        ? '黄线：garch_z。紫虚线：压力门 10/90（连续 N 日越出 → 停新开）。平仓不看这张图，看下方 Spread 回到 q50。'
                         : `黄线：garch_z。紫/灰虚线：对 garch_z 的滚动分位带（${enterPct} 入场 · ${exitPct} 出场口径）。`}
                     {' '}散点为实际成交：Long 红 · Short 绿 · 平仓蓝
                     {isRegimeSignalMode(activeSignal) || isRegime2SignalMode(activeSignal)
@@ -1384,7 +1400,7 @@ const QisView: React.FC = () => {
                         ? [...regimeLevelYKeys]
                         : activeSignal === 'garch_z'
                           ? ['spread_pts']
-                          : ['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']
+                          : ['spread_pts', 'enter_hi', 'enter_lo', 'q50']
                     }
                     height={300}
                   >
@@ -1425,8 +1441,7 @@ const QisView: React.FC = () => {
                             <>
                               <Line type="monotone" dataKey="enter_hi" name={`Enter hi (${enterPct.split('/')[1]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
                               <Line type="monotone" dataKey="enter_lo" name={`Enter lo (${enterPct.split('/')[0]}%)`} stroke={CHART.enterBand} dot={false} strokeWidth={1} strokeDasharray="4 3" connectNulls />
-                              <Line type="monotone" dataKey="exit_hi" name="Exit hi" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
-                              <Line type="monotone" dataKey="exit_lo" name="Exit lo" stroke={CHART.exitBand} dot={false} strokeWidth={1} strokeDasharray="2 4" connectNulls />
+                              <Line type="monotone" dataKey="q50" name="Exit q50" stroke={CHART.meanRev} dot={false} strokeWidth={1.25} strokeDasharray="1 3" connectNulls />
                             </>
                           ) : null}
                           <Line type="monotone" dataKey="long_pt" name="Long" stroke={CHART.long} strokeWidth={0} dot={markerDot(CHART.long)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
@@ -1442,8 +1457,8 @@ const QisView: React.FC = () => {
                       : activeSignal === 'garch_z'
                         ? '黄线：CT-IV Spread（vol pts）。本图不叠分位带——开平仓由上方 GARCH-z 决策分位决定。散点标在成交日 Spread 水平。'
                         : isRegime2SignalMode(activeSignal)
-                          ? `黄线：CT-IV Spread（vol pts）。紫虚线：入场分位 ${enterPct}；灰虚线：出场带 ${exitPct}%（与 Quantile 相同）。上方 GARCH-z 图为压力门。散点：Long 红 · Short 绿 · 平仓蓝。`
-                          : `黄线：CT-IV Spread（vol pts）。紫虚线：入场分位 ${enterPct}；灰虚线：出场带 ${exitPct}%。散点：Long 红 · Short 绿 · 平仓蓝。分位仅用过去 ${data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。`}
+                          ? `黄线：CT-IV Spread（vol pts）。紫虚线：入场分位 ${enterPct}；褐线：q50，多头落到这条线及以下、空头落到这条线及以上即平。上方 GARCH-z 图只是压力门。散点：Long 红 · Short 绿 · 平仓蓝。`
+                          : `黄线：CT-IV Spread（vol pts）。紫虚线：入场分位 ${enterPct}；褐线：q50 平仓。散点：Long 红 · Short 绿 · 平仓蓝。分位仅用过去 ${data.signal.window ?? data.params.z_window ?? 252} 日、不含当日/未来。Reverse 最长 20 交易日。`}
                   </p>
                 </div>
               )}

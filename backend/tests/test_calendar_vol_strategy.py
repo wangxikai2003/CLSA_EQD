@@ -69,7 +69,8 @@ def test_rolling_quantile_bands_no_lookahead():
     # band at t uses only t-1 history → unchanged even if s[t] changed
     assert abs(float(b2["enter_hi"].iloc[t]) - hi_before) < 1e-12
     assert float(b["enter_hi"].iloc[t]) > float(b["enter_lo"].iloc[t])
-    assert float(b["exit_hi"].iloc[t]) > float(b["exit_lo"].iloc[t])
+    assert float(b["exit_hi"].iloc[t]) > float(b["q50"].iloc[t]) > float(b["exit_lo"].iloc[t])
+    assert abs(float(b2["q50"].iloc[t]) - float(b["q50"].iloc[t])) < 1e-12
 
 
 def test_leg_weights_sum_to_one():
@@ -160,7 +161,7 @@ def test_compute_spread_iv_vs_iv2():
 
 @needs_vol_db
 def test_300_36_nav_regression():
-    """Locked 3M–6M CSI300 final NAV multiple (~1.163945) after warm/min_periods cut."""
+    """Locked 3M–6M CSI300 final NAV multiple after q50 exit (was 1.163945 on the 40–60 band)."""
     payload = run_calendar_vol(
         "300",
         initial_nav=100_000_000.0,
@@ -170,7 +171,7 @@ def test_300_36_nav_regression():
         spread_mode="iv",
     )
     mult = float(payload["summary"]["final_nav_multiple"])
-    assert abs(mult - 1.163945) < 5e-4, mult
+    assert abs(mult - 1.21617) < 5e-4, mult
     assert payload["params"]["spread_mode"] == "iv"
     assert payload.get("yearly_metrics"), "yearly_metrics missing"
 
@@ -186,8 +187,8 @@ def test_spread_mode_iv2_differs_from_iv():
     )
     assert iv2["params"]["spread_mode"] == "iv2"
     assert iv2["params"]["spread_formula"] == "IV_near² − IV_far²"
-    assert abs(float(iv["summary"]["final_nav_multiple"]) - 1.163945) < 5e-4
-    assert abs(float(iv2["summary"]["final_nav_multiple"]) - 1.230101) < 5e-4
+    assert abs(float(iv["summary"]["final_nav_multiple"]) - 1.21617) < 5e-4
+    assert abs(float(iv2["summary"]["final_nav_multiple"]) - 1.138539) < 5e-4
     # Chart series may downsample differently when position paths diverge.
     assert any(
         a is not None and b is not None and abs(a - b) > 1e-12
