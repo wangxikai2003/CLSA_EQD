@@ -35,22 +35,28 @@ const CAL_VOL_SPREADS: { key: QisSpreadMode; label: string }[] = [
   { key: 'iv2', label: 'IV² spread' },
 ];
 
-/** Top-level signal family (Regime expands into book sub-toggle). */
-const CAL_VOL_SIGNAL_FAMILIES: {
-  key: 'quantile' | 'garch_z' | 'regime' | 'regime2';
-  label: string;
-}[] = [
-  { key: 'quantile', label: 'Quantile' },
-  { key: 'garch_z', label: 'GARCH-z' },
-  { key: 'regime', label: 'Regime' },
-  { key: 'regime2', label: 'Regime2' },
+/** Sub-indices of Equity Calendar Vol. Quantile and GARCH-z sit on this row. */
+const CAL_VOL_SUBINDICES: { id: 'quantile' | 'garch_z'; label: string }[] = [
+  { id: 'quantile', label: 'Quantile' },
+  { id: 'garch_z', label: 'GARCH-z' },
 ];
 
-const CAL_VOL_REGIME_BOOKS: { key: QisSignalMode; label: string; hint: string }[] = [
-  { key: 'regime', label: 'Both', hint: 'Momentum + Mean-reversion' },
-  { key: 'regime_momentum', label: 'Momentum', hint: 'Momentum only' },
-  { key: 'regime_fade', label: 'Mean-rev', hint: 'Fade / mean-reversion only' },
+/**
+ * Higher-level strategies. Regime is the former regime2 engine.
+ * The next strategy at this same level is another entry here; leave its
+ * rules unwired until they are specified.
+ */
+const CAL_VOL_STRATEGIES: { id: QisSignalMode; label: string }[] = [
+  { id: 'regime2', label: 'Regime' },
 ];
+
+function calVolSignalLabel(mode: string): string {
+  return (
+    CAL_VOL_SUBINDICES.find((s) => s.id === mode)?.label ??
+    CAL_VOL_STRATEGIES.find((s) => s.id === mode)?.label ??
+    mode
+  );
+}
 
 function segBtnClass(active: boolean, disabled?: boolean) {
   const base = 'px-3 py-1.5 text-xs font-bold transition-colors';
@@ -583,23 +589,17 @@ const QisView: React.FC = () => {
   const tenorLabel = CAL_VOL_TENORS.find((t) => t.key === activeTenor)?.label ?? activeTenor;
   const sideLabel = CAL_VOL_SIDES.find((s) => s.key === activeSide)?.label ?? activeSide;
   const spreadLabel = CAL_VOL_SPREADS.find((s) => s.key === activeSpread)?.label ?? activeSpread;
-  const signalLabel = isRegimeSignalMode(activeSignal)
-    ? `Regime · ${CAL_VOL_REGIME_BOOKS.find((b) => b.key === activeSignal)?.label ?? activeSignal}`
-    : CAL_VOL_SIGNAL_FAMILIES.find((s) => s.key === activeSignal)?.label ?? activeSignal;
+  const signalLabel = calVolSignalLabel(activeSignal);
   const sosLabel = isCalVol
     ? activeSignal === 'garch_z'
       ? `${tenorLabel} GARCH-z`
-      : isRegimeSignalMode(activeSignal)
+      : isRegime2SignalMode(activeSignal)
         ? activeSpread === 'iv2'
-          ? `${tenorLabel} IV² · Regime v2`
-          : `${tenorLabel} IV · Regime v2`
-        : isRegime2SignalMode(activeSignal)
-          ? activeSpread === 'iv2'
-            ? `${tenorLabel} IV² · Regime2`
-            : `${tenorLabel} IV · Regime2`
-          : activeSpread === 'iv2'
-            ? `${tenorLabel} IV² spread (var ×100)`
-            : `${tenorLabel} IV spread (vol pts)`
+          ? `${tenorLabel} IV² · Regime`
+          : `${tenorLabel} IV · Regime`
+        : activeSpread === 'iv2'
+          ? `${tenorLabel} IV² spread (var ×100)`
+          : `${tenorLabel} IV spread (vol pts)`
     : 'SoS (pts)';
   const ivSpreadLabel = isCalVol
     ? activeSpread === 'iv2'
@@ -775,7 +775,7 @@ const QisView: React.FC = () => {
             Systematic Trading Strategies
           </h2>
           <p className="text-[11px] text-slate-500 max-w-3xl mt-1">
-            QIS：期货 carry + Equity Calendar Vol。选指数 / tenor / side / spread / signal 后，下方策略卡会同步中文口径说明（数据、信号、腿向、PnL 希腊）。
+            QIS：期货 carry + Equity Calendar Vol。同一系列里，Quantile 与 GARCH-z 是子指数，Regime 是更高一层的策略；同层策略以后在「策略」这一行切换。
             缓存 <code className="font-mono">qis_results.sqlite</code>（tenor × side × spread × signal 分键）。
           </p>
         </div>
@@ -891,50 +891,37 @@ const QisView: React.FC = () => {
               </div>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-end">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Signal</span>
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">子指数</span>
                   <div className="flex rounded-md border border-slate-200 overflow-hidden">
-                    {CAL_VOL_SIGNAL_FAMILIES.map((s) => {
-                      const active =
-                        s.key === 'regime' ? isRegimeSignalMode(signalMode) : signalMode === s.key;
-                      return (
-                        <button
-                          key={s.key}
-                          type="button"
-                          disabled={loading}
-                          onClick={() => {
-                            if (s.key === 'regime') {
-                              setSignalMode(isRegimeSignalMode(signalMode) ? signalMode : 'regime');
-                            } else {
-                              setSignalMode(s.key);
-                            }
-                          }}
-                          className={segBtnClass(active, loading)}
-                        >
-                          {s.label}
-                        </button>
-                      );
-                    })}
+                    {CAL_VOL_SUBINDICES.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => setSignalMode(s.id)}
+                        className={segBtnClass(signalMode === s.id, loading)}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
-                {isRegimeSignalMode(signalMode) && (
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Book</span>
-                    <div className="flex rounded-md border border-[#000066]/30 overflow-hidden">
-                      {CAL_VOL_REGIME_BOOKS.map((b) => (
-                        <button
-                          key={b.key}
-                          type="button"
-                          disabled={loading}
-                          title={b.hint}
-                          onClick={() => setSignalMode(b.key)}
-                          className={segBtnClass(signalMode === b.key, loading)}
-                        >
-                          {b.label}
-                        </button>
-                      ))}
-                    </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">策略</span>
+                  <div className="flex rounded-md border border-[#000066]/30 overflow-hidden">
+                    {CAL_VOL_STRATEGIES.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => setSignalMode(s.id)}
+                        className={segBtnClass(signalMode === s.id, loading)}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
                   </div>
-                )}
+                </div>
                 {stopApplies && (
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Stop</span>
