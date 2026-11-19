@@ -51,6 +51,53 @@ export type QisSignalMode =
   | 'regime_momentum'
   | 'regime_fade'
   | 'regime2';
+export type QisVolRvTilt = 'balanced' | 'carry' | 'defensive';
+export type QisHedgerMode = 'eod_close' | 'intraday_curve';
+
+export interface QisNavPoint {
+  d: string;
+  nav: number;
+  sos?: number | null;
+}
+
+export interface QisVolRvAblation {
+  step1_eod_vanilla: QisNavPoint[];
+  step2_long_threshold: QisNavPoint[];
+  step3_dynamic_leverage: QisNavPoint[];
+}
+
+export interface QisVolRvAttribution {
+  dates: string[];
+  short_option_pnl: number[];
+  long_option_pnl: number[];
+  futures_hedge_pnl: number[];
+  transaction_cost: number[];
+  net_pnl: number[];
+}
+
+export interface QisVolRvGreeksSummary {
+  dates: string[];
+  net_delta: number[];
+  net_gamma: number[];
+  net_vega: number[];
+  net_theta: number[];
+  long_dynamic_leverage: (number | null)[];
+}
+
+export interface QisVolRvParams {
+  tilt?: QisVolRvTilt | string;
+  target_otm_delta?: number;
+  long_delta_threshold?: number;
+  lambda_tilt?: number;
+  l_min?: number;
+  l_max?: number;
+  hedger_mode?: QisHedgerMode | string;
+  option_fee_pct?: number;
+  option_slippage_pct?: number;
+  futures_fee_pct?: number;
+  futures_slippage_pct?: number;
+  ablation?: boolean;
+}
 
 /** True for any Regime v2 book (both / momentum-only / fade-only). */
 export function isRegimeSignalMode(mode: string | null | undefined): boolean {
@@ -181,6 +228,12 @@ export interface QisBacktestResponse {
   pnl_daily_greeks?: QisDailyGreeks;
   signal?: QisSignalSeries;
   pnl_contribution?: QisPnLContribution;
+  /** CSI 300 Vol RV Step1/2/3 ablation NAV paths. */
+  ablation?: QisVolRvAblation;
+  /** CSI 300 Vol RV daily PnL attribution. */
+  pnl_attribution?: QisVolRvAttribution;
+  /** CSI 300 Vol RV net greeks + dynamic leverage. */
+  greeks_summary?: QisVolRvGreeksSummary;
   /** Result-store reuse: hit=true means engine was skipped. */
   _cache?: {
     hit: boolean;
@@ -214,6 +267,7 @@ export function fetchQisBacktest(
   stopLoss = false,
   maxDrawdownTarget = 0.1,
   reboundRatio = 0.9,
+  volRv?: QisVolRvParams,
 ) {
   const q = new URLSearchParams();
   if (refresh) q.set('refresh', 'true');
@@ -226,6 +280,26 @@ export function fetchQisBacktest(
     q.set('stop_loss', 'true');
     q.set('max_drawdown_target', String(maxDrawdownTarget));
     q.set('rebound_ratio', String(reboundRatio));
+  }
+  if (strategyId === 'csi300_vol_rv' && volRv) {
+    if (volRv.tilt) q.set('tilt', String(volRv.tilt));
+    if (volRv.target_otm_delta != null) q.set('target_otm_delta', String(volRv.target_otm_delta));
+    if (volRv.long_delta_threshold != null) {
+      q.set('long_delta_threshold', String(volRv.long_delta_threshold));
+    }
+    if (volRv.lambda_tilt != null) q.set('lambda_tilt', String(volRv.lambda_tilt));
+    if (volRv.l_min != null) q.set('l_min', String(volRv.l_min));
+    if (volRv.l_max != null) q.set('l_max', String(volRv.l_max));
+    if (volRv.hedger_mode) q.set('hedger_mode', String(volRv.hedger_mode));
+    if (volRv.option_fee_pct != null) q.set('option_fee_pct', String(volRv.option_fee_pct));
+    if (volRv.option_slippage_pct != null) {
+      q.set('option_slippage_pct', String(volRv.option_slippage_pct));
+    }
+    if (volRv.futures_fee_pct != null) q.set('futures_fee_pct', String(volRv.futures_fee_pct));
+    if (volRv.futures_slippage_pct != null) {
+      q.set('futures_slippage_pct', String(volRv.futures_slippage_pct));
+    }
+    if (volRv.ablation != null) q.set('ablation', volRv.ablation ? 'true' : 'false');
   }
   const qs = q.toString();
   return getJsonWithRetry<QisBacktestResponse>(

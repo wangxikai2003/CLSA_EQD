@@ -352,6 +352,8 @@ def list_strategies():
         }
         for key, u in UNIVERSES.items()
     ]
+    from engine.csi300_vol_rv_strategy import STYLE_PRESETS
+
     return {
         "strategies": [
             {
@@ -362,11 +364,31 @@ def list_strategies():
                 "family": "futures_carry",
             },
             *cal,
+            {
+                "id": "csi300_vol_rv",
+                "name": "CSI 300 Vol RV (GS GSVLBRR1)",
+                "status": "live",
+                "blurb": (
+                    "IO near-month ATM short strangle + next-quarter OTM long strangle; "
+                    "IF EOD delta hedge with long threshold; premium-inverse leverage. "
+                    f"tilts={list(STYLE_PRESETS)}"
+                ),
+                "family": "csi300_vol_rv",
+                "tilts": list(STYLE_PRESETS.keys()),
+                "defaults": {
+                    "tilt": "balanced",
+                    "target_otm_delta": 0.15,
+                    "long_delta_threshold": 0.05,
+                    "hedger_mode": "eod_close",
+                    **STYLE_PRESETS["balanced"],
+                },
+            },
         ],
         "tenor_pairs": list(TENOR_PAIRS.keys()),
         "side_modes": list(SIDE_MODES),
         "spread_modes": list(SPREAD_MODES),
         "signal_modes": list(SIGNAL_MODES),
+        "vol_rv_tilts": list(STYLE_PRESETS.keys()),
     }
 
 
@@ -412,12 +434,146 @@ def backtest(
         le=1,
         description="Leave the stop once the spread has retraced this fraction of its adverse move",
     ),
+    tilt: str = Query("balanced", description="CSI300 Vol RV style: balanced | carry | defensive"),
+    target_otm_delta: float = Query(0.15, gt=0.01, lt=0.5, description="OTM long target |delta|"),
+    long_delta_threshold: float = Query(
+        0.05, ge=0.0, le=1.0, description="Hedge long book only when |net long delta| exceeds this"
+    ),
+    lambda_tilt: Optional[float] = Query(None, description="Override tilt λ; default from STYLE_PRESETS"),
+    l_min: Optional[float] = Query(None, description="Override leverage floor"),
+    l_max: Optional[float] = Query(None, description="Override leverage cap"),
+    hedger_mode: str = Query("eod_close", description="eod_close | intraday_curve (stub)"),
+    option_fee_pct: float = Query(0.0, ge=0.0, le=0.05),
+    option_slippage_pct: float = Query(0.0, ge=0.0, le=0.05),
+    futures_fee_pct: float = Query(0.0, ge=0.0, le=0.05),
+    futures_slippage_pct: float = Query(0.0, ge=0.0, le=0.05),
+    ablation: bool = Query(True, description="Return step1/2/3 ablation NAV paths"),
 ):
     db = st._equity_db()
     from api.v1 import qis_results_store as qrs
 
     spot = next((p for p in st._SPOT_CANDIDATES if p.exists()), None)
     src = qrs.source_key(db, spot)
+
+    if strategy_id == "csi300_vol_rv":
+        from engine.csi300_vol_rv_strategy import (
+            CACHE_SIDE,
+            CACHE_SPREAD,
+            CACHE_TENOR,
+            normalize_tilt,
+            run_csi300_vol_rv,
+            vol_rv_cache_sig,
+        )
+
+        try:
+            t = normalize_tilt(tilt)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        hm = str(hedger_mode or "eod_close").strip().lower()
+        if hm not in ("eod_close", "eod", "close", "intraday_curve", "intraday", "curve"):
+            raise HTTPException(400, f"unknown hedger_mode {hedger_mode!r}")
+        if hm in ("intraday", "intraday_curve", "curve"):
+            # Stub: fall back to EOD until intraday bars exist; still fingerprint the request.
+            run_hm = "eod_close"
+        else:
+            run_hm = "eod_close"
+        sig = vol_rv_cache_sig(
+            t,
+            target_otm_delta,
+            long_delta_threshold,
+            hm if hm.startswith("intraday") else run_hm,
+            lambda_tilt,
+            l_min,
+            l_max,
+        )
+        mem_key = (
+            strategy_id,
+            252,
+            src,
+            _INITIAL_NAV,
+            CACHE_TENOR,
+            CACHE_SIDE,
+            CACHE_SPREAD,
+            sig,
+            bool(ablation),
+            round(float(option_fee_pct), 6),
+            round(float(option_slippage_pct), 6),
+            round(float(futures_fee_pct), 6),
+            round(float(futures_slippage_pct), 6),
+        )
+        if not refresh:
+            hit = qrs.get_cached(
+                strategy_id,
+                252,
+                _INITIAL_NAV,
+                src,
+                tenor_pair=CACHE_TENOR,
+                side_mode=CACHE_SIDE,
+                spread_mode=CACHE_SPREAD,
+                signal_mode=sig,
+            )
+            if hit is not None:
+                return hit
+            mem = _cache.get("vol_rv_map") or {}
+            if mem_key in mem:
+                return qrs.attach_cache_meta(
+                    mem[mem_key],
+                    hit=True,
+                    source="memory",
+                    source_key=src,
+                    tenor_pair=CACHE_TENOR,
+                    side_mode=CACHE_SIDE,
+                    spread_mode=CACHE_SPREAD,
+                    signal_mode=sig,
+                )
+
+        try:
+            payload = run_csi300_vol_rv(
+                initial_nav=_INITIAL_NAV,
+                tilt=t,
+                target_otm_delta=target_otm_delta,
+                long_delta_threshold=long_delta_threshold,
+                hedger_mode=run_hm,
+                lambda_tilt=lambda_tilt,
+                l_min=l_min,
+                l_max=l_max,
+                option_fee_pct=option_fee_pct,
+                option_slippage_pct=option_slippage_pct,
+                futures_fee_pct=futures_fee_pct,
+                futures_slippage_pct=futures_slippage_pct,
+                run_ablation=bool(ablation),
+            )
+        except FileNotFoundError as e:
+            raise HTTPException(503, str(e)) from e
+        except Exception as e:
+            raise HTTPException(500, f"csi300_vol_rv failed: {e}") from e
+
+        qrs.put_cached(
+            strategy_id,
+            252,
+            _INITIAL_NAV,
+            src,
+            payload,
+            tenor_pair=CACHE_TENOR,
+            side_mode=CACHE_SIDE,
+            spread_mode=CACHE_SPREAD,
+            signal_mode=sig,
+        )
+        clean = {k: v for k, v in payload.items() if not str(k).startswith("_")}
+        mem = _cache.get("vol_rv_map") or {}
+        mem[mem_key] = clean
+        _cache["vol_rv_map"] = mem
+        return qrs.attach_cache_meta(
+            payload,
+            hit=False,
+            source="miss",
+            source_key=src,
+            persisted=True,
+            tenor_pair=CACHE_TENOR,
+            side_mode=CACHE_SIDE,
+            spread_mode=CACHE_SPREAD,
+            signal_mode=sig,
+        )
 
     if strategy_id == "cross_calendar_carry":
         # Persist under sentinel PK; encode slippage|fee in signal_mode.

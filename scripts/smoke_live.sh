@@ -41,4 +41,16 @@ if mode != "regime2":
     sys.exit(f"regime2 backtest params.signal_mode={mode!r}")
 print("OK  regime2 signal_mode")
 PY
+# Cold start may be slow on first miss; accept cached or live payload.
+curl_ok "/api/v1/qis/backtest/csi300_vol_rv?tilt=balanced"
+python3 - "$BASE" <<'PY'
+import json, sys
+body = open("/tmp/clsa_smoke_body").read()
+data = json.loads(body)
+if data.get("strategy_id") != "csi300_vol_rv":
+    sys.exit(f"vol_rv strategy_id={data.get('strategy_id')!r}")
+if "ablation" not in data:
+    sys.exit("vol_rv missing ablation")
+print("OK  csi300_vol_rv balanced")
+PY
 echo "==> smoke passed"

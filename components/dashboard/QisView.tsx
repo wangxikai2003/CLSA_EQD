@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  LineChart, Line, BarChart, Bar, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import { Download, Layers, RefreshCw } from 'lucide-react';
 import {
@@ -8,12 +8,14 @@ import {
   fetchQisStrategies,
   qisHoldingsExcelUrl,
   QisBacktestResponse,
+  QisHedgerMode,
   QisSideMode,
   QisSignalMode,
   QisSpreadMode,
   QisStrategyInfo,
   QisTenorPair,
   QisTradeMarker,
+  QisVolRvTilt,
   isRegime2SignalMode,
   isRegimeSignalMode,
 } from '../../services/api_v1';
@@ -113,7 +115,24 @@ const CAL_VOL_UNIVERSES = [
   { key: '1000', id: 'equity_3_6_calendar_vol_1000', label: '1000' },
 ] as const;
 
-type FamilyKey = 'cross_calendar_carry' | 'calendar_vol';
+type FamilyKey = 'cross_calendar_carry' | 'calendar_vol' | 'csi300_vol_rv';
+
+const VOL_RV_TILTS: { key: QisVolRvTilt; label: string }[] = [
+  { key: 'balanced', label: 'Balanced' },
+  { key: 'carry', label: 'Carry' },
+  { key: 'defensive', label: 'Defensive' },
+];
+
+const VOL_RV_CHART = {
+  step3: '#EAB308',
+  step2: '#64748B',
+  step1: '#94A3B8',
+  short: '#DC2626',
+  long: '#16A34A',
+  fut: '#2563EB',
+  cost: '#A16207',
+  net: '#000066',
+};
 
 type MarkerKind = 'long' | 'short' | 'close';
 
@@ -201,6 +220,12 @@ const QisView: React.FC = () => {
   const [stopLoss, setStopLoss] = useState(false);
   const [maxDdPct, setMaxDdPct] = useState(10);
   const [reboundRatio, setReboundRatio] = useState(0.9);
+  const [volTilt, setVolTilt] = useState<QisVolRvTilt>('balanced');
+  const [targetOtmDelta, setTargetOtmDelta] = useState(0.15);
+  const [longDeltaThr, setLongDeltaThr] = useState(0.05);
+  const [hedgerMode, setHedgerMode] = useState<QisHedgerMode>('eod_close');
+  const [optFeePct, setOptFeePct] = useState(0);
+  const [optSlipPct, setOptSlipPct] = useState(0);
   const [data, setData] = useState<QisBacktestResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadStatus, setLoadStatus] = useState('Running backtest…');
@@ -208,6 +233,7 @@ const QisView: React.FC = () => {
 
   const strategyId = useMemo(() => {
     if (family === 'cross_calendar_carry') return 'cross_calendar_carry';
+    if (family === 'csi300_vol_rv') return 'csi300_vol_rv';
     return CAL_VOL_UNIVERSES.find((u) => u.key === universe)?.id ?? 'equity_3_6_calendar_vol_300';
   }, [family, universe]);
 
@@ -239,6 +265,17 @@ const QisView: React.FC = () => {
       stopOn,
       maxDdPct / 100,
       reboundRatio,
+      family === 'csi300_vol_rv'
+        ? {
+            tilt: volTilt,
+            target_otm_delta: targetOtmDelta,
+            long_delta_threshold: longDeltaThr,
+            hedger_mode: hedgerMode,
+            option_fee_pct: optFeePct,
+            option_slippage_pct: optSlipPct,
+            ablation: true,
+          }
+        : undefined,
     )
       .then((d) => {
         if (signal?.aborted) return;
@@ -291,7 +328,22 @@ const QisView: React.FC = () => {
     load(false, ac.signal);
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [strategyId, tenorPair, sideMode, spreadMode, signalMode, stopOn, maxDdPct, reboundRatio]);
+  }, [
+    strategyId,
+    tenorPair,
+    sideMode,
+    spreadMode,
+    signalMode,
+    stopOn,
+    maxDdPct,
+    reboundRatio,
+    volTilt,
+    targetOtmDelta,
+    longDeltaThr,
+    hedgerMode,
+    optFeePct,
+    optSlipPct,
+  ]);
 
   const levelScale = useMemo(() => {
     const fromSignal = data?.signal?.level_scale;
@@ -561,11 +613,15 @@ const QisView: React.FC = () => {
   const navChart = useMemo(() => {
     if (!data?.nav?.length) return [];
     const kindByD = byKind;
+    const step1ByD = new Map((data.ablation?.step1_eod_vanilla ?? []).map((p) => [p.d, p.nav]));
+    const step2ByD = new Map((data.ablation?.step2_long_threshold ?? []).map((p) => [p.d, p.nav]));
     return data.nav.map((r) => {
       const kind = kindByD.get(r.d);
       const sos = r.sos;
       return {
         ...r,
+        nav_step1: step1ByD.get(r.d) ?? null,
+        nav_step2: step2ByD.get(r.d) ?? null,
         long_pt: kind === 'long' && sos != null ? sos : null,
         short_pt: kind === 'short' && sos != null ? sos : null,
         close_pt: kind === 'close' && sos != null ? sos : null,
@@ -573,7 +629,21 @@ const QisView: React.FC = () => {
     });
   }, [data, byKind]);
 
+  const volRvAttrChart = useMemo(() => {
+    const a = data?.pnl_attribution;
+    if (!a?.dates?.length) return [];
+    return a.dates.map((d, i) => ({
+      d,
+      short: a.short_option_pnl[i] ?? 0,
+      long: a.long_option_pnl[i] ?? 0,
+      fut: a.futures_hedge_pnl[i] ?? 0,
+      cost: -(a.transaction_cost[i] ?? 0),
+      net: a.net_pnl[i] ?? 0,
+    }));
+  }, [data]);
+
   const isCalVol = strategyId.startsWith('equity_3_6_calendar_vol_');
+  const isVolRv = strategyId === 'csi300_vol_rv';
   const activeTenor =
     (typeof data?.params?.tenor_pair === 'string' ? data.params.tenor_pair : tenorPair) as QisTenorPair;
   const activeSide =
@@ -775,7 +845,7 @@ const QisView: React.FC = () => {
             Systematic Trading Strategies
           </h2>
           <p className="text-[11px] text-slate-500 max-w-3xl mt-1">
-            QIS：期货 carry + Equity Calendar Vol。同一系列里，Quantile 与 GARCH-z 是子指数，Regime 是更高一层的策略；同层策略以后在「策略」这一行切换。
+            QIS：期货 carry + Equity Calendar Vol + CSI 300 Vol RV。同一系列里，Quantile 与 GARCH-z 是子指数，Regime 是更高一层的策略；同层策略以后在「策略」这一行切换。
             缓存 <code className="font-mono">qis_results.sqlite</code>（tenor × side × spread × signal 分键）。
           </p>
         </div>
@@ -789,6 +859,7 @@ const QisView: React.FC = () => {
             >
               <option value="cross_calendar_carry">Cross Calendar Carry</option>
               <option value="calendar_vol">Equity Calendar Vol</option>
+              <option value="csi300_vol_rv">CSI 300 Vol RV</option>
             </select>
             <button
               type="button"
@@ -821,6 +892,115 @@ const QisView: React.FC = () => {
               </a>
             )}
           </div>
+          {family === 'csi300_vol_rv' && (
+            <div className="flex flex-col gap-1.5 w-full max-w-3xl">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-end">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Tilt</span>
+                  <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                    {VOL_RV_TILTS.map((t) => (
+                      <button
+                        key={t.key}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => setVolTilt(t.key)}
+                        className={segBtnClass(volTilt === t.key, loading)}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Hedger</span>
+                  <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                    <button
+                      type="button"
+                      disabled={loading}
+                      onClick={() => setHedgerMode('eod_close')}
+                      className={segBtnClass(hedgerMode === 'eod_close', loading)}
+                    >
+                      EOD Close
+                    </button>
+                    <button
+                      type="button"
+                      disabled
+                      title="Awaiting intraday bars"
+                      className={segBtnClass(hedgerMode === 'intraday_curve', true)}
+                    >
+                      Intraday
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-end">
+                <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                  OTM Δ
+                  <input
+                    type="number"
+                    min={0.05}
+                    max={0.4}
+                    step={0.01}
+                    disabled={loading}
+                    value={targetOtmDelta}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      if (Number.isFinite(v) && v > 0.01 && v < 0.5) setTargetOtmDelta(v);
+                    }}
+                    className="w-14 px-1 py-0.5 border border-slate-200 rounded text-[10px] font-bold text-[#000066]"
+                  />
+                </label>
+                <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                  Long Δ thr
+                  <input
+                    type="number"
+                    min={0}
+                    max={0.5}
+                    step={0.01}
+                    disabled={loading}
+                    value={longDeltaThr}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      if (Number.isFinite(v) && v >= 0 && v <= 1) setLongDeltaThr(v);
+                    }}
+                    className="w-14 px-1 py-0.5 border border-slate-200 rounded text-[10px] font-bold text-[#000066]"
+                  />
+                </label>
+                <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                  Fee %
+                  <input
+                    type="number"
+                    min={0}
+                    max={5}
+                    step={0.01}
+                    disabled={loading}
+                    value={optFeePct * 100}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      if (Number.isFinite(v) && v >= 0) setOptFeePct(v / 100);
+                    }}
+                    className="w-14 px-1 py-0.5 border border-slate-200 rounded text-[10px] font-bold text-[#000066]"
+                  />
+                </label>
+                <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                  Slip %
+                  <input
+                    type="number"
+                    min={0}
+                    max={5}
+                    step={0.01}
+                    disabled={loading}
+                    value={optSlipPct * 100}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      if (Number.isFinite(v) && v >= 0) setOptSlipPct(v / 100);
+                    }}
+                    className="w-14 px-1 py-0.5 border border-slate-200 rounded text-[10px] font-bold text-[#000066]"
+                  />
+                </label>
+              </div>
+            </div>
+          )}
           {family === 'calendar_vol' && (
             <div className="flex flex-col gap-1.5 w-full max-w-3xl">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-end">
@@ -1013,6 +1193,9 @@ const QisView: React.FC = () => {
                 {isCalVol
                   ? ` · tenor=${tenorLabel} · side=${sideLabel} · spread=${spreadLabel} · signal=${signalLabel}`
                   : ''}
+                {isVolRv
+                  ? ` · tilt=${String(data.params.tilt ?? volTilt)} · δ=${String(data.params.target_otm_delta ?? targetOtmDelta)} · thr=${String(data.params.long_delta_threshold ?? longDeltaThr)}`
+                  : ''}
                 {data._cache
                   ? ` · cache ${data._cache.hit ? 'HIT' : 'MISS'}/${data._cache.source ?? '?'}`
                   : ''}
@@ -1154,7 +1337,11 @@ const QisView: React.FC = () => {
 
           <div className="bg-white rounded-lg border border-slate-200 p-4">
             <h3 className="font-bold text-[#000066] text-sm mb-3">净值曲线 (NAV / initial)</h3>
-            <ChartZoomFrame data={navChart} yKeys={['nav', 'sos']} height={340}>
+            <ChartZoomFrame
+              data={navChart}
+              yKeys={isVolRv ? ['nav', 'nav_step2', 'nav_step1'] : ['nav', 'sos']}
+              height={340}
+            >
               {(win) => (
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={win.data}>
@@ -1166,23 +1353,95 @@ const QisView: React.FC = () => {
                       domain={win.yDomain ?? ['auto', 'auto']}
                       allowDataOverflow={!!win.yDomain}
                     />
-                    <YAxis yAxisId="sos" orientation="right" tick={{ fontSize: 9 }} domain={['auto', 'auto']} />
+                    {!isVolRv && (
+                      <YAxis yAxisId="sos" orientation="right" tick={{ fontSize: 9 }} domain={['auto', 'auto']} />
+                    )}
                     <Tooltip contentStyle={{ fontSize: 11 }} />
                     <Legend wrapperStyle={{ fontSize: 10 }} />
-                    <Line yAxisId="nav" type="monotone" dataKey="nav" name="NAV multiple" stroke={CHART.nav} dot={false} strokeWidth={2} />
-                    <Line yAxisId="sos" type="monotone" dataKey="sos" name={sosLabel} stroke={CHART.spread} dot={false} strokeWidth={1} strokeOpacity={0.55} />
-                    <Line yAxisId="sos" type="monotone" dataKey="long_pt" name="Long" stroke={CHART.long} strokeWidth={0} dot={markerDot(CHART.long)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
-                    <Line yAxisId="sos" type="monotone" dataKey="short_pt" name="Short" stroke={CHART.short} strokeWidth={0} dot={markerDot(CHART.short)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
-                    <Line yAxisId="sos" type="monotone" dataKey="close_pt" name="Close" stroke={CHART.close} strokeWidth={0} dot={markerDot(CHART.close)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                    <Line
+                      yAxisId="nav"
+                      type="monotone"
+                      dataKey="nav"
+                      name={isVolRv ? 'Step3 dynamic L' : 'NAV multiple'}
+                      stroke={isVolRv ? VOL_RV_CHART.step3 : CHART.nav}
+                      dot={false}
+                      strokeWidth={2}
+                    />
+                    {isVolRv && (
+                      <>
+                        <Line
+                          yAxisId="nav"
+                          type="monotone"
+                          dataKey="nav_step2"
+                          name="Step2 long thr"
+                          stroke={VOL_RV_CHART.step2}
+                          dot={false}
+                          strokeWidth={1.25}
+                          strokeDasharray="5 3"
+                          connectNulls={false}
+                        />
+                        <Line
+                          yAxisId="nav"
+                          type="monotone"
+                          dataKey="nav_step1"
+                          name="Step1 EOD vanilla"
+                          stroke={VOL_RV_CHART.step1}
+                          dot={false}
+                          strokeWidth={1}
+                          strokeDasharray="2 3"
+                          connectNulls={false}
+                        />
+                      </>
+                    )}
+                    {!isVolRv && (
+                      <>
+                        <Line yAxisId="sos" type="monotone" dataKey="sos" name={sosLabel} stroke={CHART.spread} dot={false} strokeWidth={1} strokeOpacity={0.55} />
+                        <Line yAxisId="sos" type="monotone" dataKey="long_pt" name="Long" stroke={CHART.long} strokeWidth={0} dot={markerDot(CHART.long)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                        <Line yAxisId="sos" type="monotone" dataKey="short_pt" name="Short" stroke={CHART.short} strokeWidth={0} dot={markerDot(CHART.short)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                        <Line yAxisId="sos" type="monotone" dataKey="close_pt" name="Close" stroke={CHART.close} strokeWidth={0} dot={markerDot(CHART.close)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
+                      </>
+                    )}
                   </LineChart>
                 </ResponsiveContainer>
               )}
             </ChartZoomFrame>
             <p className="text-[9px] text-slate-400 mt-1">
-              黄线：净值（粗）与 IV spread（细）。点落在 spread 轴上：Long/Normal 红 · Short/Reverse 绿 · 平仓蓝
-              （由 executed position 变化推导）。贴边滑条：横向/纵向缩放与平移。
+              {isVolRv
+                ? '主曲线 Step3（动态杠杆，实线）；Step2 长端阈值虚线；Step1 全量 EOD 对冲虚线。贴边滑条可缩放/平移。'
+                : '黄线：净值（粗）与 IV spread（细）。点落在 spread 轴上：Long/Normal 红 · Short/Reverse 绿 · 平仓蓝（由 executed position 变化推导）。贴边滑条：横向/纵向缩放与平移。'}
             </p>
           </div>
+
+          {isVolRv && volRvAttrChart.length > 0 && (
+            <div className="bg-white rounded-lg border border-slate-200 p-4">
+              <h3 className="font-bold text-[#000066] text-sm mb-3">PnL Attribution (daily)</h3>
+              <ChartZoomFrame
+                data={volRvAttrChart}
+                yKeys={['short', 'long', 'fut', 'cost', 'net']}
+                height={280}
+              >
+                {(win) => (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={win.data}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
+                      <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
+                      <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => fmtMoney(v)} />
+                      <Legend wrapperStyle={{ fontSize: 10 }} />
+                      <Bar dataKey="short" name="Short opt" stackId="a" fill={VOL_RV_CHART.short} maxBarSize={6} />
+                      <Bar dataKey="long" name="Long opt" stackId="a" fill={VOL_RV_CHART.long} maxBarSize={6} />
+                      <Bar dataKey="fut" name="IF hedge" stackId="a" fill={VOL_RV_CHART.fut} maxBarSize={6} />
+                      <Bar dataKey="cost" name="−Cost" stackId="a" fill={VOL_RV_CHART.cost} maxBarSize={6} />
+                      <Line type="monotone" dataKey="net" name="Net" stroke={VOL_RV_CHART.net} dot={false} strokeWidth={1.5} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                )}
+              </ChartZoomFrame>
+              <p className="text-[9px] text-slate-400 mt-1">
+                日度归因：short/long 期权 MTM + IF 对冲 − 交易成本 = net（恒等校验）。
+              </p>
+            </div>
+          )}
 
           <div className="bg-white rounded-lg border border-slate-200 p-4 overflow-x-auto">
             <h3 className="font-bold text-[#000066] text-sm mb-3">绩效指标</h3>
