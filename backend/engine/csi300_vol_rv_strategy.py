@@ -706,16 +706,21 @@ class Csi300VolRvEngine:
         rows: List[Dict[str, Any]] = []
         first_open_i: Optional[int] = None
         leverages: List[float] = []
+        cum_vega = cum_theta = cum_gamma = cum_basis = cum_delta = cum_resid = 0.0
+        dt_years = 1.0 / 365.0
 
         for i, d in enumerate(dates):
             day_opts = opt_by_day.get(d, pd.DataFrame())
             day_fut = fut_by_day.get(d, pd.DataFrame())
             S = float(spot.loc[d]) if d in spot.index else float("nan")
             short_opt = long_opt = fut_pnl = cost = 0.0
+            g_delta = g_basis = g_gamma = g_theta = g_vega = g_resid = 0.0
 
-            # 1) Mark previous book to today.
+            # 1) Mark previous book to today + Black-76 greek / basis decomposition.
             if i > 0 and book.vintages:
                 d_prev = dates[i - 1]
+                S_prev = float(spot.loc[d_prev]) if d_prev in spot.index else float("nan")
+                dS = (S - S_prev) if (math.isfinite(S) and math.isfinite(S_prev)) else float("nan")
                 F_prev_s = float("nan")
                 F_prev_l = float("nan")
                 if book.fut_short_code:
@@ -742,6 +747,30 @@ class Csi300VolRvEngine:
                 if math.isfinite(F_l) and math.isfinite(F_prev_l):
                     fut_pnl += self.m_fut * book.fut_long * (F_l - F_prev_l)
 
+                # Overnight greek PnL uses yesterday's greeks / futures lots (pre-hedge update).
+                opt_delta_pts = sum(p.n * p.delta for v in book.vintages for p in v.legs)
+                opt_gamma_pts = sum(p.n * p.gamma for v in book.vintages for p in v.legs)
+                opt_theta_pts = sum(p.n * p.theta for v in book.vintages for p in v.legs)
+                n_fut = float(book.fut_short) + float(book.fut_long)
+                if math.isfinite(dS):
+                    g_delta = (self.m_opt * opt_delta_pts + self.m_fut * n_fut) * dS
+                    g_gamma = 0.5 * self.m_opt * opt_gamma_pts * (dS ** 2)
+                g_theta = self.m_opt * opt_theta_pts * dt_years
+                if (
+                    math.isfinite(F_s)
+                    and math.isfinite(F_prev_s)
+                    and math.isfinite(S)
+                    and math.isfinite(S_prev)
+                ):
+                    g_basis += self.m_fut * book.fut_short * ((F_s - S) - (F_prev_s - S_prev))
+                if (
+                    math.isfinite(F_l)
+                    and math.isfinite(F_prev_l)
+                    and math.isfinite(S)
+                    and math.isfinite(S_prev)
+                ):
+                    g_basis += self.m_fut * book.fut_long * ((F_l - S) - (F_prev_l - S_prev))
+
                 new_vintages: List[Vintage] = []
                 for v in book.vintages:
                     still = []
@@ -757,6 +786,8 @@ class Csi300VolRvEngine:
                             short_opt += pnl
                         else:
                             long_opt += pnl
+                        # vega_point = vega/100 → ×100 recovers per-1.0-vol vega × ΔIV.
+                        g_vega += self.m_opt * p.n * (float(p.vega) / 100.0) * (iv_now - p.iv) * 100.0
                         still.append(
                             LegPos(
                                 wind_code=p.wind_code,
@@ -766,7 +797,7 @@ class Csi300VolRvEngine:
                                 n=p.n,
                                 mid=mid_now,
                                 iv=iv_now,
-                                ttm=max(float(p.ttm) - 1.0 / 365.0, 1e-6),
+                                ttm=max(float(p.ttm) - dt_years, 1e-6),
                                 forward=p.forward,
                                 r=p.r,
                                 delta=float(g["delta"]),
@@ -779,6 +810,16 @@ class Csi300VolRvEngine:
                     v.legs = still
                     new_vintages.append(v)
                 book.vintages = new_vintages
+
+                actual = short_opt + long_opt + fut_pnl
+                g_resid = actual - (g_delta + g_basis + g_gamma + g_theta + g_vega)
+
+            cum_vega += g_vega
+            cum_theta += g_theta
+            cum_gamma += g_gamma
+            cum_basis += g_basis
+            cum_delta += g_delta
+            cum_resid += g_resid
 
             net = short_opt + long_opt + fut_pnl - cost
             nav = nav + net
@@ -917,6 +958,18 @@ class Csi300VolRvEngine:
                     "net_theta": net_theta,
                     "long_dynamic_leverage": avg_L if math.isfinite(avg_L) else None,
                     "hedge_reason": dec.hedge_reason,
+                    "vega_pnl": g_vega,
+                    "theta_pnl": g_theta,
+                    "gamma_pnl": g_gamma,
+                    "basis_pnl": g_basis,
+                    "net_delta_pnl": g_delta,
+                    "residual_pnl": g_resid,
+                    "cum_vega": cum_vega,
+                    "cum_theta": cum_theta,
+                    "cum_gamma": cum_gamma,
+                    "cum_basis": cum_basis,
+                    "cum_delta": cum_delta,
+                    "cum_resid": cum_resid,
                 }
             )
 
@@ -1050,6 +1103,21 @@ class Csi300VolRvEngine:
             chart, _, _, _ = self._pack_nav(sim)
             ablation_nav[k] = chart
 
+        total_pnl = float(perf[-1]["nav"]) - float(rows[first_open_i]["nav"])
+        parts = {
+            "vega": float(perf[-1]["cum_vega"]),
+            "theta": float(perf[-1]["cum_theta"]),
+            "gamma": float(perf[-1]["cum_gamma"]),
+            "basis": float(perf[-1]["cum_basis"]),
+            "net_delta": float(perf[-1]["cum_delta"]),
+            "residual": float(perf[-1]["cum_resid"]),
+        }
+
+        def _share(x: float) -> Optional[float]:
+            if abs(total_pnl) < 1e-6:
+                return None
+            return round(100.0 * x / total_pnl, 2)
+
         return {
             "strategy_id": STRATEGY_ID,
             "strategy_name": f"CSI 300 Vol RV (GS GSVLBRR) · {self.tilt}",
@@ -1119,6 +1187,21 @@ class Csi300VolRvEngine:
                 "transaction_cost": _series("transaction_cost"),
                 "net_pnl": _series("net_pnl"),
             },
+            "pnl_decomposition": {
+                "dates": [perf[i]["d"] for i in idx],
+                "vega_pnl": _series("cum_vega"),
+                "theta_pnl": _series("cum_theta"),
+                "gamma_pnl": _series("cum_gamma"),
+                "basis_pnl": _series("cum_basis"),
+                "net_delta_pnl": _series("cum_delta"),
+                "residual_pnl": _series("cum_resid"),
+            },
+            "pnl_daily_greeks": {
+                "dates": [perf[i]["d"] for i in idx],
+                "vega_pnl": _series("vega_pnl"),
+                "theta_pnl": _series("theta_pnl"),
+                "gamma_pnl": _series("gamma_pnl"),
+            },
             "greeks_summary": {
                 "dates": [perf[i]["d"] for i in idx],
                 "net_delta": _series("net_delta"),
@@ -1131,6 +1214,15 @@ class Csi300VolRvEngine:
                     else round(float(perf[i]["long_dynamic_leverage"]), 4)
                     for i in idx
                 ],
+            },
+            "pnl_contribution": {
+                "total_pnl": round(float(total_pnl), 2),
+                "vega_pct": _share(parts["vega"]),
+                "theta_pct": _share(parts["theta"]),
+                "gamma_pct": _share(parts["gamma"]),
+                "basis_pct": _share(parts["basis"]),
+                "net_delta_pct": _share(parts["net_delta"]),
+                "residual_pct": _share(parts["residual"]),
             },
             "signal": {
                 "dates": [perf[i]["d"] for i in idx],

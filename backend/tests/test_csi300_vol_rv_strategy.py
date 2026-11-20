@@ -111,6 +111,14 @@ def test_e2e_payload_and_attribution():
             - attr["transaction_cost"][i]
         )
         assert abs(lhs - rhs) < 1e-3
+    decomp = payload["pnl_decomposition"]
+    daily = payload["pnl_daily_greeks"]
+    assert len(decomp["dates"]) == len(daily["dates"]) > 0
+    for k in ("vega_pnl", "theta_pnl", "gamma_pnl", "basis_pnl", "net_delta_pnl", "residual_pnl"):
+        assert len(decomp[k]) == len(decomp["dates"])
+    for k in ("vega_pnl", "theta_pnl", "gamma_pnl"):
+        assert len(daily[k]) == len(daily["dates"])
+    assert payload["pnl_contribution"]["total_pnl"] is not None
 
 
 @needs_vol_db

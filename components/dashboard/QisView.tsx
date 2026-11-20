@@ -1306,7 +1306,20 @@ const QisView: React.FC = () => {
                 </div>
               </div>
             ) : (
-              <p className="text-[11px] text-slate-600 leading-relaxed">{data.description}</p>
+              <div className="text-[11px] text-slate-600 leading-relaxed space-y-1.5 border-t border-slate-100 pt-3">
+                <p>{data.description}</p>
+                {isVolRv && (
+                  <p>
+                    Black-76 希腊分解（下方 Cumulative / Daily Greeks）：
+                    ΔPnL≈(m_opt·ΣnΔ + m_fut·n_IF)·dS；
+                    Γ≈½ m_opt·ΣnΓ·(dS)²；
+                    Vega≈m_opt·Σ n·vega·ΔIV；
+                    Theta≈m_opt·ΣnΘ·(1/365)；
+                    Basis≈m_fut·Σ n_IF·Δ(F−S)；
+                    Residual = actual − (Δ+Γ+Vega+Θ+Basis)。
+                  </p>
+                )}
+              </div>
             )}
             <div className="flex flex-wrap gap-2">
               {data.legs.map((l) => (
