@@ -366,7 +366,7 @@ def list_strategies():
             *cal,
             {
                 "id": "csi300_vol_rv",
-                "name": "Vol RV (GS GSVLBRR)",
+                "name": "Vol RV",
                 "status": "live",
                 "blurb": (
                     "Near-month ATM short strangle + deferred OTM long strangle; "

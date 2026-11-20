@@ -870,7 +870,7 @@ const QisView: React.FC = () => {
             >
               <option value="cross_calendar_carry">Cross Calendar Carry</option>
               <option value="calendar_vol">Equity Calendar Vol</option>
-              <option value="csi300_vol_rv">Vol RV (GS)</option>
+              <option value="csi300_vol_rv">Vol RV</option>
             </select>
             <button
               type="button"

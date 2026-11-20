@@ -79,7 +79,7 @@ VOL_RV_UNIVERSES: Dict[str, Dict[str, Any]] = {
     "300": {
         "key": "300",
         "label": "CSI 300",
-        "strategy_name": "CSI 300 Vol RV (GS GSVLBRR)",
+        "strategy_name": "CSI 300 Vol RV",
         "product": "IO",
         "fut_root": "IF",
         "spot_code": "000300.SH",
@@ -93,7 +93,7 @@ VOL_RV_UNIVERSES: Dict[str, Dict[str, Any]] = {
     "50": {
         "key": "50",
         "label": "SSE 50",
-        "strategy_name": "SSE 50 Vol RV (GS GSVLBRR)",
+        "strategy_name": "SSE 50 Vol RV",
         "product": "HO",
         "fut_root": "IH",
         "spot_code": "000016.SH",
@@ -107,7 +107,7 @@ VOL_RV_UNIVERSES: Dict[str, Dict[str, Any]] = {
     "1000": {
         "key": "1000",
         "label": "CSI 1000",
-        "strategy_name": "CSI 1000 Vol RV (GS GSVLBRR)",
+        "strategy_name": "CSI 1000 Vol RV",
         "product": "MO",
         "fut_root": "IM",
         "spot_code": "000852.SH",
@@ -121,7 +121,7 @@ VOL_RV_UNIVERSES: Dict[str, Dict[str, Any]] = {
     "AU": {
         "key": "AU",
         "label": "SHFE Gold",
-        "strategy_name": "SHFE Gold Vol RV (GS GSVLBRR)",
+        "strategy_name": "SHFE Gold Vol RV",
         "product": "AU",
         "fut_root": "AU",
         "spot_code": None,
