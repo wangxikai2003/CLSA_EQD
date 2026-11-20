@@ -5,7 +5,7 @@ Daily overlapping vintages:
   futures delta hedge via pluggable hedgers, premium-based long leverage (Step 3),
   and Step1/2/3 ablation NAV paths.
 
-Universes: CSI300 (IO), SSE50 (HO), CSI1000 (MO), SHFE Gold (AU).
+Universes: CSI300 (IO), SSE50 (HO), CSI1000 (MO), SHFE Gold (AU), INE Crude (SC).
 Does not modify calendar_vol_strategy.
 """
 from __future__ import annotations
@@ -29,21 +29,15 @@ from engine.hedgers import (
 
 try:
     from data_paths import cffex_vol as _dp_cffex
-    from data_paths import commodity_vol as _dp_commodity_vol
+    from data_paths import commodity_vol_for as _dp_commodity_vol_for
     from data_paths import index_spot as _dp_spot
 except Exception:  # pragma: no cover
     _dp_cffex = None
-    _dp_commodity_vol = None
+    _dp_commodity_vol_for = None
     _dp_spot = None
 
 ROOT = Path(__file__).resolve().parents[2]
 _DB_CANDIDATES = [ROOT / "data" / "cffex_vol.sqlite", ROOT.parent / "data" / "cffex_vol.sqlite"]
-_COMMODITY_VOL_CANDIDATES = [
-    ROOT / "data" / "commodity_vol_au.sqlite",
-    ROOT / "data" / "commodity_vol_lite.sqlite",
-    ROOT.parent / "data" / "commodity_vol.sqlite",
-    ROOT / "data" / "commodity_vol.sqlite",
-]
 _SPOT_CANDIDATES = [
     ROOT / "data" / "index_spot.parquet",
     ROOT.parent / "data" / "index_spot.parquet",
@@ -74,7 +68,7 @@ STYLE_PRESETS: Dict[str, Dict[str, float]] = {
     "defensive": {"lambda_tilt": 1.8, "l_min": 1.0, "l_max": 4.0},
 }
 
-# Universe registry — equity index options + SHFE gold.
+# Universe registry — equity index options + SHFE gold + INE crude.
 VOL_RV_UNIVERSES: Dict[str, Dict[str, Any]] = {
     "300": {
         "key": "300",
@@ -133,6 +127,22 @@ VOL_RV_UNIVERSES: Dict[str, Dict[str, Any]] = {
         "quarter_months": (2, 4, 6, 8, 10, 12),
         "cache_tenor": "AU-AU",
     },
+    "SC": {
+        "key": "SC",
+        "label": "INE Crude",
+        "strategy_name": "INE Crude Vol RV",
+        "product": "SC",
+        "fut_root": "SC",
+        "spot_code": None,
+        "spot_mode": "front_fut",
+        "db": "commodity",
+        # INE SC: quote ¥/barrel, contract size 1000 barrels.
+        "m_opt": 1000.0,
+        "m_fut": 1000.0,
+        # Monthly listed; treat all months as deferred candidates (~90 DTE pick).
+        "quarter_months": tuple(range(1, 13)),
+        "cache_tenor": "SC-SC",
+    },
 }
 
 
@@ -148,19 +158,41 @@ def _equity_db() -> Path:
     raise FileNotFoundError("cffex_vol.sqlite not found")
 
 
-def _commodity_vol_db() -> Path:
-    if _dp_commodity_vol is not None:
+def _commodity_vol_db(product: str) -> Path:
+    prod = str(product).upper()
+    if _dp_commodity_vol_for is not None:
         try:
-            p = _dp_commodity_vol()
+            p = _dp_commodity_vol_for(prod)
             if p is not None and p.exists() and p.stat().st_size > 0:
                 return p
         except Exception:
             pass
-    for p in _COMMODITY_VOL_CANDIDATES:
-        if p.exists() and p.stat().st_size > 0:
-            return p
+    ordered = [
+        ROOT.parent / "data" / "commodity_vol.sqlite",
+        ROOT / "data" / "commodity_vol.sqlite",
+        ROOT / "data" / "commodity_vol_lite.sqlite",
+        ROOT / "data" / f"commodity_vol_{prod.lower()}.sqlite",
+    ]
+    if prod == "AU":
+        ordered.append(ROOT / "data" / "commodity_vol_au.sqlite")
+    if prod == "SC":
+        ordered.append(ROOT / "data" / "commodity_vol_sc.sqlite")
+    for p in ordered:
+        if not (p.exists() and p.stat().st_size > 0):
+            continue
+        try:
+            conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+            hit = conn.execute(
+                "SELECT 1 FROM option_iv WHERE product=? LIMIT 1", (prod,)
+            ).fetchone()
+            conn.close()
+            if hit:
+                return p
+        except Exception:
+            continue
     raise FileNotFoundError(
-        "commodity vol DB not found (need commodity_vol.sqlite or data/commodity_vol_au.sqlite)"
+        f"commodity vol DB for {prod} not found "
+        f"(need commodity_vol.sqlite or data/commodity_vol_{prod.lower()}.sqlite)"
     )
 
 
@@ -187,10 +219,14 @@ def normalize_universe(universe: Optional[str]) -> str:
         "mo": "1000",
         "gold": "AU",
         "au": "AU",
+        "sc": "SC",
+        "crude": "SC",
+        "oil": "SC",
+        "ine_crude": "SC",
     }
     key = aliases.get(raw.lower(), raw)
-    if key.upper() == "AU":
-        key = "AU"
+    if key.upper() in ("AU", "SC"):
+        key = key.upper()
     if key not in VOL_RV_UNIVERSES:
         raise ValueError(f"unknown universe {universe!r}; choose {list(VOL_RV_UNIVERSES)}")
     return key
@@ -461,7 +497,7 @@ class Csi300VolRvEngine:
 
     def _load(self) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
         if self.cfg["db"] == "commodity":
-            db = _commodity_vol_db()
+            db = _commodity_vol_db(self.product)
         else:
             db = _equity_db()
         conn = sqlite3.connect(str(db))

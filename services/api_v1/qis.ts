@@ -52,7 +52,7 @@ export type QisSignalMode =
   | 'regime_fade'
   | 'regime2';
 export type QisVolRvTilt = 'balanced' | 'carry' | 'defensive';
-export type QisVolRvUniverse = '300' | '50' | '1000' | 'AU';
+export type QisVolRvUniverse = '300' | '50' | '1000' | 'AU' | 'SC';
 export type QisHedgerMode = 'eod_close' | 'intraday_curve';
 
 export interface QisNavPoint {

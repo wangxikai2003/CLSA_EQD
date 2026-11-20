@@ -129,6 +129,7 @@ const VOL_RV_UNIVERSES: { key: QisVolRvUniverse; label: string }[] = [
   { key: '50', label: 'SSE 50' },
   { key: '1000', label: 'CSI 1000' },
   { key: 'AU', label: 'Gold AU' },
+  { key: 'SC', label: 'Crude SC' },
 ];
 
 const VOL_RV_CHART = {

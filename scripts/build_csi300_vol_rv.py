@@ -29,8 +29,11 @@ def main() -> None:
     tilts = list(STYLE_PRESETS.keys())
     args = [a for a in sys.argv[1:] if a]
     if args:
-        want_u = [a for a in args if a in VOL_RV_UNIVERSES or a.upper() == "AU"]
-        want_u = [("AU" if a.upper() == "AU" else a) for a in want_u]
+        want_u = []
+        for a in args:
+            au = a.upper() if a.upper() in ("AU", "SC") else a
+            if au in VOL_RV_UNIVERSES:
+                want_u.append(au)
         want_t = [a for a in args if a in STYLE_PRESETS]
         if want_u:
             universes = want_u

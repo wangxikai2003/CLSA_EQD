@@ -29,6 +29,7 @@ HOT_FILES = (
     "cffex_vol.sqlite",
     "commodity_fut.sqlite",
     "commodity_vol_au.sqlite",
+    "commodity_vol_sc.sqlite",
     "commodity_vol.sqlite",
     "qis_results.sqlite",
     "rates_eod.parquet",
@@ -83,14 +84,53 @@ def commodity_db() -> Optional[Path]:
 
 
 def commodity_vol() -> Optional[Path]:
-    """Option-IV commodity surfaces. Prefer full DB, then AU/lite extract for deploy."""
+    """Option-IV commodity surfaces. Prefer full DB, then lite/product extracts."""
     return resolve_any(
         [
             "commodity_vol.sqlite",
             "commodity_vol_lite.sqlite",
             "commodity_vol_au.sqlite",
+            "commodity_vol_sc.sqlite",
         ]
     )
+
+
+def commodity_vol_for(product: str) -> Optional[Path]:
+    """Resolve a commodity option DB that contains ``product`` (AU/SC/…)."""
+    prod = str(product or "").strip().upper()
+    names = [
+        "commodity_vol.sqlite",
+        "commodity_vol_lite.sqlite",
+        f"commodity_vol_{prod.lower()}.sqlite" if prod else "",
+    ]
+    if prod == "AU":
+        names.append("commodity_vol_au.sqlite")
+    if prod == "SC":
+        names.append("commodity_vol_sc.sqlite")
+    for name in names:
+        if not name:
+            continue
+        p = resolve(name)
+        if p is None or not p.exists() or p.stat().st_size <= 0:
+            continue
+        # Product-specific extracts are trusted; full/lite verified by presence of rows.
+        if name.startswith("commodity_vol_") and name not in (
+            "commodity_vol_lite.sqlite",
+        ):
+            return p
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+            n = conn.execute(
+                "SELECT 1 FROM option_iv WHERE product=? LIMIT 1", (prod,)
+            ).fetchone()
+            conn.close()
+            if n:
+                return p
+        except Exception:
+            continue
+    return None
 
 
 def qis_results() -> Path:

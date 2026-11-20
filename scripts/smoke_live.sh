@@ -63,4 +63,14 @@ if u != "AU":
     sys.exit(f"vol_rv AU universe={u!r}")
 print("OK  csi300_vol_rv balanced u=AU")
 PY
+curl_ok "/api/v1/qis/backtest/csi300_vol_rv?tilt=balanced&universe=SC"
+python3 - "$BASE" <<'PY'
+import json, sys
+body = open("/tmp/clsa_smoke_body").read()
+data = json.loads(body)
+u = (data.get("params") or {}).get("universe")
+if u != "SC":
+    sys.exit(f"vol_rv SC universe={u!r}")
+print("OK  csi300_vol_rv balanced u=SC")
+PY
 echo "==> smoke passed"

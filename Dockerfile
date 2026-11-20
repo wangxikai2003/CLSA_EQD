@@ -20,9 +20,10 @@ COPY data/cffex_vol.sqlite /app/data/cffex_vol.sqlite
 COPY data/rates_eod.parquet /app/data/rates_eod.parquet
 COPY data/index_spot.parquet /app/data/index_spot.parquet
 # Slim commodity futures-only DB (~20MB); full commodity_vol.sqlite (~1.4G) not shipped.
-# AU option surface extract (~80MB) for Vol RV Gold universe.
+# Product extracts for Vol RV commodity universes (AU gold, SC crude).
 COPY data/commodity_fut.sqlite /app/data/commodity_fut.sqlite
 COPY data/commodity_vol_au.sqlite /app/data/commodity_vol_au.sqlite
+COPY data/commodity_vol_sc.sqlite /app/data/commodity_vol_sc.sqlite
 COPY data/vol_spread_levels.parquet /app/data/vol_spread_levels.parquet
 # Realized Correlation web panels (Market/Spread Corr tabs).
 # Runtime reads corr_web_matrices.json (see realized_corr_service). Do not COPY

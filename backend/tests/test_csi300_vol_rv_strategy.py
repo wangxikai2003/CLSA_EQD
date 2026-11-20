@@ -88,10 +88,12 @@ def test_cache_sig_stable():
 
 
 def test_universe_registry():
-    assert set(VOL_RV_UNIVERSES) >= {"300", "50", "1000", "AU"}
+    assert set(VOL_RV_UNIVERSES) >= {"300", "50", "1000", "AU", "SC"}
     assert normalize_universe("ho") == "50"
     assert normalize_universe("gold") == "AU"
+    assert normalize_universe("crude") == "SC"
     assert VOL_RV_UNIVERSES["AU"]["db"] == "commodity"
+    assert VOL_RV_UNIVERSES["SC"]["product"] == "SC"
     assert VOL_RV_UNIVERSES["1000"]["m_fut"] == 200.0
 
 
@@ -170,24 +172,34 @@ def test_e2e_ho_mo_universes(uni):
     assert payload["summary"]["final_nav_multiple"] > 0
 
 
-@needs_vol_db
-def test_e2e_au_universe():
+def _has_commodity_product(product: str) -> bool:
     from pathlib import Path
 
+    root = Path(__file__).resolve().parents[2]
+    parent = root.parent / "data" / "commodity_vol.sqlite"
+    extract = root / "data" / f"commodity_vol_{product.lower()}.sqlite"
+    legacy = root / "data" / "commodity_vol_au.sqlite" if product == "AU" else None
+    for p in (extract, legacy, parent):
+        if p is not None and p.exists() and p.stat().st_size > 0:
+            return True
+    return False
+
+
+@needs_vol_db
+@pytest.mark.parametrize("uni,product", [("AU", "AU"), ("SC", "SC")])
+def test_e2e_commodity_universes(uni, product):
     from engine.csi300_vol_rv_strategy import run_csi300_vol_rv
 
-    au_db = Path(__file__).resolve().parents[2] / "data" / "commodity_vol_au.sqlite"
-    parent = Path(__file__).resolve().parents[3] / "data" / "commodity_vol.sqlite"
-    if not ((au_db.exists() and au_db.stat().st_size > 0) or (parent.exists() and parent.stat().st_size > 0)):
-        pytest.skip("commodity AU vol DB missing")
+    if not _has_commodity_product(product):
+        pytest.skip(f"commodity {product} vol DB missing")
     payload = run_csi300_vol_rv(
         tilt="balanced",
-        universe="AU",
+        universe=uni,
         run_ablation=False,
         start_date="2024-01-02",
         end_date="2024-06-28",
     )
-    assert payload["params"]["universe"] == "AU"
-    assert payload["params"]["product"] == "AU"
+    assert payload["params"]["universe"] == uni
+    assert payload["params"]["product"] == product
     assert payload["params"]["m_opt"] == 1000.0
     assert payload["summary"]["final_nav_multiple"] > 0
