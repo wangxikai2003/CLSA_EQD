@@ -641,7 +641,7 @@ const QisView: React.FC = () => {
     });
   }, [data, byKind]);
 
-  const volRvAttrChart = useMemo(() => {
+  const volRvDailyAttrChart = useMemo(() => {
     const a = data?.pnl_attribution;
     if (!a?.dates?.length) return [];
     return a.dates.map((d, i) => ({
@@ -653,6 +653,30 @@ const QisView: React.FC = () => {
       net: a.net_pnl[i] ?? 0,
     }));
   }, [data]);
+
+  const volRvCumAttrChart = useMemo(() => {
+    if (!volRvDailyAttrChart.length) return [];
+    let cShort = 0;
+    let cLong = 0;
+    let cFut = 0;
+    let cCost = 0;
+    let cNet = 0;
+    return volRvDailyAttrChart.map((r) => {
+      cShort += r.short;
+      cLong += r.long;
+      cFut += r.fut;
+      cCost += r.cost;
+      cNet += r.net;
+      return {
+        d: r.d,
+        short: cShort,
+        long: cLong,
+        fut: cFut,
+        cost: cCost,
+        net: cNet,
+      };
+    });
+  }, [volRvDailyAttrChart]);
 
   const isCalVol = strategyId.startsWith('equity_3_6_calendar_vol_');
   const isVolRv = strategyId === 'csi300_vol_rv';
@@ -1453,35 +1477,71 @@ const QisView: React.FC = () => {
             </p>
           </div>
 
-          {isVolRv && volRvAttrChart.length > 0 && (
-            <div className="bg-white rounded-lg border border-slate-200 p-4">
-              <h3 className="font-bold text-[#000066] text-sm mb-3">PnL Attribution (daily)</h3>
-              <ChartZoomFrame
-                data={volRvAttrChart}
-                yKeys={['short', 'long', 'fut', 'cost', 'net']}
-                height={280}
-              >
-                {(win) => (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <ComposedChart data={win.data}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
-                      <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
-                      <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => fmtMoney(v)} />
-                      <Legend wrapperStyle={{ fontSize: 10 }} />
-                      <Bar dataKey="short" name="Short opt" stackId="a" fill={VOL_RV_CHART.short} maxBarSize={6} />
-                      <Bar dataKey="long" name="Long opt" stackId="a" fill={VOL_RV_CHART.long} maxBarSize={6} />
-                      <Bar dataKey="fut" name="Futures hedge" stackId="a" fill={VOL_RV_CHART.fut} maxBarSize={6} />
-                      <Bar dataKey="cost" name="−Cost" stackId="a" fill={VOL_RV_CHART.cost} maxBarSize={6} />
-                      <Line type="monotone" dataKey="net" name="Net" stroke={VOL_RV_CHART.net} dot={false} strokeWidth={1.5} />
-                    </ComposedChart>
-                  </ResponsiveContainer>
-                )}
-              </ChartZoomFrame>
-              <p className="text-[9px] text-slate-400 mt-1">
-                日度归因：short/long 期权 MTM + IF 对冲 − 交易成本 = net（恒等校验）。
-              </p>
-            </div>
+          {isVolRv && volRvCumAttrChart.length > 0 && (
+            <>
+              <div className="bg-white rounded-lg border border-slate-200 p-4">
+                <h3 className="font-bold text-[#000066] text-sm mb-3">Cumulative PnL Attribution</h3>
+                <ChartZoomFrame
+                  data={volRvCumAttrChart}
+                  yKeys={['short', 'long', 'fut', 'cost', 'net']}
+                  height={320}
+                >
+                  {(win) => (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={win.data}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
+                        <YAxis
+                          tick={{ fontSize: 10 }}
+                          domain={win.yDomain ?? ['auto', 'auto']}
+                          allowDataOverflow={!!win.yDomain}
+                        />
+                        <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => fmtMoney(v)} />
+                        <Legend wrapperStyle={{ fontSize: 10 }} />
+                        <Line type="monotone" dataKey="short" name="Short opt" stroke={VOL_RV_CHART.short} dot={false} strokeWidth={1.5} />
+                        <Line type="monotone" dataKey="long" name="Long opt" stroke={VOL_RV_CHART.long} dot={false} strokeWidth={1.5} />
+                        <Line type="monotone" dataKey="fut" name="Futures hedge" stroke={VOL_RV_CHART.fut} dot={false} strokeWidth={1.5} />
+                        <Line type="monotone" dataKey="cost" name="−Cost" stroke={VOL_RV_CHART.cost} dot={false} strokeWidth={1.5} />
+                        <Line type="monotone" dataKey="net" name="Net" stroke={VOL_RV_CHART.net} dot={false} strokeWidth={2} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
+                </ChartZoomFrame>
+                <p className="text-[9px] text-slate-400 mt-1">
+                  累积归因：short/long 期权 MTM + 期货对冲 − 交易成本 = net（恒等校验）。
+                </p>
+              </div>
+
+              {volRvDailyAttrChart.length > 0 && (
+                <div className="bg-white rounded-lg border border-slate-200 p-4">
+                  <h3 className="font-bold text-[#000066] text-sm mb-3">Daily PnL Attribution</h3>
+                  <ChartZoomFrame
+                    data={volRvDailyAttrChart}
+                    yKeys={['short', 'long', 'fut', 'cost']}
+                    height={280}
+                  >
+                    {(win) => (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={win.data}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                          <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
+                          <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
+                          <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => fmtMoney(v)} />
+                          <Legend wrapperStyle={{ fontSize: 10 }} />
+                          <Bar dataKey="short" name="Short opt" stackId="a" fill={VOL_RV_CHART.short} maxBarSize={6} />
+                          <Bar dataKey="long" name="Long opt" stackId="a" fill={VOL_RV_CHART.long} maxBarSize={6} />
+                          <Bar dataKey="fut" name="Futures hedge" stackId="a" fill={VOL_RV_CHART.fut} maxBarSize={6} />
+                          <Bar dataKey="cost" name="−Cost" stackId="a" fill={VOL_RV_CHART.cost} maxBarSize={6} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    )}
+                  </ChartZoomFrame>
+                  <p className="text-[9px] text-slate-400 mt-1">
+                    日度（非累积）归因柱：short/long 期权 + 期货对冲 − 成本。贴边滑条可缩放/平移。
+                  </p>
+                </div>
+              )}
+            </>
           )}
 
           <div className="bg-white rounded-lg border border-slate-200 p-4 overflow-x-auto">
