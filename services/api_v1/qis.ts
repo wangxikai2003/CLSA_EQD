@@ -52,6 +52,7 @@ export type QisSignalMode =
   | 'regime_fade'
   | 'regime2';
 export type QisVolRvTilt = 'balanced' | 'carry' | 'defensive';
+export type QisVolRvUniverse = '300' | '50' | '1000' | 'AU';
 export type QisHedgerMode = 'eod_close' | 'intraday_curve';
 
 export interface QisNavPoint {
@@ -85,6 +86,7 @@ export interface QisVolRvGreeksSummary {
 }
 
 export interface QisVolRvParams {
+  universe?: QisVolRvUniverse | string;
   tilt?: QisVolRvTilt | string;
   target_otm_delta?: number;
   long_delta_threshold?: number;
@@ -282,6 +284,7 @@ export function fetchQisBacktest(
     q.set('rebound_ratio', String(reboundRatio));
   }
   if (strategyId === 'csi300_vol_rv' && volRv) {
+    if (volRv.universe) q.set('universe', String(volRv.universe));
     if (volRv.tilt) q.set('tilt', String(volRv.tilt));
     if (volRv.target_otm_delta != null) q.set('target_otm_delta', String(volRv.target_otm_delta));
     if (volRv.long_delta_threshold != null) {

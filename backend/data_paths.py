@@ -28,6 +28,8 @@ _BUNDLED_DIRS = [
 HOT_FILES = (
     "cffex_vol.sqlite",
     "commodity_fut.sqlite",
+    "commodity_vol_au.sqlite",
+    "commodity_vol.sqlite",
     "qis_results.sqlite",
     "rates_eod.parquet",
     "index_spot.parquet",
@@ -76,7 +78,19 @@ def cffex_vol() -> Path:
 
 
 def commodity_db() -> Optional[Path]:
+    """Futures-oriented commodity DB (slim commodity_fut preferred for Corr)."""
     return resolve_any(["commodity_fut.sqlite", "commodity_vol.sqlite"])
+
+
+def commodity_vol() -> Optional[Path]:
+    """Option-IV commodity surfaces. Prefer full DB, then AU/lite extract for deploy."""
+    return resolve_any(
+        [
+            "commodity_vol.sqlite",
+            "commodity_vol_lite.sqlite",
+            "commodity_vol_au.sqlite",
+        ]
+    )
 
 
 def qis_results() -> Path:

@@ -1,10 +1,11 @@
-"""CSI 300 Volatility Term Structure Relative Value (GS GSVLBRR localised).
+"""Volatility Term Structure Relative Value (GS GSVLBRR localised).
 
-Daily overlapping vintages on CFFEX IO:
-  Short ATM near-month strangle + Long OTM next-quarter strangle,
-  IF delta hedge via pluggable hedgers, premium-based long leverage (Step 3),
+Daily overlapping vintages:
+  Short ATM near-month strangle + Long OTM deferred strangle,
+  futures delta hedge via pluggable hedgers, premium-based long leverage (Step 3),
   and Step1/2/3 ablation NAV paths.
 
+Universes: CSI300 (IO), SSE50 (HO), CSI1000 (MO), SHFE Gold (AU).
 Does not modify calendar_vol_strategy.
 """
 from __future__ import annotations
@@ -28,23 +29,28 @@ from engine.hedgers import (
 
 try:
     from data_paths import cffex_vol as _dp_cffex
+    from data_paths import commodity_vol as _dp_commodity_vol
     from data_paths import index_spot as _dp_spot
 except Exception:  # pragma: no cover
     _dp_cffex = None
+    _dp_commodity_vol = None
     _dp_spot = None
 
 ROOT = Path(__file__).resolve().parents[2]
 _DB_CANDIDATES = [ROOT / "data" / "cffex_vol.sqlite", ROOT.parent / "data" / "cffex_vol.sqlite"]
+_COMMODITY_VOL_CANDIDATES = [
+    ROOT / "data" / "commodity_vol_au.sqlite",
+    ROOT / "data" / "commodity_vol_lite.sqlite",
+    ROOT.parent / "data" / "commodity_vol.sqlite",
+    ROOT / "data" / "commodity_vol.sqlite",
+]
 _SPOT_CANDIDATES = [
     ROOT / "data" / "index_spot.parquet",
     ROOT.parent / "data" / "index_spot.parquet",
 ]
 
 STRATEGY_ID = "csi300_vol_rv"
-PRODUCT = "IO"
-SPOT_CODE = "000300.SH"
-M_OPT = 100.0
-M_FUT = 300.0
+DEFAULT_UNIVERSE = "300"
 SHORT_MIN_DTE = 5
 N_ROLL = 1
 DEFAULT_TARGET_OTM_DELTA = 0.15
@@ -53,16 +59,81 @@ DEFAULT_DAILY_BUDGET_FRAC = 0.0025  # ~0.25% NAV short-premium budget per vintag
 PREMIUM_WINDOW = 252
 TARGET_PREMIUM_PCT = 0.02
 
+# Back-compat aliases used by older API/cache helpers.
+PRODUCT = "IO"
+SPOT_CODE = "000300.SH"
+M_OPT = 100.0
+M_FUT = 300.0
+CACHE_TENOR = "IO-IF"
+CACHE_SIDE = "both"
+CACHE_SPREAD = "strangle"
+
 STYLE_PRESETS: Dict[str, Dict[str, float]] = {
     "balanced": {"lambda_tilt": 1.0, "l_min": 0.5, "l_max": 2.5},
     "carry": {"lambda_tilt": 0.5, "l_min": 0.25, "l_max": 1.25},
     "defensive": {"lambda_tilt": 1.8, "l_min": 1.0, "l_max": 4.0},
 }
 
-# Cache sentinels for qis_results_store PK reuse.
-CACHE_TENOR = "IO-IF"
-CACHE_SIDE = "both"
-CACHE_SPREAD = "strangle"
+# Universe registry — equity index options + SHFE gold.
+VOL_RV_UNIVERSES: Dict[str, Dict[str, Any]] = {
+    "300": {
+        "key": "300",
+        "label": "CSI 300",
+        "strategy_name": "CSI 300 Vol RV (GS GSVLBRR)",
+        "product": "IO",
+        "fut_root": "IF",
+        "spot_code": "000300.SH",
+        "spot_mode": "index",
+        "db": "cffex",
+        "m_opt": 100.0,
+        "m_fut": 300.0,
+        "quarter_months": (3, 6, 9, 12),
+        "cache_tenor": "IO-IF",
+    },
+    "50": {
+        "key": "50",
+        "label": "SSE 50",
+        "strategy_name": "SSE 50 Vol RV (GS GSVLBRR)",
+        "product": "HO",
+        "fut_root": "IH",
+        "spot_code": "000016.SH",
+        "spot_mode": "index",
+        "db": "cffex",
+        "m_opt": 100.0,
+        "m_fut": 300.0,
+        "quarter_months": (3, 6, 9, 12),
+        "cache_tenor": "HO-IH",
+    },
+    "1000": {
+        "key": "1000",
+        "label": "CSI 1000",
+        "strategy_name": "CSI 1000 Vol RV (GS GSVLBRR)",
+        "product": "MO",
+        "fut_root": "IM",
+        "spot_code": "000852.SH",
+        "spot_mode": "index",
+        "db": "cffex",
+        "m_opt": 100.0,
+        "m_fut": 200.0,
+        "quarter_months": (3, 6, 9, 12),
+        "cache_tenor": "MO-IM",
+    },
+    "AU": {
+        "key": "AU",
+        "label": "SHFE Gold",
+        "strategy_name": "SHFE Gold Vol RV (GS GSVLBRR)",
+        "product": "AU",
+        "fut_root": "AU",
+        "spot_code": None,
+        "spot_mode": "front_fut",
+        "db": "commodity",
+        # SHFE AU: quote ¥/g, contract size 1000g for both futures and options.
+        "m_opt": 1000.0,
+        "m_fut": 1000.0,
+        "quarter_months": (2, 4, 6, 8, 10, 12),
+        "cache_tenor": "AU-AU",
+    },
+}
 
 
 def _equity_db() -> Path:
@@ -77,6 +148,22 @@ def _equity_db() -> Path:
     raise FileNotFoundError("cffex_vol.sqlite not found")
 
 
+def _commodity_vol_db() -> Path:
+    if _dp_commodity_vol is not None:
+        try:
+            p = _dp_commodity_vol()
+            if p is not None and p.exists() and p.stat().st_size > 0:
+                return p
+        except Exception:
+            pass
+    for p in _COMMODITY_VOL_CANDIDATES:
+        if p.exists() and p.stat().st_size > 0:
+            return p
+    raise FileNotFoundError(
+        "commodity vol DB not found (need commodity_vol.sqlite or data/commodity_vol_au.sqlite)"
+    )
+
+
 def _spot_path() -> Path:
     if _dp_spot is not None:
         p = _dp_spot()
@@ -86,6 +173,35 @@ def _spot_path() -> Path:
         if p.exists() and p.stat().st_size > 0:
             return p
     raise FileNotFoundError("index_spot.parquet not found")
+
+
+def normalize_universe(universe: Optional[str]) -> str:
+    raw = str(universe or DEFAULT_UNIVERSE).strip()
+    aliases = {
+        "csi300": "300",
+        "hs300": "300",
+        "io": "300",
+        "sse50": "50",
+        "ho": "50",
+        "csi1000": "1000",
+        "mo": "1000",
+        "gold": "AU",
+        "au": "AU",
+    }
+    key = aliases.get(raw.lower(), raw)
+    if key.upper() == "AU":
+        key = "AU"
+    if key not in VOL_RV_UNIVERSES:
+        raise ValueError(f"unknown universe {universe!r}; choose {list(VOL_RV_UNIVERSES)}")
+    return key
+
+
+def universe_cfg(universe: Optional[str] = None) -> Dict[str, Any]:
+    return VOL_RV_UNIVERSES[normalize_universe(universe)]
+
+
+def cache_tenor_for(universe: Optional[str] = None) -> str:
+    return str(universe_cfg(universe)["cache_tenor"])
 
 
 def normalize_tilt(tilt: str) -> str:
@@ -111,9 +227,11 @@ def vol_rv_cache_sig(
     lambda_tilt: Optional[float] = None,
     l_min: Optional[float] = None,
     l_max: Optional[float] = None,
+    universe: Optional[str] = None,
 ) -> str:
     """Fingerprint stored in qis_results_store.signal_mode column."""
     t = normalize_tilt(tilt)
+    u = normalize_universe(universe)
     preset = STYLE_PRESETS[t]
     lam = float(preset["lambda_tilt"] if lambda_tilt is None else lambda_tilt)
     lo = float(preset["l_min"] if l_min is None else l_min)
@@ -121,15 +239,16 @@ def vol_rv_cache_sig(
     d = int(round(float(target_otm_delta) * 100))
     th = int(round(float(long_delta_threshold) * 100))
     hm = str(hedger_mode or "eod_close").strip().lower().replace(" ", "")
-    return f"tilt_{t}|d{d}|th{th}|{hm}|L{lam:.2f}_{lo:.2f}_{hi:.2f}"
+    # Universe also encoded in tenor_pair PK; keep here for tilt fingerprint clarity.
+    return f"u{u}|tilt_{t}|d{d}|th{th}|{hm}|L{lam:.2f}_{lo:.2f}_{hi:.2f}"
 
 
-def _is_quarter_expiry(expiry: str) -> bool:
+def _is_quarter_expiry(expiry: str, months: Sequence[int] = (3, 6, 9, 12)) -> bool:
     try:
         m = int(str(expiry)[5:7])
     except Exception:
         return False
-    return m in (3, 6, 9, 12)
+    return m in set(int(x) for x in months)
 
 
 def trading_days_to_expiry(dates: Sequence[str], today: str, expiry: str) -> int:
@@ -157,13 +276,14 @@ def select_long_expiry(
     today: str,
     dates: Sequence[str],
     prefer_quarter: bool = True,
+    quarter_months: Sequence[int] = (3, 6, 9, 12),
 ) -> Optional[str]:
     exps = sorted({str(x)[:10] for x in day_opts["expiry"].astype(str).unique()})
     candidates = [e for e in exps if e > short_expiry]
     if not candidates:
         return None
     if prefer_quarter:
-        quarters = [e for e in candidates if _is_quarter_expiry(e)]
+        quarters = [e for e in candidates if _is_quarter_expiry(e, quarter_months)]
         if quarters:
             # Prefer ~3M–6M remaining.
             scored = []
@@ -285,6 +405,7 @@ class Csi300VolRvEngine:
         self,
         initial_nav: float = 100_000_000.0,
         tilt: str = "balanced",
+        universe: str = DEFAULT_UNIVERSE,
         target_otm_delta: float = DEFAULT_TARGET_OTM_DELTA,
         long_delta_threshold: float = DEFAULT_LONG_DELTA_THR,
         hedger_mode: str = "eod_close",
@@ -305,6 +426,8 @@ class Csi300VolRvEngine:
         end_date: Optional[str] = None,
     ) -> None:
         self.initial_nav = float(initial_nav)
+        self.universe = normalize_universe(universe)
+        self.cfg = universe_cfg(self.universe)
         self.tilt = normalize_tilt(tilt)
         preset = STYLE_PRESETS[self.tilt]
         self.lambda_tilt = float(preset["lambda_tilt"] if lambda_tilt is None else lambda_tilt)
@@ -327,11 +450,20 @@ class Csi300VolRvEngine:
         self.run_ablation = bool(run_ablation)
         self.start_date = str(start_date)[:10] if start_date else None
         self.end_date = str(end_date)[:10] if end_date else None
-        self.m_opt = M_OPT
-        self.m_fut = M_FUT
+        self.product = str(self.cfg["product"])
+        self.fut_root = str(self.cfg["fut_root"])
+        self.spot_code = self.cfg.get("spot_code")
+        self.spot_mode = str(self.cfg.get("spot_mode") or "index")
+        self.quarter_months = tuple(int(x) for x in self.cfg.get("quarter_months") or (3, 6, 9, 12))
+        self.cache_tenor = str(self.cfg["cache_tenor"])
+        self.m_opt = float(self.cfg["m_opt"])
+        self.m_fut = float(self.cfg["m_fut"])
 
     def _load(self) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
-        db = _equity_db()
+        if self.cfg["db"] == "commodity":
+            db = _commodity_vol_db()
+        else:
+            db = _equity_db()
         conn = sqlite3.connect(str(db))
         opt = pd.read_sql(
             """
@@ -343,7 +475,7 @@ class Csi300VolRvEngine:
                AND ttm IS NOT NULL AND ttm > 1e-6
             """,
             conn,
-            params=(PRODUCT,),
+            params=(self.product,),
         )
         fut = pd.read_sql(
             """
@@ -353,18 +485,31 @@ class Csi300VolRvEngine:
              ORDER BY trade_date, contract_ym
             """,
             conn,
-            params=(PRODUCT,),
+            params=(self.product,),
         )
         conn.close()
-        spot_df = pd.read_parquet(_spot_path())
-        spot_df = spot_df[spot_df["wind_code"] == SPOT_CODE].copy()
-        spot_df["trade_date"] = spot_df["trade_date"].astype(str).str[:10]
-        spot = spot_df.set_index("trade_date")["close"].astype(float).sort_index()
 
         fut["trade_date"] = fut["trade_date"].astype(str).str[:10]
         opt["trade_date"] = opt["trade_date"].astype(str).str[:10]
         opt["expiry"] = opt["expiry"].astype(str).str[:10]
         opt["cp"] = opt["cp"].astype(str).str.upper().str[:1]
+
+        if self.spot_mode == "front_fut":
+            # Commodity: use front-month futures close as spot proxy for basis/greeks.
+            front = (
+                fut.sort_values(["trade_date", "contract_ym"])
+                .groupby("trade_date", as_index=False)
+                .first()
+                .set_index("trade_date")["close"]
+                .astype(float)
+                .sort_index()
+            )
+            spot = front
+        else:
+            spot_df = pd.read_parquet(_spot_path())
+            spot_df = spot_df[spot_df["wind_code"] == str(self.spot_code)].copy()
+            spot_df["trade_date"] = spot_df["trade_date"].astype(str).str[:10]
+            spot = spot_df.set_index("trade_date")["close"].astype(float).sort_index()
         return opt, spot, fut
 
     def _fut_map(self, fut: pd.DataFrame) -> Dict[str, pd.DataFrame]:
@@ -540,7 +685,14 @@ class Csi300VolRvEngine:
         short_exp = select_short_expiry(day_opts, d, dates, self.short_min_dte)
         if short_exp is None:
             return None
-        long_exp = select_long_expiry(day_opts, short_exp, d, dates, prefer_quarter=True)
+        long_exp = select_long_expiry(
+            day_opts,
+            short_exp,
+            d,
+            dates,
+            prefer_quarter=True,
+            quarter_months=self.quarter_months,
+        )
         if long_exp is None:
             return None
         short_slice = day_opts[day_opts["expiry"].astype(str).str[:10] == short_exp]
@@ -1120,17 +1272,32 @@ class Csi300VolRvEngine:
 
         return {
             "strategy_id": STRATEGY_ID,
-            "strategy_name": f"CSI 300 Vol RV (GS GSVLBRR) · {self.tilt}",
+            "strategy_name": f"{self.cfg['strategy_name']} · {self.tilt}",
             "description": (
-                "CFFEX IO overlapping daily vintages: short near-month ATM strangle + "
-                "long next-quarter OTM strangle (target delta), IF EOD hedge with long "
-                "delta threshold, premium-inverse long leverage. "
+                f"{self.cfg['label']} ({self.product}/{self.fut_root}) overlapping daily vintages: "
+                "short near-month ATM strangle + long deferred OTM strangle (target delta), "
+                "EOD futures hedge with long delta threshold, premium-inverse long leverage. "
                 f"tilt={self.tilt} λ={self.lambda_tilt} L∈[{self.l_min},{self.l_max}]."
             ),
             "legs": [
-                {"id": "IO_short_atm_strangle", "weight": -1.0, "product": "IO", "tenor": "1M"},
-                {"id": "IO_long_otm_strangle", "weight": 1.0, "product": "IO", "tenor": "3M-6M"},
-                {"id": "IF_hedge", "weight": 0.0, "product": "IF", "tenor": "front"},
+                {
+                    "id": f"{self.product}_short_atm_strangle",
+                    "weight": -1.0,
+                    "product": self.product,
+                    "tenor": "1M",
+                },
+                {
+                    "id": f"{self.product}_long_otm_strangle",
+                    "weight": 1.0,
+                    "product": self.product,
+                    "tenor": "3M-6M",
+                },
+                {
+                    "id": f"{self.fut_root}_hedge",
+                    "weight": 0.0,
+                    "product": self.fut_root,
+                    "tenor": "front",
+                },
             ],
             "params": {
                 "initial_nav": self.initial_nav,
@@ -1139,7 +1306,10 @@ class Csi300VolRvEngine:
                 "cost_rate": self.option_fee_pct + self.option_slippage_pct,
                 "rebalance": "daily vintage + EOD delta hedge",
                 "signal_lag": "t close open / hold to short expiry−N_roll",
-                "price": "option mid_price←close; IF close",
+                "price": f"option mid_price←close; {self.fut_root} close",
+                "universe": self.universe,
+                "product": self.product,
+                "fut_root": self.fut_root,
                 "tilt": self.tilt,
                 "lambda_tilt": self.lambda_tilt,
                 "l_min": self.l_min,
@@ -1155,7 +1325,7 @@ class Csi300VolRvEngine:
                 "option_slippage_pct": self.option_slippage_pct,
                 "futures_fee_pct": self.futures_fee_pct,
                 "futures_slippage_pct": self.futures_slippage_pct,
-                "tenor_pair": CACHE_TENOR,
+                "tenor_pair": self.cache_tenor,
                 "side_mode": CACHE_SIDE,
                 "spread_mode": CACHE_SPREAD,
                 "signal_mode": vol_rv_cache_sig(
@@ -1166,6 +1336,7 @@ class Csi300VolRvEngine:
                     self.lambda_tilt,
                     self.l_min,
                     self.l_max,
+                    self.universe,
                 ),
                 "m_opt": self.m_opt,
                 "m_fut": self.m_fut,

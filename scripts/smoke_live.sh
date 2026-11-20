@@ -42,7 +42,7 @@ if mode != "regime2":
 print("OK  regime2 signal_mode")
 PY
 # Cold start may be slow on first miss; accept cached or live payload.
-curl_ok "/api/v1/qis/backtest/csi300_vol_rv?tilt=balanced"
+curl_ok "/api/v1/qis/backtest/csi300_vol_rv?tilt=balanced&universe=300"
 python3 - "$BASE" <<'PY'
 import json, sys
 body = open("/tmp/clsa_smoke_body").read()
@@ -51,6 +51,16 @@ if data.get("strategy_id") != "csi300_vol_rv":
     sys.exit(f"vol_rv strategy_id={data.get('strategy_id')!r}")
 if "ablation" not in data:
     sys.exit("vol_rv missing ablation")
-print("OK  csi300_vol_rv balanced")
+print("OK  csi300_vol_rv balanced u=300")
+PY
+curl_ok "/api/v1/qis/backtest/csi300_vol_rv?tilt=balanced&universe=AU"
+python3 - "$BASE" <<'PY'
+import json, sys
+body = open("/tmp/clsa_smoke_body").read()
+data = json.loads(body)
+u = (data.get("params") or {}).get("universe")
+if u != "AU":
+    sys.exit(f"vol_rv AU universe={u!r}")
+print("OK  csi300_vol_rv balanced u=AU")
 PY
 echo "==> smoke passed"

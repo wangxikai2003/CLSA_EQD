@@ -16,6 +16,7 @@ import {
   QisTenorPair,
   QisTradeMarker,
   QisVolRvTilt,
+  QisVolRvUniverse,
   isRegime2SignalMode,
   isRegimeSignalMode,
 } from '../../services/api_v1';
@@ -123,6 +124,13 @@ const VOL_RV_TILTS: { key: QisVolRvTilt; label: string }[] = [
   { key: 'defensive', label: 'Defensive' },
 ];
 
+const VOL_RV_UNIVERSES: { key: QisVolRvUniverse; label: string }[] = [
+  { key: '300', label: 'CSI 300' },
+  { key: '50', label: 'SSE 50' },
+  { key: '1000', label: 'CSI 1000' },
+  { key: 'AU', label: 'Gold AU' },
+];
+
 const VOL_RV_CHART = {
   step3: '#EAB308',
   step2: '#64748B',
@@ -220,6 +228,7 @@ const QisView: React.FC = () => {
   const [stopLoss, setStopLoss] = useState(false);
   const [maxDdPct, setMaxDdPct] = useState(10);
   const [reboundRatio, setReboundRatio] = useState(0.9);
+  const [volUniverse, setVolUniverse] = useState<QisVolRvUniverse>('300');
   const [volTilt, setVolTilt] = useState<QisVolRvTilt>('balanced');
   const [targetOtmDelta, setTargetOtmDelta] = useState(0.15);
   const [longDeltaThr, setLongDeltaThr] = useState(0.05);
@@ -267,6 +276,7 @@ const QisView: React.FC = () => {
       reboundRatio,
       family === 'csi300_vol_rv'
         ? {
+            universe: volUniverse,
             tilt: volTilt,
             target_otm_delta: targetOtmDelta,
             long_delta_threshold: longDeltaThr,
@@ -337,6 +347,7 @@ const QisView: React.FC = () => {
     stopOn,
     maxDdPct,
     reboundRatio,
+    volUniverse,
     volTilt,
     targetOtmDelta,
     longDeltaThr,
@@ -859,7 +870,7 @@ const QisView: React.FC = () => {
             >
               <option value="cross_calendar_carry">Cross Calendar Carry</option>
               <option value="calendar_vol">Equity Calendar Vol</option>
-              <option value="csi300_vol_rv">CSI 300 Vol RV</option>
+              <option value="csi300_vol_rv">Vol RV (GS)</option>
             </select>
             <button
               type="button"
@@ -895,6 +906,22 @@ const QisView: React.FC = () => {
           {family === 'csi300_vol_rv' && (
             <div className="flex flex-col gap-1.5 w-full max-w-3xl">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-end">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Index</span>
+                  <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                    {VOL_RV_UNIVERSES.map((u) => (
+                      <button
+                        key={u.key}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => setVolUniverse(u.key)}
+                        className={segBtnClass(volUniverse === u.key, loading)}
+                      >
+                        {u.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div className="flex items-center gap-1.5">
                   <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Tilt</span>
                   <div className="flex rounded-md border border-slate-200 overflow-hidden">
@@ -1194,7 +1221,7 @@ const QisView: React.FC = () => {
                   ? ` · tenor=${tenorLabel} · side=${sideLabel} · spread=${spreadLabel} · signal=${signalLabel}`
                   : ''}
                 {isVolRv
-                  ? ` · tilt=${String(data.params.tilt ?? volTilt)} · δ=${String(data.params.target_otm_delta ?? targetOtmDelta)} · thr=${String(data.params.long_delta_threshold ?? longDeltaThr)}`
+                  ? ` · u=${String(data.params.universe ?? volUniverse)} · tilt=${String(data.params.tilt ?? volTilt)} · δ=${String(data.params.target_otm_delta ?? targetOtmDelta)} · thr=${String(data.params.long_delta_threshold ?? longDeltaThr)}`
                   : ''}
                 {data._cache
                   ? ` · cache ${data._cache.hit ? 'HIT' : 'MISS'}/${data._cache.source ?? '?'}`
@@ -1443,7 +1470,7 @@ const QisView: React.FC = () => {
                       <Legend wrapperStyle={{ fontSize: 10 }} />
                       <Bar dataKey="short" name="Short opt" stackId="a" fill={VOL_RV_CHART.short} maxBarSize={6} />
                       <Bar dataKey="long" name="Long opt" stackId="a" fill={VOL_RV_CHART.long} maxBarSize={6} />
-                      <Bar dataKey="fut" name="IF hedge" stackId="a" fill={VOL_RV_CHART.fut} maxBarSize={6} />
+                      <Bar dataKey="fut" name="Futures hedge" stackId="a" fill={VOL_RV_CHART.fut} maxBarSize={6} />
                       <Bar dataKey="cost" name="−Cost" stackId="a" fill={VOL_RV_CHART.cost} maxBarSize={6} />
                       <Line type="monotone" dataKey="net" name="Net" stroke={VOL_RV_CHART.net} dot={false} strokeWidth={1.5} />
                     </ComposedChart>

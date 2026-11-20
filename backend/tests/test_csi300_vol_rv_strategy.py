@@ -21,9 +21,11 @@ needs_vol_db = pytest.mark.skipif(
 
 from engine.csi300_vol_rv_strategy import (
     STYLE_PRESETS,
+    VOL_RV_UNIVERSES,
     causal_premium_ref,
     dynamic_leverage,
     normalize_tilt,
+    normalize_universe,
     select_short_expiry,
     trading_days_to_expiry,
     vol_rv_cache_sig,
@@ -79,9 +81,18 @@ def test_dynamic_leverage_iv_and_clip():
 
 
 def test_cache_sig_stable():
-    a = vol_rv_cache_sig("balanced", 0.15, 0.05, "eod_close")
-    b = vol_rv_cache_sig("balanced", 0.15, 0.05, "eod_close")
-    assert a == b and a.startswith("tilt_balanced|")
+    a = vol_rv_cache_sig("balanced", 0.15, 0.05, "eod_close", universe="300")
+    b = vol_rv_cache_sig("balanced", 0.15, 0.05, "eod_close", universe="300")
+    assert a == b and "tilt_balanced|" in a and a.startswith("u300|")
+    assert vol_rv_cache_sig("balanced", 0.15, 0.05, "eod_close", universe="AU").startswith("uAU|")
+
+
+def test_universe_registry():
+    assert set(VOL_RV_UNIVERSES) >= {"300", "50", "1000", "AU"}
+    assert normalize_universe("ho") == "50"
+    assert normalize_universe("gold") == "AU"
+    assert VOL_RV_UNIVERSES["AU"]["db"] == "commodity"
+    assert VOL_RV_UNIVERSES["1000"]["m_fut"] == 200.0
 
 
 @needs_vol_db
@@ -91,12 +102,14 @@ def test_e2e_payload_and_attribution():
     # Short window keeps CI/local runtime sane; still exercises full bookkeeping.
     payload = run_csi300_vol_rv(
         tilt="balanced",
+        universe="300",
         run_ablation=True,
         hedger_mode="eod_close",
         start_date="2024-01-02",
         end_date="2024-06-28",
     )
     assert payload["strategy_id"] == "csi300_vol_rv"
+    assert payload["params"]["universe"] == "300"
     assert payload["summary"]["final_nav_multiple"] > 0
     assert "step1_eod_vanilla" in payload["ablation"]
     assert "step2_long_threshold" in payload["ablation"]
@@ -129,6 +142,7 @@ def test_tilt_mean_leverage_ordering():
     for tilt in ("carry", "balanced", "defensive"):
         eng = Csi300VolRvEngine(
             tilt=tilt,
+            universe="300",
             run_ablation=False,
             start_date="2024-01-02",
             end_date="2024-06-28",
@@ -137,3 +151,43 @@ def test_tilt_mean_leverage_ordering():
         means[tilt] = float(payload["params"]["mean_leverage"] or 0.0)
     assert means["carry"] <= means["balanced"] + 1e-9
     assert means["balanced"] <= means["defensive"] + 1e-9
+
+
+@needs_vol_db
+@pytest.mark.parametrize("uni", ["50", "1000"])
+def test_e2e_ho_mo_universes(uni):
+    from engine.csi300_vol_rv_strategy import run_csi300_vol_rv
+
+    payload = run_csi300_vol_rv(
+        tilt="balanced",
+        universe=uni,
+        run_ablation=False,
+        start_date="2024-01-02",
+        end_date="2024-06-28",
+    )
+    assert payload["params"]["universe"] == uni
+    assert payload["params"]["product"] == VOL_RV_UNIVERSES[uni]["product"]
+    assert payload["summary"]["final_nav_multiple"] > 0
+
+
+@needs_vol_db
+def test_e2e_au_universe():
+    from pathlib import Path
+
+    from engine.csi300_vol_rv_strategy import run_csi300_vol_rv
+
+    au_db = Path(__file__).resolve().parents[2] / "data" / "commodity_vol_au.sqlite"
+    parent = Path(__file__).resolve().parents[3] / "data" / "commodity_vol.sqlite"
+    if not ((au_db.exists() and au_db.stat().st_size > 0) or (parent.exists() and parent.stat().st_size > 0)):
+        pytest.skip("commodity AU vol DB missing")
+    payload = run_csi300_vol_rv(
+        tilt="balanced",
+        universe="AU",
+        run_ablation=False,
+        start_date="2024-01-02",
+        end_date="2024-06-28",
+    )
+    assert payload["params"]["universe"] == "AU"
+    assert payload["params"]["product"] == "AU"
+    assert payload["params"]["m_opt"] == 1000.0
+    assert payload["summary"]["final_nav_multiple"] > 0

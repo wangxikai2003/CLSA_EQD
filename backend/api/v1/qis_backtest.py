@@ -352,7 +352,7 @@ def list_strategies():
         }
         for key, u in UNIVERSES.items()
     ]
-    from engine.csi300_vol_rv_strategy import STYLE_PRESETS
+    from engine.csi300_vol_rv_strategy import STYLE_PRESETS, VOL_RV_UNIVERSES
 
     return {
         "strategies": [
@@ -366,16 +366,26 @@ def list_strategies():
             *cal,
             {
                 "id": "csi300_vol_rv",
-                "name": "CSI 300 Vol RV (GS GSVLBRR1)",
+                "name": "Vol RV (GS GSVLBRR)",
                 "status": "live",
                 "blurb": (
-                    "IO near-month ATM short strangle + next-quarter OTM long strangle; "
-                    "IF EOD delta hedge with long threshold; premium-inverse leverage. "
-                    f"tilts={list(STYLE_PRESETS)}"
+                    "Near-month ATM short strangle + deferred OTM long strangle; "
+                    "EOD futures hedge with long threshold; premium-inverse leverage. "
+                    f"universes={list(VOL_RV_UNIVERSES)}; tilts={list(STYLE_PRESETS)}"
                 ),
                 "family": "csi300_vol_rv",
                 "tilts": list(STYLE_PRESETS.keys()),
+                "universes": [
+                    {
+                        "key": u["key"],
+                        "label": u["label"],
+                        "product": u["product"],
+                        "fut_root": u["fut_root"],
+                    }
+                    for u in VOL_RV_UNIVERSES.values()
+                ],
                 "defaults": {
+                    "universe": "300",
                     "tilt": "balanced",
                     "target_otm_delta": 0.15,
                     "long_delta_threshold": 0.05,
@@ -389,6 +399,7 @@ def list_strategies():
         "spread_modes": list(SPREAD_MODES),
         "signal_modes": list(SIGNAL_MODES),
         "vol_rv_tilts": list(STYLE_PRESETS.keys()),
+        "vol_rv_universes": list(VOL_RV_UNIVERSES.keys()),
     }
 
 
@@ -434,7 +445,11 @@ def backtest(
         le=1,
         description="Leave the stop once the spread has retraced this fraction of its adverse move",
     ),
-    tilt: str = Query("balanced", description="CSI300 Vol RV style: balanced | carry | defensive"),
+    tilt: str = Query("balanced", description="Vol RV style: balanced | carry | defensive"),
+    universe: str = Query(
+        "300",
+        description="Vol RV universe: 300 (IO) | 50 (HO) | 1000 (MO) | AU (SHFE gold)",
+    ),
     target_otm_delta: float = Query(0.15, gt=0.01, lt=0.5, description="OTM long target |delta|"),
     long_delta_threshold: float = Query(
         0.05, ge=0.0, le=1.0, description="Hedge long book only when |net long delta| exceeds this"
@@ -459,24 +474,24 @@ def backtest(
         from engine.csi300_vol_rv_strategy import (
             CACHE_SIDE,
             CACHE_SPREAD,
-            CACHE_TENOR,
+            cache_tenor_for,
             normalize_tilt,
+            normalize_universe,
             run_csi300_vol_rv,
             vol_rv_cache_sig,
         )
 
         try:
             t = normalize_tilt(tilt)
+            uni = normalize_universe(universe)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+        cache_tenor = cache_tenor_for(uni)
         hm = str(hedger_mode or "eod_close").strip().lower()
         if hm not in ("eod_close", "eod", "close", "intraday_curve", "intraday", "curve"):
             raise HTTPException(400, f"unknown hedger_mode {hedger_mode!r}")
-        if hm in ("intraday", "intraday_curve", "curve"):
-            # Stub: fall back to EOD until intraday bars exist; still fingerprint the request.
-            run_hm = "eod_close"
-        else:
-            run_hm = "eod_close"
+        # Stub: fall back to EOD until intraday bars exist; still fingerprint the request.
+        run_hm = "eod_close"
         sig = vol_rv_cache_sig(
             t,
             target_otm_delta,
@@ -485,13 +500,14 @@ def backtest(
             lambda_tilt,
             l_min,
             l_max,
+            uni,
         )
         mem_key = (
             strategy_id,
             252,
             src,
             _INITIAL_NAV,
-            CACHE_TENOR,
+            cache_tenor,
             CACHE_SIDE,
             CACHE_SPREAD,
             sig,
@@ -507,7 +523,7 @@ def backtest(
                 252,
                 _INITIAL_NAV,
                 src,
-                tenor_pair=CACHE_TENOR,
+                tenor_pair=cache_tenor,
                 side_mode=CACHE_SIDE,
                 spread_mode=CACHE_SPREAD,
                 signal_mode=sig,
@@ -521,7 +537,7 @@ def backtest(
                     hit=True,
                     source="memory",
                     source_key=src,
-                    tenor_pair=CACHE_TENOR,
+                    tenor_pair=cache_tenor,
                     side_mode=CACHE_SIDE,
                     spread_mode=CACHE_SPREAD,
                     signal_mode=sig,
@@ -531,6 +547,7 @@ def backtest(
             payload = run_csi300_vol_rv(
                 initial_nav=_INITIAL_NAV,
                 tilt=t,
+                universe=uni,
                 target_otm_delta=target_otm_delta,
                 long_delta_threshold=long_delta_threshold,
                 hedger_mode=run_hm,
@@ -554,7 +571,7 @@ def backtest(
             _INITIAL_NAV,
             src,
             payload,
-            tenor_pair=CACHE_TENOR,
+            tenor_pair=cache_tenor,
             side_mode=CACHE_SIDE,
             spread_mode=CACHE_SPREAD,
             signal_mode=sig,
@@ -569,7 +586,7 @@ def backtest(
             source="miss",
             source_key=src,
             persisted=True,
-            tenor_pair=CACHE_TENOR,
+            tenor_pair=cache_tenor,
             side_mode=CACHE_SIDE,
             spread_mode=CACHE_SPREAD,
             signal_mode=sig,
