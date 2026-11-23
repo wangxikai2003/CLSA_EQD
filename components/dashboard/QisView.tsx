@@ -240,6 +240,8 @@ const QisView: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [loadStatus, setLoadStatus] = useState('Running backtest…');
   const [err, setErr] = useState<string | null>(null);
+  /** Fingerprint of params last successfully loaded — draft edits do not refetch until Refresh. */
+  const [appliedParamKey, setAppliedParamKey] = useState<string | null>(null);
 
   const strategyId = useMemo(() => {
     if (family === 'cross_calendar_carry') return 'cross_calendar_carry';
@@ -252,7 +254,47 @@ const QisView: React.FC = () => {
     (signalMode === 'quantile' || isRegime2SignalMode(signalMode));
   const stopOn = stopApplies && stopLoss;
 
+  const draftParamKey = useMemo(
+    () =>
+      JSON.stringify({
+        strategyId,
+        tenorPair,
+        sideMode,
+        spreadMode,
+        signalMode,
+        stopOn,
+        maxDdPct,
+        reboundRatio,
+        volUniverse,
+        volTilt,
+        targetOtmDelta,
+        longDeltaThr,
+        hedgerMode,
+        optFeePct,
+        optSlipPct,
+      }),
+    [
+      strategyId,
+      tenorPair,
+      sideMode,
+      spreadMode,
+      signalMode,
+      stopOn,
+      maxDdPct,
+      reboundRatio,
+      volUniverse,
+      volTilt,
+      targetOtmDelta,
+      longDeltaThr,
+      hedgerMode,
+      optFeePct,
+      optSlipPct,
+    ],
+  );
+  const paramsDirty = appliedParamKey != null && appliedParamKey !== draftParamKey;
+
   const load = (refresh = false, signal?: AbortSignal) => {
+    const keyAtRequest = draftParamKey;
     setLoading(true);
     setErr(null);
     setLoadStatus(refresh ? '强制重算并覆盖缓存…' : '加载回测（优先读库）…');
@@ -291,6 +333,7 @@ const QisView: React.FC = () => {
       .then((d) => {
         if (signal?.aborted) return;
         setData(d);
+        setAppliedParamKey(keyAtRequest);
         setErr(null);
         const c = d._cache;
         if (c?.hit) {
@@ -334,28 +377,13 @@ const QisView: React.FC = () => {
     return () => ac.abort();
   }, []);
 
+  // Initial load only — subsequent param edits wait for explicit Refresh.
   useEffect(() => {
     const ac = new AbortController();
     load(false, ac.signal);
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    strategyId,
-    tenorPair,
-    sideMode,
-    spreadMode,
-    signalMode,
-    stopOn,
-    maxDdPct,
-    reboundRatio,
-    volUniverse,
-    volTilt,
-    targetOtmDelta,
-    longDeltaThr,
-    hedgerMode,
-    optFeePct,
-    optSlipPct,
-  ]);
+  }, []);
 
   const levelScale = useMemo(() => {
     const fromSignal = data?.signal?.level_scale;
@@ -900,11 +928,18 @@ const QisView: React.FC = () => {
             <button
               type="button"
               disabled={loading}
-              onClick={() => load(true)}
-              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-md bg-[#000066] text-white disabled:opacity-60"
-              title="强制重跑引擎并覆盖结果库"
+              onClick={(e) => load(e.shiftKey)}
+              className={`inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-md text-white disabled:opacity-60 ${
+                paramsDirty ? 'bg-amber-600 hover:bg-amber-700' : 'bg-[#000066]'
+              }`}
+              title={
+                paramsDirty
+                  ? '应用当前参数并加载回测（优先读库）。按住 Shift 强制重算覆盖缓存。'
+                  : '重新加载当前参数（优先读库）。按住 Shift 强制重算覆盖缓存。'
+              }
             >
-              <RefreshCw size={12} className={loading ? 'animate-spin' : undefined} /> Refresh
+              <RefreshCw size={12} className={loading ? 'animate-spin' : undefined} />{' '}
+              {paramsDirty ? 'Refresh 应用参数' : 'Refresh'}
             </button>
             {isCalVol && (
               <a
@@ -1211,6 +1246,11 @@ const QisView: React.FC = () => {
         </div>
       </div>
 
+      {paramsDirty && !loading && (
+        <div className="text-[11px] text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+          参数已修改但尚未应用。改完后点击右上角 <span className="font-bold">Refresh 应用参数</span> 再重新加载图表；改参过程中不会自动刷新。
+        </div>
+      )}
       {loading && (
         <div className="text-xs text-slate-500 flex items-center gap-2">
           <span className="inline-block h-2 w-2 rounded-full bg-[#EAB308] animate-pulse" />
@@ -1220,8 +1260,7 @@ const QisView: React.FC = () => {
       {!loading && data?._cache && (
         <div className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded px-3 py-2">
           结果落库复用：同参数首次成功回测写入 <code className="font-mono text-[10px]">qis_results.sqlite</code>
-          ，之后直接读库不重跑引擎；仅点 Refresh / <code className="font-mono text-[10px]">refresh=true</code>{' '}
-          强制重算覆盖。
+          ，之后直接读库不重跑引擎。改参后需点 Refresh 才加载；按住 Shift + Refresh 强制重算覆盖。
           <span className="font-mono text-[10px] text-slate-500 ml-1">
             cache {data._cache.hit ? 'HIT' : 'MISS'}/{data._cache.source ?? '?'}
             {data._cache.persisted ? ' · persisted' : ''}
@@ -1405,6 +1444,8 @@ const QisView: React.FC = () => {
             <ChartZoomFrame
               data={navChart}
               yKeys={isVolRv ? ['nav', 'nav_step2', 'nav_step1'] : ['nav', 'sos']}
+              recalcMode="rebase"
+              recalcKeys={isVolRv ? ['nav', 'nav_step2', 'nav_step1'] : ['nav']}
               height={340}
             >
               {(win) => (
@@ -1484,6 +1525,7 @@ const QisView: React.FC = () => {
                 <ChartZoomFrame
                   data={volRvCumAttrChart}
                   yKeys={['short', 'long', 'fut', 'cost', 'net']}
+                  recalcMode="zero"
                   height={320}
                 >
                   {(win) => (
@@ -1518,6 +1560,7 @@ const QisView: React.FC = () => {
                   <ChartZoomFrame
                     data={volRvDailyAttrChart}
                     yKeys={['short', 'long', 'fut', 'cost']}
+                    recalcMode="none"
                     height={280}
                   >
                     {(win) => (
@@ -1624,6 +1667,7 @@ const QisView: React.FC = () => {
                 <ChartZoomFrame
                   data={decompChart}
                   yKeys={['vega', 'theta', 'gamma', 'basis', 'net_delta', 'residual']}
+                  recalcMode="zero"
                   height={320}
                 >
                   {(win) => (
@@ -1656,7 +1700,12 @@ const QisView: React.FC = () => {
               {dailyGreeksChart.length > 0 && (
                 <div className="bg-white rounded-lg border border-slate-200 p-4">
                   <h3 className="font-bold text-[#000066] text-sm mb-3">Daily Greeks PnL</h3>
-                  <ChartZoomFrame data={dailyGreeksChart} yKeys={['vega', 'gamma', 'theta']} height={280}>
+                  <ChartZoomFrame
+                    data={dailyGreeksChart}
+                    yKeys={['vega', 'gamma', 'theta']}
+                    recalcMode="none"
+                    height={280}
+                  >
                     {(win) => (
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={win.data}>
@@ -1751,6 +1800,7 @@ const QisView: React.FC = () => {
                           ? ['spread_pts', 'enter_hi', 'enter_lo']
                           : ['spread_pts', 'enter_hi', 'enter_lo', 'exit_hi', 'exit_lo']
                     }
+                    recalcMode="none"
                     height={300}
                   >
                     {(win) => (
@@ -1828,6 +1878,7 @@ const QisView: React.FC = () => {
                           ? ['spread_pts']
                           : ['spread_pts', 'enter_hi', 'enter_lo', 'q50']
                     }
+                    recalcMode="none"
                     height={300}
                   >
                     {(win) => (
