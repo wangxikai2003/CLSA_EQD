@@ -240,8 +240,11 @@ const QisView: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [loadStatus, setLoadStatus] = useState('Running backtest…');
   const [err, setErr] = useState<string | null>(null);
-  /** Fingerprint of params last successfully loaded — draft edits do not refetch until Refresh. */
-  const [appliedParamKey, setAppliedParamKey] = useState<string | null>(null);
+  /**
+   * Fine-tune numeric drafts (OTM δ / thr / fee / slip / stop %): change freely,
+   * then click Refresh. Everything else auto-reloads.
+   */
+  const [appliedManualKey, setAppliedManualKey] = useState<string | null>(null);
 
   const strategyId = useMemo(() => {
     if (family === 'cross_calendar_carry') return 'cross_calendar_carry';
@@ -254,7 +257,8 @@ const QisView: React.FC = () => {
     (signalMode === 'quantile' || isRegime2SignalMode(signalMode));
   const stopOn = stopApplies && stopLoss;
 
-  const draftParamKey = useMemo(
+  /** Segment / strategy switches — auto refetch. */
+  const autoLoadKey = useMemo(
     () =>
       JSON.stringify({
         strategyId,
@@ -263,15 +267,9 @@ const QisView: React.FC = () => {
         spreadMode,
         signalMode,
         stopOn,
-        maxDdPct,
-        reboundRatio,
         volUniverse,
         volTilt,
-        targetOtmDelta,
-        longDeltaThr,
         hedgerMode,
-        optFeePct,
-        optSlipPct,
       }),
     [
       strategyId,
@@ -280,21 +278,29 @@ const QisView: React.FC = () => {
       spreadMode,
       signalMode,
       stopOn,
-      maxDdPct,
-      reboundRatio,
       volUniverse,
       volTilt,
-      targetOtmDelta,
-      longDeltaThr,
       hedgerMode,
-      optFeePct,
-      optSlipPct,
     ],
   );
-  const paramsDirty = appliedParamKey != null && appliedParamKey !== draftParamKey;
+
+  /** Number-box drafts — require explicit Refresh. */
+  const manualParamKey = useMemo(
+    () =>
+      JSON.stringify({
+        targetOtmDelta,
+        longDeltaThr,
+        optFeePct,
+        optSlipPct,
+        maxDdPct,
+        reboundRatio,
+      }),
+    [targetOtmDelta, longDeltaThr, optFeePct, optSlipPct, maxDdPct, reboundRatio],
+  );
+  const paramsDirty = appliedManualKey != null && appliedManualKey !== manualParamKey;
 
   const load = (refresh = false, signal?: AbortSignal) => {
-    const keyAtRequest = draftParamKey;
+    const manualAtRequest = manualParamKey;
     setLoading(true);
     setErr(null);
     setLoadStatus(refresh ? '强制重算并覆盖缓存…' : '加载回测（优先读库）…');
@@ -333,7 +339,7 @@ const QisView: React.FC = () => {
       .then((d) => {
         if (signal?.aborted) return;
         setData(d);
-        setAppliedParamKey(keyAtRequest);
+        setAppliedManualKey(manualAtRequest);
         setErr(null);
         const c = d._cache;
         if (c?.hit) {
@@ -377,15 +383,14 @@ const QisView: React.FC = () => {
     return () => ac.abort();
   }, []);
 
-  // Auto-load when first entering a strategy (strategyId / family universe).
-  // In-strategy param tweaks stay draft until explicit Refresh.
+  // Auto-load on strategy / segment changes. Fine-tune number boxes wait for Refresh.
   const loadRef = useRef(load);
   loadRef.current = load;
   useEffect(() => {
     const ac = new AbortController();
     loadRef.current(false, ac.signal);
     return () => ac.abort();
-  }, [strategyId]);
+  }, [autoLoadKey]);
 
   const levelScale = useMemo(() => {
     const fromSignal = data?.signal?.level_scale;
@@ -936,12 +941,12 @@ const QisView: React.FC = () => {
               }`}
               title={
                 paramsDirty
-                  ? '应用当前参数并加载回测（优先读库）。按住 Shift 强制重算覆盖缓存。'
-                  : '重新加载当前参数（优先读库）。按住 Shift 强制重算覆盖缓存。'
+                  ? '应用 OTM δ / thr / fee / slip（及止损数值）并加载。按住 Shift 强制重算覆盖缓存。'
+                  : '重新加载（优先读库）。按住 Shift 强制重算覆盖缓存。'
               }
             >
               <RefreshCw size={12} className={loading ? 'animate-spin' : undefined} />{' '}
-              {paramsDirty ? 'Refresh 应用参数' : 'Refresh'}
+              {paramsDirty ? 'Refresh 应用细调' : 'Refresh'}
             </button>
             {isCalVol && (
               <a
@@ -1250,8 +1255,8 @@ const QisView: React.FC = () => {
 
       {paramsDirty && !loading && (
         <div className="text-[11px] text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-          参数已修改但尚未应用。首次进入策略会自动加载默认结果；同策略内改完参数后请点右上角{' '}
-          <span className="font-bold">Refresh 应用参数</span>。
+          已改 OTM δ / Long Δ thr / Fee / Slip（或止损回撤·反弹）但尚未应用。改完后点右上角{' '}
+          <span className="font-bold">Refresh 应用细调</span>；切换 Index / Tilt / 策略等会自动刷新。
         </div>
       )}
       {loading && (
@@ -1263,7 +1268,7 @@ const QisView: React.FC = () => {
       {!loading && data?._cache && (
         <div className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded px-3 py-2">
           结果落库复用：同参数首次成功回测写入 <code className="font-mono text-[10px]">qis_results.sqlite</code>
-          ，之后直接读库不重跑引擎。改参后需点 Refresh 才加载；按住 Shift + Refresh 强制重算覆盖。
+          ，之后直接读库不重跑引擎。仅细调数值（δ / thr / fee / slip 等）需点 Refresh；按住 Shift + Refresh 强制重算覆盖。
           <span className="font-mono text-[10px] text-slate-500 ml-1">
             cache {data._cache.hit ? 'HIT' : 'MISS'}/{data._cache.source ?? '?'}
             {data._cache.persisted ? ' · persisted' : ''}
