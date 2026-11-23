@@ -3,6 +3,7 @@ import YieldCurveView from './YieldCurveView';
 import VolAnalyticsView from './VolAnalyticsView';
 import OptionTQuoteBoard, { StrikePickPayload } from './OptionTQuoteBoard';
 import MarketDataCorrPanel from './MarketDataCorrPanel';
+import RvIvPredictView from './RvIvPredictView';
 import { ProductCode } from '../../services/api';
 
 interface Props {
@@ -13,18 +14,18 @@ interface Props {
 }
 
 const DashboardLayout: React.FC<Props> = ({ product, tradeDate, onProductChange, onStrikePick }) => {
-  const [sub, setSub] = useState<'yield' | 'vol' | 'tquote' | 'corr'>('vol');
+  const [sub, setSub] = useState<'yield' | 'vol' | 'tquote' | 'corr' | 'rviv'>('vol');
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-bold text-[#000066]">Market Data</h2>
-          <p className="text-[11px] text-slate-500">Yield · JW-SVI Skew/Surface · Vol Cone · T-Quote · Corr</p>
+          <p className="text-[11px] text-slate-500">Yield · JW-SVI Skew/Surface · Vol Cone · T-Quote · RV/IV · Corr</p>
         </div>
         <div className="flex items-center gap-2">
-          {/* HO/IO/MO only for CFFEX product tabs (Vol Analytics / T-Quote) */}
-          {(sub === 'vol' || sub === 'tquote') && (
+          {/* HO/IO/MO for CFFEX product tabs */}
+          {(sub === 'vol' || sub === 'tquote' || sub === 'rviv') && (
             <div className="flex gap-1">
               {(['HO', 'IO', 'MO'] as ProductCode[]).map((p) => (
                 <button
@@ -48,6 +49,7 @@ const DashboardLayout: React.FC<Props> = ({ product, tradeDate, onProductChange,
           ['yield', 'Yield Curve'],
           ['vol', 'Vol Analytics'],
           ['tquote', 'T-Quote'],
+          ['rviv', 'RV/IV Predict'],
           ['corr', 'Corr'],
         ] as const).map(([id, label]) => (
           <button
@@ -72,6 +74,7 @@ const DashboardLayout: React.FC<Props> = ({ product, tradeDate, onProductChange,
             onStrikePick={onStrikePick}
           />
         )}
+        {sub === 'rviv' && <RvIvPredictView product={product} />}
         {sub === 'corr' && <MarketDataCorrPanel />}
       </div>
     </div>

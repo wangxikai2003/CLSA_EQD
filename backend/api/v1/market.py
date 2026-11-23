@@ -1,4 +1,4 @@
-"""Market intelligence endpoints: yield curve, vol cone, T-quote."""
+"""Market intelligence endpoints: yield curve, vol cone, T-quote, RV/IV predict."""
 from __future__ import annotations
 
 import math
@@ -230,6 +230,34 @@ def _black76_greeks(F: float, K: float, t: float, sigma: float, cp: str) -> Dict
     else:
         delta = _norm_cdf(d1) - 1.0
     return {"delta": delta, "gamma": gamma, "d1": d1, "d2": d2}
+
+
+@router.get("/rv-iv-predict")
+def rv_iv_predict(
+    product: str = Query("IO", description="HO|IO|MO"),
+    mode: str = Query("rv", description="rv = from realized; bench = from benchmark IV"),
+    source: str = Query("futures", description="futures near-month close | spot index"),
+    benchmark: Optional[str] = Query(None, description="benchmark product for mode=bench; default IO"),
+):
+    """
+    Port of research/exo_rv_iv into Market Data.
+    Returns Mid/Bid/Offer vol quotes (%) plus chart series.
+    """
+    try:
+        from engine.rv_iv_predict import PRODUCT_META, run_predict
+    except Exception as ex:  # pragma: no cover
+        raise HTTPException(500, f"rv_iv_predict engine unavailable: {ex}") from ex
+    prod = product.upper()
+    if prod not in PRODUCT_META:
+        raise HTTPException(400, f"product must be one of {list(PRODUCT_META)}")
+    try:
+        return run_predict(prod, mode=mode, source=source, benchmark=benchmark)
+    except FileNotFoundError as ex:
+        raise HTTPException(503, str(ex)) from ex
+    except ValueError as ex:
+        raise HTTPException(400, str(ex)) from ex
+    except Exception as ex:
+        raise HTTPException(500, f"rv-iv-predict failed: {ex}") from ex
 
 
 @router.get("/vol-cone")

@@ -30,7 +30,7 @@ git switch -c cursor/<task-id> origin/main
 | qis | `backend/engine/*signal*.py`, `calendar_vol_strategy.py`, `components/dashboard/QisView.tsx`, `backend/tests/test_*signal*` / `test_calendar_vol*` | `App.tsx` 顶栏、`backend/app.py` 路由表 |
 | corr | `backend/api/v1/correlation.py`, `realized_corr_service.py`, `*Corr*Panel.tsx`, `data/corr_*`, `services/api_v1/correlation.ts` | 其它 Market 子 tab |
 | exotic | `components/ExoticWorkbench/**`, `backend/api/v1/exotic_workbench.py`, `vectorized_engine.py`, `services/api_v1/exotic.ts` | Legacy `ExoticPricer.tsx`（默认只读） |
-| market | `YieldCurveView.tsx`, `VolAnalyticsView.tsx`, `VolatilitySurface.tsx`, `StrikeAxis*`, `services/api_v1/market.ts` | 非 market 的 API client |
+| market | `YieldCurveView.tsx`, `VolAnalyticsView.tsx`, `RvIvPredictView.tsx`, `VolatilitySurface.tsx`, `StrikeAxis*`, `services/api_v1/market.ts`, `backend/engine/rv_iv_predict.py` | 非 market 的 API client |
 | platform | `Dockerfile`, `deploy.sh`, `backend/app.py` 挂载, `.github/`, `backend/data_paths.py`, `services/api_v1/http.ts` | 业务公式 |
 
 共享客户端已按域拆到 `services/api_v1/*.ts`，桶文件是 `services/api_v1/index.ts`。不要再把新接口拼进一个巨型 `api_v1.ts`。
