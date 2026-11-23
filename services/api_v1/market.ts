@@ -44,6 +44,43 @@ export function fetchVolCone(product = 'IO', signal?: AbortSignal) {
   return getJson<any>(`/api/v1/market/vol-cone?product=${product}`, signal);
 }
 
+export type RvIvPredictMode = 'rv' | 'bench';
+export type RvIvPredictSource = 'futures' | 'spot';
+
+export interface RvIvPredictResponse {
+  product: string;
+  product_name?: string;
+  mode: RvIvPredictMode;
+  method?: string;
+  source?: string;
+  asof?: string | null;
+  first_date?: string | null;
+  end_date?: string | null;
+  sample_length?: number;
+  quotes: Record<string, number | null | undefined>;
+  current: Record<string, number | null | undefined>;
+  stats?: Record<string, number | string>;
+  series: Array<Record<string, number | string | null | undefined> & { d: string }>;
+  benchmark?: { product: string; base: string; bid_to_mid: number } | null;
+}
+
+export function fetchRvIvPredict(
+  params?: {
+    product?: string;
+    mode?: RvIvPredictMode;
+    source?: RvIvPredictSource;
+    benchmark?: string;
+  },
+  signal?: AbortSignal
+) {
+  const q = new URLSearchParams();
+  q.set('product', params?.product || 'IO');
+  q.set('mode', params?.mode || 'rv');
+  q.set('source', params?.source || 'futures');
+  if (params?.benchmark) q.set('benchmark', params.benchmark);
+  return getJson<RvIvPredictResponse>(`/api/v1/market/rv-iv-predict?${q}`, signal);
+}
+
 export function fetchTQuote(product: string, date?: string, expiry?: string, signal?: AbortSignal) {
   const q = new URLSearchParams({ product });
   if (date) q.set('date', date);

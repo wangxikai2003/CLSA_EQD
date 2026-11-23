@@ -32,6 +32,7 @@ def test_correlation_market_exotic_qis_routes_exist():
     qis = _route_paths(qis_routes.router)
     assert any(p.endswith("/universe") for p in corr), corr
     assert any(p.endswith("/yield-curve") for p in market), market
+    assert any(p.endswith("/rv-iv-predict") for p in market), market
     assert any(p.endswith("/presets") for p in exotic), exotic
     assert any(p == "/strategies" or p.endswith("/strategies") for p in qis), qis
     assert any("backtest/{strategy_id}" in p for p in qis), qis
