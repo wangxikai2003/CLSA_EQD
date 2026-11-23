@@ -54,6 +54,35 @@ export type QisSignalMode =
 export type QisVolRvTilt = 'balanced' | 'carry' | 'defensive';
 export type QisVolRvUniverse = '300' | '50' | '1000' | 'AU' | 'SC';
 export type QisHedgerMode = 'eod_close' | 'intraday_curve';
+export type QisBasketMethod = 'vol_rp' | 'cvar_rp';
+export type QisBasketSignal = 'quantile' | 'garch_z' | 'regime2';
+
+export interface QisBasketParams {
+  method?: QisBasketMethod | string;
+  target_vol?: number;
+  cvar_alpha?: number;
+  lookback?: number;
+  rebalance?: number;
+  universe?: '50' | '300' | '1000' | string;
+  signals?: QisBasketSignal[] | string[];
+  members?: string;
+  tenor_pair?: QisTenorPair | string;
+  side_mode?: QisSideMode | string;
+  spread_mode?: QisSpreadMode | string;
+}
+
+export interface QisBasketBlock {
+  method: string;
+  target_vol: number;
+  cvar_alpha: number;
+  lookback: number;
+  rebalance_days: number;
+  members: { id: string; label: string; weight: number }[];
+  weights: Record<string, number | string>[];
+  rebalance_log?: Record<string, number | string>[];
+  components?: { id: string; label: string; nav: { d: string; nav: number }[] }[];
+  equal_weight_label?: string;
+}
 
 export interface QisNavPoint {
   d: string;
@@ -236,6 +265,8 @@ export interface QisBacktestResponse {
   pnl_attribution?: QisVolRvAttribution;
   /** CSI 300 Vol RV net greeks + dynamic leverage. */
   greeks_summary?: QisVolRvGreeksSummary;
+  /** QIS Basket risk-parity block. */
+  basket?: QisBasketBlock;
   /** Result-store reuse: hit=true means engine was skipped. */
   _cache?: {
     hit: boolean;
@@ -270,6 +301,7 @@ export function fetchQisBacktest(
   maxDrawdownTarget = 0.1,
   reboundRatio = 0.9,
   volRv?: QisVolRvParams,
+  basket?: QisBasketParams,
 ) {
   const q = new URLSearchParams();
   if (refresh) q.set('refresh', 'true');
@@ -303,6 +335,19 @@ export function fetchQisBacktest(
       q.set('futures_slippage_pct', String(volRv.futures_slippage_pct));
     }
     if (volRv.ablation != null) q.set('ablation', volRv.ablation ? 'true' : 'false');
+  }
+  if (strategyId === 'qis_basket' && basket) {
+    if (basket.method) q.set('basket_method', String(basket.method));
+    if (basket.target_vol != null) q.set('target_vol', String(basket.target_vol));
+    if (basket.cvar_alpha != null) q.set('cvar_alpha', String(basket.cvar_alpha));
+    if (basket.lookback != null) q.set('basket_lookback', String(basket.lookback));
+    if (basket.rebalance != null) q.set('basket_rebalance', String(basket.rebalance));
+    if (basket.universe) q.set('basket_universe', String(basket.universe));
+    if (basket.members) q.set('basket_members', String(basket.members));
+    else if (basket.signals?.length) q.set('basket_signals', basket.signals.join(','));
+    if (basket.tenor_pair) q.set('tenor_pair', String(basket.tenor_pair));
+    if (basket.side_mode) q.set('side_mode', String(basket.side_mode));
+    if (basket.spread_mode) q.set('spread_mode', String(basket.spread_mode));
   }
   const qs = q.toString();
   return getJsonWithRetry<QisBacktestResponse>(

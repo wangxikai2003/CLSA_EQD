@@ -73,4 +73,14 @@ if u != "SC":
     sys.exit(f"vol_rv SC universe={u!r}")
 print("OK  csi300_vol_rv balanced u=SC")
 PY
+# Catalog only — full basket backtest may cold-run multiple calendar legs.
+curl_ok "/api/v1/qis/strategies"
+python3 - <<'PY'
+import json, sys
+data = json.loads(open("/tmp/clsa_smoke_body").read())
+ids = {s.get("id") for s in data.get("strategies") or []}
+if "qis_basket" not in ids:
+    sys.exit(f"qis_basket missing from strategies: {sorted(ids)}")
+print("OK  qis_basket catalog")
+PY
 echo "==> smoke passed"

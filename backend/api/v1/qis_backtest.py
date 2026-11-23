@@ -353,6 +353,7 @@ def list_strategies():
         for key, u in UNIVERSES.items()
     ]
     from engine.csi300_vol_rv_strategy import STYLE_PRESETS, VOL_RV_UNIVERSES
+    from engine.qis_basket import BASKET_SIGNAL_CHOICES, BASKET_SIGNAL_LABELS, METHODS
 
     return {
         "strategies": [
@@ -393,6 +394,30 @@ def list_strategies():
                     **STYLE_PRESETS["balanced"],
                 },
             },
+            {
+                "id": "qis_basket",
+                "name": "QIS Basket",
+                "status": "live",
+                "blurb": (
+                    "Risk parity / CVaR risk parity over Calendar Vol sub-indices "
+                    f"({', '.join(BASKET_SIGNAL_LABELS[s] for s in BASKET_SIGNAL_CHOICES)}) "
+                    "with selectable target vol"
+                ),
+                "family": "qis_basket",
+                "methods": list(METHODS),
+                "signals": [
+                    {"key": s, "label": BASKET_SIGNAL_LABELS[s]} for s in BASKET_SIGNAL_CHOICES
+                ],
+                "defaults": {
+                    "method": "vol_rp",
+                    "target_vol": 0.10,
+                    "cvar_alpha": 0.05,
+                    "lookback": 63,
+                    "rebalance": 21,
+                    "universe": "300",
+                    "signals": list(BASKET_SIGNAL_CHOICES),
+                },
+            },
         ],
         "tenor_pairs": list(TENOR_PAIRS.keys()),
         "side_modes": list(SIDE_MODES),
@@ -400,6 +425,8 @@ def list_strategies():
         "signal_modes": list(SIGNAL_MODES),
         "vol_rv_tilts": list(STYLE_PRESETS.keys()),
         "vol_rv_universes": list(VOL_RV_UNIVERSES.keys()),
+        "basket_methods": list(METHODS),
+        "basket_signals": list(BASKET_SIGNAL_CHOICES),
     }
 
 
@@ -463,12 +490,176 @@ def backtest(
     futures_fee_pct: float = Query(0.0, ge=0.0, le=0.05),
     futures_slippage_pct: float = Query(0.0, ge=0.0, le=0.05),
     ablation: bool = Query(True, description="Return step1/2/3 ablation NAV paths"),
+    # QIS Basket
+    basket_method: str = Query(
+        "vol_rp",
+        description="Basket method: vol_rp (inverse-vol RP) | cvar_rp (inverse-CVaR RP)",
+    ),
+    target_vol: float = Query(
+        0.10,
+        gt=0.01,
+        le=0.5,
+        description="Basket target annualized vol (also scales CVaR-RP leverage)",
+    ),
+    cvar_alpha: float = Query(
+        0.05,
+        gt=0.01,
+        le=0.25,
+        description="Historical CVaR tail probability (e.g. 0.05 = 95% CVaR)",
+    ),
+    basket_lookback: int = Query(63, ge=20, le=504, description="Trailing days for risk estimate"),
+    basket_rebalance: int = Query(21, ge=1, le=126, description="Rebalance every N trading days"),
+    basket_members: Optional[str] = Query(
+        None,
+        description="Comma-separated members cal:<uni>:<signal>; default quantile+garch_z+regime2",
+    ),
+    basket_signals: Optional[str] = Query(
+        None,
+        description="Comma-separated signals (quantile,garch_z,regime2) under basket_universe",
+    ),
+    basket_universe: str = Query("300", description="Universe for basket_signals shortcut"),
 ):
     db = st._equity_db()
     from api.v1 import qis_results_store as qrs
 
     spot = next((p for p in st._SPOT_CANDIDATES if p.exists()), None)
     src = qrs.source_key(db, spot)
+
+    if strategy_id == "qis_basket":
+        from engine.qis_basket import (
+            BASKET_SIGNAL_CHOICES,
+            basket_cache_sig,
+            normalize_method,
+            parse_members,
+            run_qis_basket,
+        )
+        from engine.calendar_vol_strategy import (
+            normalize_side_mode,
+            normalize_spread_mode,
+            normalize_tenor_pair,
+        )
+
+        try:
+            method = normalize_method(basket_method)
+            tp = normalize_tenor_pair(tenor_pair)
+            sm = normalize_side_mode(side_mode)
+            spm = normalize_spread_mode(spread_mode)
+            if basket_members:
+                mems = parse_members(basket_members)
+            elif basket_signals:
+                sigs = [x.strip() for x in basket_signals.replace(";", ",").split(",") if x.strip()]
+                bad = [s for s in sigs if s not in BASKET_SIGNAL_CHOICES]
+                if bad:
+                    raise ValueError(f"unknown basket signals {bad}; choose {list(BASKET_SIGNAL_CHOICES)}")
+                mems = parse_members([f"cal:{basket_universe}:{s}" for s in sigs])
+            else:
+                mems = parse_members(
+                    [f"cal:{basket_universe}:{s}" for s in BASKET_SIGNAL_CHOICES]
+                )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+        sig = basket_cache_sig(
+            method,
+            target_vol,
+            cvar_alpha,
+            basket_lookback,
+            basket_rebalance,
+            mems,
+            tp,
+            sm,
+            spm,
+        )
+        # Encode basket fingerprint in signal_mode; other PK slots are sentinels.
+        cache_tenor = "basket"
+        cache_side = "n/a"
+        cache_spread = "n/a"
+        mem_key = (
+            strategy_id,
+            int(z_window),
+            src,
+            _INITIAL_NAV,
+            cache_tenor,
+            cache_side,
+            cache_spread,
+            sig,
+        )
+        if not refresh:
+            hit = qrs.get_cached(
+                strategy_id,
+                int(z_window),
+                _INITIAL_NAV,
+                src,
+                tenor_pair=cache_tenor,
+                side_mode=cache_side,
+                spread_mode=cache_spread,
+                signal_mode=sig,
+            )
+            if hit is not None:
+                return hit
+            mem = _cache.get("basket_map") or {}
+            if mem_key in mem:
+                return qrs.attach_cache_meta(
+                    mem[mem_key],
+                    hit=True,
+                    source="memory",
+                    source_key=src,
+                    tenor_pair=cache_tenor,
+                    side_mode=cache_side,
+                    spread_mode=cache_spread,
+                    signal_mode=sig,
+                )
+
+        try:
+            payload = run_qis_basket(
+                initial_nav=_INITIAL_NAV,
+                method=method,
+                target_vol=target_vol,
+                cvar_alpha=cvar_alpha,
+                lookback=basket_lookback,
+                rebalance=basket_rebalance,
+                members=mems,
+                universe=basket_universe,
+                tenor_pair=tp,
+                side_mode=sm,
+                spread_mode=spm,
+                z_window=int(z_window),
+                source_key=src,
+                refresh=bool(refresh),
+            )
+        except FileNotFoundError as e:
+            raise HTTPException(503, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:
+            raise HTTPException(500, f"qis_basket failed: {e}") from e
+
+        qrs.put_cached(
+            strategy_id,
+            int(z_window),
+            _INITIAL_NAV,
+            src,
+            payload,
+            tenor_pair=cache_tenor,
+            side_mode=cache_side,
+            spread_mode=cache_spread,
+            signal_mode=sig,
+        )
+        clean = {k: v for k, v in payload.items() if not str(k).startswith("_")}
+        mem = _cache.get("basket_map") or {}
+        mem[mem_key] = clean
+        _cache["basket_map"] = mem
+        return qrs.attach_cache_meta(
+            payload,
+            hit=False,
+            source="miss",
+            source_key=src,
+            persisted=True,
+            tenor_pair=cache_tenor,
+            side_mode=cache_side,
+            spread_mode=cache_spread,
+            signal_mode=sig,
+        )
 
     if strategy_id == "csi300_vol_rv":
         from engine.csi300_vol_rv_strategy import (

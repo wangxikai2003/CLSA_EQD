@@ -15,6 +15,8 @@ import {
   QisStrategyInfo,
   QisTenorPair,
   QisTradeMarker,
+  QisBasketMethod,
+  QisBasketSignal,
   QisVolRvTilt,
   QisVolRvUniverse,
   isRegime2SignalMode,
@@ -116,7 +118,22 @@ const CAL_VOL_UNIVERSES = [
   { key: '1000', id: 'equity_3_6_calendar_vol_1000', label: '1000' },
 ] as const;
 
-type FamilyKey = 'cross_calendar_carry' | 'calendar_vol' | 'csi300_vol_rv';
+type FamilyKey = 'cross_calendar_carry' | 'calendar_vol' | 'csi300_vol_rv' | 'qis_basket';
+
+const BASKET_METHODS: { key: QisBasketMethod; label: string }[] = [
+  { key: 'vol_rp', label: 'Risk Parity' },
+  { key: 'cvar_rp', label: 'CVaR Risk Parity' },
+];
+
+const BASKET_SIGNALS: { key: QisBasketSignal; label: string }[] = [
+  { key: 'quantile', label: 'Quantile' },
+  { key: 'garch_z', label: 'GARCH-z' },
+  { key: 'regime2', label: 'Regime' },
+];
+
+const BASKET_TARGET_VOLS = [0.05, 0.08, 0.1, 0.12, 0.15];
+
+const BASKET_COLORS = ['#EAB308', '#7C3AED', '#0F766E', '#C2410C', '#2563EB', '#A16207'];
 
 const VOL_RV_TILTS: { key: QisVolRvTilt; label: string }[] = [
   { key: 'balanced', label: 'Balanced' },
@@ -236,6 +253,17 @@ const QisView: React.FC = () => {
   const [hedgerMode, setHedgerMode] = useState<QisHedgerMode>('eod_close');
   const [optFeePct, setOptFeePct] = useState(0);
   const [optSlipPct, setOptSlipPct] = useState(0);
+  const [basketMethod, setBasketMethod] = useState<QisBasketMethod>('vol_rp');
+  const [basketTargetVol, setBasketTargetVol] = useState(0.1);
+  const [basketCvarAlpha, setBasketCvarAlpha] = useState(0.05);
+  const [basketUniverse, setBasketUniverse] = useState<'50' | '300' | '1000'>('300');
+  const [basketSignals, setBasketSignals] = useState<QisBasketSignal[]>([
+    'quantile',
+    'garch_z',
+    'regime2',
+  ]);
+  const [basketLookback, setBasketLookback] = useState(63);
+  const [basketRebalance, setBasketRebalance] = useState(21);
   const [data, setData] = useState<QisBacktestResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadStatus, setLoadStatus] = useState('Running backtest…');
@@ -249,8 +277,19 @@ const QisView: React.FC = () => {
   const strategyId = useMemo(() => {
     if (family === 'cross_calendar_carry') return 'cross_calendar_carry';
     if (family === 'csi300_vol_rv') return 'csi300_vol_rv';
+    if (family === 'qis_basket') return 'qis_basket';
     return CAL_VOL_UNIVERSES.find((u) => u.key === universe)?.id ?? 'equity_3_6_calendar_vol_300';
   }, [family, universe]);
+
+  const toggleBasketSignal = (sig: QisBasketSignal) => {
+    setBasketSignals((prev) => {
+      if (prev.includes(sig)) {
+        if (prev.length <= 2) return prev; // need ≥2 members
+        return prev.filter((s) => s !== sig);
+      }
+      return [...prev, sig];
+    });
+  };
 
   const stopApplies =
     family === 'calendar_vol' &&
@@ -270,6 +309,11 @@ const QisView: React.FC = () => {
         volUniverse,
         volTilt,
         hedgerMode,
+        basketMethod,
+        basketTargetVol,
+        basketCvarAlpha,
+        basketUniverse,
+        basketSignals: [...basketSignals].sort(),
       }),
     [
       strategyId,
@@ -281,6 +325,11 @@ const QisView: React.FC = () => {
       volUniverse,
       volTilt,
       hedgerMode,
+      basketMethod,
+      basketTargetVol,
+      basketCvarAlpha,
+      basketUniverse,
+      basketSignals,
     ],
   );
 
@@ -294,8 +343,19 @@ const QisView: React.FC = () => {
         optSlipPct,
         maxDdPct,
         reboundRatio,
+        basketLookback,
+        basketRebalance,
       }),
-    [targetOtmDelta, longDeltaThr, optFeePct, optSlipPct, maxDdPct, reboundRatio],
+    [
+      targetOtmDelta,
+      longDeltaThr,
+      optFeePct,
+      optSlipPct,
+      maxDdPct,
+      reboundRatio,
+      basketLookback,
+      basketRebalance,
+    ],
   );
   const paramsDirty = appliedManualKey != null && appliedManualKey !== manualParamKey;
 
@@ -333,6 +393,20 @@ const QisView: React.FC = () => {
             option_fee_pct: optFeePct,
             option_slippage_pct: optSlipPct,
             ablation: true,
+          }
+        : undefined,
+      family === 'qis_basket'
+        ? {
+            method: basketMethod,
+            target_vol: basketTargetVol,
+            cvar_alpha: basketCvarAlpha,
+            lookback: basketLookback,
+            rebalance: basketRebalance,
+            universe: basketUniverse,
+            signals: basketSignals,
+            tenor_pair: tenorPair,
+            side_mode: sideMode,
+            spread_mode: spreadMode,
           }
         : undefined,
     )
@@ -715,6 +789,32 @@ const QisView: React.FC = () => {
 
   const isCalVol = strategyId.startsWith('equity_3_6_calendar_vol_');
   const isVolRv = strategyId === 'csi300_vol_rv';
+  const isBasket = strategyId === 'qis_basket';
+
+  const basketWeightChart = useMemo(() => {
+    const rows = data?.basket?.weights;
+    if (!rows?.length) return [] as Record<string, number | string>[];
+    return rows;
+  }, [data]);
+
+  const basketWeightKeys = useMemo(() => {
+    const mems = data?.basket?.members ?? [];
+    return mems.map((m) => m.id);
+  }, [data]);
+
+  const basketComponentChart = useMemo(() => {
+    const comps = data?.basket?.components;
+    if (!comps?.length) return [] as Record<string, number | string>[];
+    const byDate = new Map<string, Record<string, number | string>>();
+    for (const c of comps) {
+      for (const p of c.nav) {
+        const row = byDate.get(p.d) ?? { d: p.d };
+        row[c.id] = p.nav;
+        byDate.set(p.d, row);
+      }
+    }
+    return Array.from(byDate.values()).sort((a, b) => String(a.d).localeCompare(String(b.d)));
+  }, [data]);
   const activeTenor =
     (typeof data?.params?.tenor_pair === 'string' ? data.params.tenor_pair : tenorPair) as QisTenorPair;
   const activeSide =
@@ -916,8 +1016,8 @@ const QisView: React.FC = () => {
             Systematic Trading Strategies
           </h2>
           <p className="text-[11px] text-slate-500 max-w-3xl mt-1">
-            QIS：期货 carry + Equity Calendar Vol + CSI 300 Vol RV。同一系列里，Quantile 与 GARCH-z 是子指数，Regime 是更高一层的策略；同层策略以后在「策略」这一行切换。
-            缓存 <code className="font-mono">qis_results.sqlite</code>（tenor × side × spread × signal 分键）。
+            QIS：期货 carry + Equity Calendar Vol + Vol RV + Basket。Basket 用风险平价 / CVaR 风险平价组合子指数与策略；同系列里 Quantile / GARCH-z 是子指数，Regime 是更高一层策略。
+            缓存 <code className="font-mono">qis_results.sqlite</code>。
           </p>
         </div>
         <div className="flex flex-col items-stretch sm:items-end gap-2 min-w-0">
@@ -931,6 +1031,7 @@ const QisView: React.FC = () => {
               <option value="cross_calendar_carry">Cross Calendar Carry</option>
               <option value="calendar_vol">Equity Calendar Vol</option>
               <option value="csi300_vol_rv">Vol RV</option>
+              <option value="qis_basket">QIS Basket</option>
             </select>
             <button
               type="button"
@@ -970,6 +1071,146 @@ const QisView: React.FC = () => {
               </a>
             )}
           </div>
+          {family === 'qis_basket' && (
+            <div className="flex flex-col gap-1.5 w-full max-w-4xl">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-end">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Method</span>
+                  <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                    {BASKET_METHODS.map((m) => (
+                      <button
+                        key={m.key}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => setBasketMethod(m.key)}
+                        className={segBtnClass(basketMethod === m.key, loading)}
+                      >
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Target vol</span>
+                  <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                    {BASKET_TARGET_VOLS.map((v) => (
+                      <button
+                        key={v}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => setBasketTargetVol(v)}
+                        className={segBtnClass(Math.abs(basketTargetVol - v) < 1e-9, loading)}
+                      >
+                        {(v * 100).toFixed(0)}%
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {basketMethod === 'cvar_rp' && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">CVaR α</span>
+                    <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                      {[0.05, 0.1].map((a) => (
+                        <button
+                          key={a}
+                          type="button"
+                          disabled={loading}
+                          onClick={() => setBasketCvarAlpha(a)}
+                          className={segBtnClass(Math.abs(basketCvarAlpha - a) < 1e-9, loading)}
+                        >
+                          {(a * 100).toFixed(0)}%
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-end">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Index</span>
+                  <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                    {CAL_VOL_UNIVERSES.map((u) => (
+                      <button
+                        key={u.key}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => setBasketUniverse(u.key)}
+                        className={segBtnClass(basketUniverse === u.key, loading)}
+                      >
+                        {u.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Sub-index</span>
+                  <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                    {BASKET_SIGNALS.map((s) => (
+                      <button
+                        key={s.key}
+                        type="button"
+                        disabled={loading}
+                        title={basketSignals.length <= 2 && basketSignals.includes(s.key) ? '至少保留两个成分' : undefined}
+                        onClick={() => toggleBasketSignal(s.key)}
+                        className={segBtnClass(basketSignals.includes(s.key), loading)}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Tenor</span>
+                  <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                    {CAL_VOL_TENORS.map((t) => (
+                      <button
+                        key={t.key}
+                        type="button"
+                        disabled={loading}
+                        onClick={() => setTenorPair(t.key)}
+                        className={segBtnClass(tenorPair === t.key, loading)}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                  Lookback
+                  <input
+                    type="number"
+                    min={20}
+                    max={504}
+                    step={1}
+                    disabled={loading}
+                    value={basketLookback}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      if (Number.isFinite(v) && v >= 20 && v <= 504) setBasketLookback(Math.round(v));
+                    }}
+                    className="w-14 px-1 py-0.5 border border-slate-200 rounded text-[10px] font-bold text-[#000066]"
+                  />
+                </label>
+                <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                  Rebal
+                  <input
+                    type="number"
+                    min={1}
+                    max={126}
+                    step={1}
+                    disabled={loading}
+                    value={basketRebalance}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      if (Number.isFinite(v) && v >= 1 && v <= 126) setBasketRebalance(Math.round(v));
+                    }}
+                    className="w-12 px-1 py-0.5 border border-slate-200 rounded text-[10px] font-bold text-[#000066]"
+                  />
+                  d
+                </label>
+              </div>
+            </div>
+          )}
           {family === 'csi300_vol_rv' && (
             <div className="flex flex-col gap-1.5 w-full max-w-3xl">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-end">
@@ -1255,8 +1496,8 @@ const QisView: React.FC = () => {
 
       {paramsDirty && !loading && (
         <div className="text-[11px] text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-          已改 OTM δ / Long Δ thr / Fee / Slip（或止损回撤·反弹）但尚未应用。改完后点右上角{' '}
-          <span className="font-bold">Refresh 应用细调</span>；切换 Index / Tilt / 策略等会自动刷新。
+          已改细调数值（OTM δ / thr / fee / slip、止损%、Basket lookback/rebal）但尚未应用。改完后点{' '}
+          <span className="font-bold">Refresh 应用细调</span>；切换策略 / Index / Method / Target vol / 子指数等会自动刷新。
         </div>
       )}
       {loading && (
@@ -1294,6 +1535,11 @@ const QisView: React.FC = () => {
                   : ''}
                 {isVolRv
                   ? ` · u=${String(data.params.universe ?? volUniverse)} · tilt=${String(data.params.tilt ?? volTilt)} · δ=${String(data.params.target_otm_delta ?? targetOtmDelta)} · thr=${String(data.params.long_delta_threshold ?? longDeltaThr)}`
+                  : ''}
+                {isBasket
+                  ? ` · ${String(data.params.method ?? basketMethod)} · tv=${(
+                      Number(data.params.target_vol ?? basketTargetVol) * 100
+                    ).toFixed(0)}% · members=${Array.isArray(data.params.members) ? (data.params.members as string[]).length : basketSignals.length}`
                   : ''}
                 {data._cache
                   ? ` · cache ${data._cache.hit ? 'HIT' : 'MISS'}/${data._cache.source ?? '?'}`
@@ -1451,9 +1697,15 @@ const QisView: React.FC = () => {
             <h3 className="font-bold text-[#000066] text-sm mb-3">净值曲线 (NAV / initial)</h3>
             <ChartZoomFrame
               data={navChart}
-              yKeys={isVolRv ? ['nav', 'nav_step2', 'nav_step1'] : ['nav', 'sos']}
+              yKeys={
+                isVolRv
+                  ? ['nav', 'nav_step2', 'nav_step1']
+                  : isBasket
+                    ? ['nav', 'sos']
+                    : ['nav', 'sos']
+              }
               recalcMode="rebase"
-              recalcKeys={isVolRv ? ['nav', 'nav_step2', 'nav_step1'] : ['nav']}
+              recalcKeys={isVolRv ? ['nav', 'nav_step2', 'nav_step1'] : ['nav', 'sos']}
               height={340}
             >
               {(win) => (
@@ -1467,7 +1719,7 @@ const QisView: React.FC = () => {
                       domain={win.yDomain ?? ['auto', 'auto']}
                       allowDataOverflow={!!win.yDomain}
                     />
-                    {!isVolRv && (
+                    {!isVolRv && !isBasket && (
                       <YAxis yAxisId="sos" orientation="right" tick={{ fontSize: 9 }} domain={['auto', 'auto']} />
                     )}
                     <Tooltip contentStyle={{ fontSize: 11 }} />
@@ -1476,7 +1728,7 @@ const QisView: React.FC = () => {
                       yAxisId="nav"
                       type="monotone"
                       dataKey="nav"
-                      name={isVolRv ? 'Step3 dynamic L' : 'NAV multiple'}
+                      name={isVolRv ? 'Step3 dynamic L' : isBasket ? 'Basket NAV' : 'NAV multiple'}
                       stroke={isVolRv ? VOL_RV_CHART.step3 : CHART.nav}
                       dot={false}
                       strokeWidth={2}
@@ -1507,7 +1759,19 @@ const QisView: React.FC = () => {
                         />
                       </>
                     )}
-                    {!isVolRv && (
+                    {isBasket && (
+                      <Line
+                        yAxisId="nav"
+                        type="monotone"
+                        dataKey="sos"
+                        name={data.basket?.equal_weight_label ?? 'Equal-weight'}
+                        stroke="#64748B"
+                        dot={false}
+                        strokeWidth={1.25}
+                        strokeDasharray="4 3"
+                      />
+                    )}
+                    {!isVolRv && !isBasket && (
                       <>
                         <Line yAxisId="sos" type="monotone" dataKey="sos" name={sosLabel} stroke={CHART.spread} dot={false} strokeWidth={1} strokeOpacity={0.55} />
                         <Line yAxisId="sos" type="monotone" dataKey="long_pt" name="Long" stroke={CHART.long} strokeWidth={0} dot={markerDot(CHART.long)} activeDot={false} legendType="circle" connectNulls={false} isAnimationActive={false} />
@@ -1522,9 +1786,113 @@ const QisView: React.FC = () => {
             <p className="text-[9px] text-slate-400 mt-1">
               {isVolRv
                 ? '主曲线 Step3（动态杠杆，实线）；Step2 长端阈值虚线；Step1 全量 EOD 对冲虚线。贴边滑条可缩放/平移。'
-                : '黄线：净值（粗）与 IV spread（细）。点落在 spread 轴上：Long/Normal 红 · Short/Reverse 绿 · 平仓蓝（由 executed position 变化推导）。贴边滑条：横向/纵向缩放与平移。'}
+                : isBasket
+                  ? '黄线：Basket 净值（目标波动杠杆后）。灰虚线：等权未杠杆参考。权重仅用过去 lookback，无前视。'
+                  : '黄线：净值（粗）与 IV spread（细）。点落在 spread 轴上：Long/Normal 红 · Short/Reverse 绿 · 平仓蓝（由 executed position 变化推导）。贴边滑条：横向/纵向缩放与平移。'}
             </p>
           </div>
+
+          {isBasket && data.basket && (
+            <>
+              <div className="bg-white rounded-lg border border-slate-200 p-4">
+                <h3 className="font-bold text-[#000066] text-sm mb-2">最新权重</h3>
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {(data.basket.members ?? []).map((m, i) => (
+                    <span
+                      key={m.id}
+                      className="px-2 py-1 text-[10px] font-bold rounded border border-slate-200 bg-slate-50 text-[#000066]"
+                    >
+                      <span
+                        className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle"
+                        style={{ background: BASKET_COLORS[i % BASKET_COLORS.length] }}
+                      />
+                      {m.label}: {(m.weight * 100).toFixed(1)}%
+                    </span>
+                  ))}
+                </div>
+                {basketWeightChart.length > 0 && basketWeightKeys.length > 0 && (
+                  <ChartZoomFrame data={basketWeightChart} yKeys={basketWeightKeys} recalcMode="none" height={260}>
+                    {(win) => (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={win.data}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                          <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
+                          <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} tickFormatter={(v) => `${(Number(v) * 100).toFixed(0)}%`} />
+                          <Tooltip
+                            contentStyle={{ fontSize: 11 }}
+                            formatter={(v: number, name: string) => [
+                              `${(Number(v) * 100).toFixed(2)}%`,
+                              data.basket?.members.find((m) => m.id === name)?.label ?? name,
+                            ]}
+                          />
+                          <Legend
+                            wrapperStyle={{ fontSize: 10 }}
+                            formatter={(id) => data.basket?.members.find((m) => m.id === id)?.label ?? id}
+                          />
+                          {basketWeightKeys.map((k, i) => (
+                            <Line
+                              key={k}
+                              type="monotone"
+                              dataKey={k}
+                              stroke={BASKET_COLORS[i % BASKET_COLORS.length]}
+                              dot={false}
+                              strokeWidth={1.5}
+                            />
+                          ))}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    )}
+                  </ChartZoomFrame>
+                )}
+                <p className="text-[9px] text-slate-400 mt-1">
+                  杠杆后权重随再平衡更新；Risk Parity = 逆波动，CVaR Risk Parity = 逆历史 CVaR，再缩放到目标波动。
+                </p>
+              </div>
+
+              {basketComponentChart.length > 0 && (
+                <div className="bg-white rounded-lg border border-slate-200 p-4">
+                  <h3 className="font-bold text-[#000066] text-sm mb-3">成分净值（再基准）</h3>
+                  <ChartZoomFrame
+                    data={basketComponentChart}
+                    yKeys={basketWeightKeys}
+                    recalcMode="rebase"
+                    height={280}
+                  >
+                    {(win) => (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={win.data}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                          <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
+                          <YAxis
+                            tick={{ fontSize: 10 }}
+                            domain={win.yDomain ?? ['auto', 'auto']}
+                            allowDataOverflow={!!win.yDomain}
+                          />
+                          <Tooltip contentStyle={{ fontSize: 11 }} />
+                          <Legend
+                            wrapperStyle={{ fontSize: 10 }}
+                            formatter={(id) => data.basket?.members.find((m) => m.id === id)?.label ?? id}
+                          />
+                          {basketWeightKeys.map((k, i) => (
+                            <Line
+                              key={k}
+                              type="monotone"
+                              dataKey={k}
+                              name={data.basket?.members.find((m) => m.id === k)?.label ?? k}
+                              stroke={BASKET_COLORS[i % BASKET_COLORS.length]}
+                              dot={false}
+                              strokeWidth={1.25}
+                              connectNulls
+                            />
+                          ))}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    )}
+                  </ChartZoomFrame>
+                </div>
+              )}
+            </>
+          )}
 
           {isVolRv && volRvCumAttrChart.length > 0 && (
             <>
