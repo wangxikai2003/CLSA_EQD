@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
@@ -377,13 +377,15 @@ const QisView: React.FC = () => {
     return () => ac.abort();
   }, []);
 
-  // Initial load only — subsequent param edits wait for explicit Refresh.
+  // Auto-load when first entering a strategy (strategyId / family universe).
+  // In-strategy param tweaks stay draft until explicit Refresh.
+  const loadRef = useRef(load);
+  loadRef.current = load;
   useEffect(() => {
     const ac = new AbortController();
-    load(false, ac.signal);
+    loadRef.current(false, ac.signal);
     return () => ac.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [strategyId]);
 
   const levelScale = useMemo(() => {
     const fromSignal = data?.signal?.level_scale;
@@ -1248,7 +1250,8 @@ const QisView: React.FC = () => {
 
       {paramsDirty && !loading && (
         <div className="text-[11px] text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-          参数已修改但尚未应用。改完后点击右上角 <span className="font-bold">Refresh 应用参数</span> 再重新加载图表；改参过程中不会自动刷新。
+          参数已修改但尚未应用。首次进入策略会自动加载默认结果；同策略内改完参数后请点右上角{' '}
+          <span className="font-bold">Refresh 应用参数</span>。
         </div>
       )}
       {loading && (
