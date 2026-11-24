@@ -175,12 +175,32 @@ def basket_cache_sig(
 
 
 def nav_series_from_payload(payload: Dict[str, Any]) -> pd.Series:
-    rows = payload.get("nav") or []
+    """Prefer full daily NAV; chart `nav` may be downsampled (~800 pts) and
+    misaligned across members with different start dates / step offsets."""
+    rows = payload.get("nav_daily") or payload.get("nav") or []
     if not rows:
         return pd.Series(dtype=float)
     return pd.Series(
         {str(r["d"]): float(r["nav"]) for r in rows if r.get("d") is not None and r.get("nav") is not None}
     ).sort_index()
+
+
+def align_member_navs(navs: Dict[str, pd.Series]) -> pd.DataFrame:
+    """Union calendar + forward-fill for true holiday mismatches.
+
+    After each leg has started, missing days (other market closed) keep the
+    prior NAV so pct_change is 0 — standard multi-calendar portfolio treatment.
+    """
+    if not navs:
+        return pd.DataFrame()
+    df = pd.DataFrame(navs).sort_index()
+    starts = [df[c].first_valid_index() for c in df.columns]
+    starts = [s for s in starts if s is not None]
+    if not starts:
+        return pd.DataFrame()
+    start = max(starts)
+    aligned = df.loc[start:].ffill().dropna(how="any")
+    return aligned
 
 
 def _asset_vol(rets: pd.Series) -> float:
@@ -723,6 +743,18 @@ def run_qis_basket(
             source_key=source_key or "basket",
             refresh=refresh,
         )
+        # Old cache rows only have chart-downsampled `nav` (no nav_daily) — rebuild once.
+        if not payload.get("nav_daily"):
+            payload = load_member_payload(
+                mid,
+                initial_nav=initial_nav,
+                z_window=z_window,
+                tenor_pair=tenor_pair,
+                side_mode=side_mode,
+                spread_mode=spread_mode,
+                source_key=source_key or "basket",
+                refresh=True,
+            )
         s = nav_series_from_payload(payload)
         if s.empty:
             raise ValueError(f"member {mid} has empty NAV")
@@ -742,7 +774,7 @@ def run_qis_basket(
     navs = {mid: navs[mid] for mid in mem_ids}
     labels = {mid: labels[mid] for mid in mem_ids}
 
-    nav_df = pd.DataFrame(navs).dropna(how="any").sort_index()
+    nav_df = align_member_navs(navs)
     if nav_df.shape[0] < lb + 5:
         raise ValueError(
             f"overlapping NAV too short ({nav_df.shape[0]}d) for lookback={lb}; "

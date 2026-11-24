@@ -1218,7 +1218,15 @@ class Csi300VolRvEngine:
 
         return self._pack(ablations)
 
-    def _pack_nav(self, sim: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]], Dict[str, Any]]:
+    def _pack_nav(
+        self, sim: Dict[str, Any]
+    ) -> Tuple[
+        List[Dict[str, Any]],
+        List[Dict[str, Any]],
+        Dict[str, Any],
+        List[Dict[str, Any]],
+        Dict[str, Any],
+    ]:
         rows: List[Dict[str, Any]] = sim["rows"]
         first_open_i = sim["first_open_i"]
         if first_open_i is None or first_open_i + 1 >= len(rows):
@@ -1243,6 +1251,11 @@ class Csi300VolRvEngine:
             {"d": perf[i]["d"], "nav": round(float(perf[i]["nav"]) / base_nav, 6), "sos": None}
             for i in idx
         ]
+        # Full daily series for basket / analytics (chart `nav` may be downsampled).
+        nav_daily = [
+            {"d": r["d"], "nav": round(float(r["nav"]) / base_nav, 6)}
+            for r in perf
+        ]
         summary = {
             "start": perf[0]["d"],
             "end": perf[-1]["d"],
@@ -1256,11 +1269,11 @@ class Csi300VolRvEngine:
             if not math.isfinite(sim["mean_leverage"])
             else round(float(sim["mean_leverage"]), 4),
         }
-        return nav_chart, metrics, yearly, summary
+        return nav_chart, nav_daily, metrics, yearly, summary
 
     def _pack(self, ablations: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         main = ablations["step3_dynamic_leverage"]
-        nav_chart, metrics, yearly, summary = self._pack_nav(main)
+        nav_chart, nav_daily, metrics, yearly, summary = self._pack_nav(main)
         rows = main["rows"]
         first_open_i = main["first_open_i"]
         start_i = first_open_i + 1
@@ -1288,7 +1301,7 @@ class Csi300VolRvEngine:
 
         ablation_nav: Dict[str, List[Dict[str, Any]]] = {}
         for k, sim in ablations.items():
-            chart, _, _, _ = self._pack_nav(sim)
+            chart, _, _, _, _ = self._pack_nav(sim)
             ablation_nav[k] = chart
 
         total_pnl = float(perf[-1]["nav"]) - float(rows[first_open_i]["nav"])
@@ -1382,6 +1395,7 @@ class Csi300VolRvEngine:
                 "end_date": self.end_date,
             },
             "nav": nav_chart,
+            "nav_daily": nav_daily,
             "metrics": metrics,
             "yearly_metrics": yearly,
             "summary": summary,

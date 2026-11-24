@@ -280,6 +280,10 @@ def run_cross_calendar_carry(
                 "sos": round(rows[-1]["sos"], 4),
             }
         )
+    nav_daily = [
+        {"d": r["d"], "nav": round(float(r["nav"]) / initial_nav, 6)}
+        for r in rows
+    ]
 
     return {
         "strategy_id": "cross_calendar_carry",
@@ -309,6 +313,7 @@ def run_cross_calendar_carry(
             "sizing": "equal point lots a=NAV/ΣS_legs so overnight PnL=a·ΔSoS; gross notional=NAV",
         },
         "nav": nav_chart,
+        "nav_daily": nav_daily,
         "metrics": metrics,
         "yearly_metrics": yearly_metrics,
         "summary": {

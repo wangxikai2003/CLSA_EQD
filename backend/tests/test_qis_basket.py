@@ -10,10 +10,12 @@ import pytest
 from engine.qis_basket import (
     BASKET_SIGNAL_CHOICES,
     CARRY_MEMBER_ID,
+    align_member_navs,
     build_basket_returns,
     estimate_weights,
     member_id,
     member_label,
+    nav_series_from_payload,
     normalize_method,
     parse_member_id,
     parse_members,
@@ -108,3 +110,38 @@ def test_signal_choices_cover_subindices():
     assert "quantile" in BASKET_SIGNAL_CHOICES
     assert "garch_z" in BASKET_SIGNAL_CHOICES
     assert "regime2" in BASKET_SIGNAL_CHOICES
+
+
+def test_nav_series_prefers_nav_daily_over_chart():
+    payload = {
+        "nav": [{"d": "2024-01-02", "nav": 1.0}, {"d": "2024-01-04", "nav": 1.1}],
+        "nav_daily": [
+            {"d": "2024-01-02", "nav": 1.0},
+            {"d": "2024-01-03", "nav": 1.05},
+            {"d": "2024-01-04", "nav": 1.1},
+        ],
+    }
+    s = nav_series_from_payload(payload)
+    assert list(s.index) == ["2024-01-02", "2024-01-03", "2024-01-04"]
+
+
+def test_align_member_navs_handles_interleaved_calendars():
+    """Chart downsample with offset starts can leave almost no inner-join days;
+    union+ffill should recover a usable overlapping series."""
+    eq = pd.Series(
+        {f"2024-01-{d:02d}": 1.0 + 0.01 * i for i, d in enumerate([2, 4, 8, 10, 12, 16, 18, 22, 24, 26, 30])}
+    )
+    au = pd.Series(
+        {f"2024-01-{d:02d}": 1.0 + 0.02 * i for i, d in enumerate([3, 5, 9, 11, 15, 17, 19, 23, 25, 29, 31])}
+    )
+    # Inner join would be empty / 0; align must keep most union days after both start.
+    raw = pd.DataFrame({"eq": eq, "au": au}).dropna(how="any")
+    assert raw.shape[0] == 0
+    aligned = align_member_navs({"eq": eq, "au": au})
+    assert aligned.shape[0] >= 18
+    rets = aligned.pct_change().dropna(how="any")
+    assert rets.shape[0] >= 15
+    # On eq-only calendar days, AU NAV is ffilled → return ≈ 0
+    eq_only = [d for d in rets.index if d in eq.index and d not in au.index]
+    assert eq_only
+    assert abs(float(rets.loc[eq_only[0], "au"])) < 1e-12

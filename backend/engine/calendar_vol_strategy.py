@@ -1636,6 +1636,11 @@ class CalendarVolBacktestEngine:
             }
             for i in nav_idx
         ]
+        # Full daily series for basket / analytics (chart `nav` may be downsampled).
+        nav_daily = [
+            {"d": r["d"], "nav": round(float(r["nav"]) / base_nav, 6)}
+            for r in perf
+        ]
 
         dec_idx = list(range(0, len(perf), step))
         if dec_idx[-1] != len(perf) - 1:
@@ -1951,6 +1956,7 @@ class CalendarVolBacktestEngine:
                 "holdings_rows": len(self._holdings_rows),
             },
             "nav": nav_chart,
+            "nav_daily": nav_daily,
             "metrics": metrics,
             "yearly_metrics": yearly_metrics,
             "summary": {
