@@ -26,7 +26,8 @@ DEFAULT_TARGET_VOL = 0.10
 DEFAULT_CVAR_ALPHA = 0.05
 DEFAULT_LOOKBACK = 63
 DEFAULT_REBALANCE = 21
-DEFAULT_MEMBERS = ("cal:300:quantile", "cal:300:garch_z", "cal:300:regime2")
+# Default Basket = Vol RV assets only (Cal Vol optional in UI).
+DEFAULT_MEMBERS = ("vrv:300:balanced", "vrv:50:balanced", "vrv:1000:balanced")
 DEFAULT_VRV_TILT = "balanced"
 CARRY_MEMBER_ID = "carry:cross:na"
 
@@ -699,13 +700,14 @@ def run_qis_basket(
 
     if members is not None:
         mem_ids = parse_members(members)
-    else:
-        sigs = list(signals) if signals else list(BASKET_SIGNAL_CHOICES)
+    elif signals:
+        sigs = list(signals)
         for s in sigs:
             if s not in BASKET_SIGNAL_CHOICES:
                 raise ValueError(f"unknown signal {s!r}; choose {list(BASKET_SIGNAL_CHOICES)}")
-        mem_ids = [member_id(universe, s) for s in sigs]
-        mem_ids = parse_members(mem_ids)
+        mem_ids = parse_members([member_id(universe, s) for s in sigs])
+    else:
+        mem_ids = parse_members(list(DEFAULT_MEMBERS))
 
     navs: Dict[str, pd.Series] = {}
     labels: Dict[str, str] = {}

@@ -246,7 +246,7 @@ const markerDot = (fill: string) => (props: { cx?: number; cy?: number }) => {
 
 const QisView: React.FC = () => {
   const [strategies, setStrategies] = useState<QisStrategyInfo[]>([]);
-  const [family, setFamily] = useState<FamilyKey>('calendar_vol');
+  const [family, setFamily] = useState<FamilyKey>('csi300_vol_rv');
   const [universe, setUniverse] = useState<'50' | '300' | '1000'>('300');
   const [tenorPair, setTenorPair] = useState<QisTenorPair>('3M-6M');
   const [sideMode, setSideMode] = useState<QisSideMode>('both');
@@ -266,12 +266,14 @@ const QisView: React.FC = () => {
   const [basketTargetVol, setBasketTargetVol] = useState(0.1);
   const [basketCvarAlpha, setBasketCvarAlpha] = useState(0.05);
   const [basketUniverse, setBasketUniverse] = useState<'50' | '300' | '1000'>('300');
-  const [basketSignals, setBasketSignals] = useState<QisBasketSignal[]>([
-    'quantile',
-    'garch_z',
-    'regime2',
+  /** Cal Vol optional — empty by default so Basket can be Vol-RV-only. */
+  const [basketSignals, setBasketSignals] = useState<QisBasketSignal[]>([]);
+  /** Default legs: equity Vol RV assets (each universe = one sub-index). */
+  const [basketVrvAssets, setBasketVrvAssets] = useState<QisVolRvUniverse[]>([
+    '300',
+    '50',
+    '1000',
   ]);
-  const [basketVrvAssets, setBasketVrvAssets] = useState<QisVolRvUniverse[]>([]);
   const [basketIncludeCarry, setBasketIncludeCarry] = useState(false);
   const [basketLookback, setBasketLookback] = useState(63);
   const [basketRebalance, setBasketRebalance] = useState(21);
@@ -1166,15 +1168,20 @@ const QisView: React.FC = () => {
               </div>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-end">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Index</span>
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Vol RV</span>
                   <div className="flex rounded-md border border-slate-200 overflow-hidden">
-                    {CAL_VOL_UNIVERSES.map((u) => (
+                    {BASKET_VRV_ASSETS.map((u) => (
                       <button
                         key={u.key}
                         type="button"
                         disabled={loading}
-                        onClick={() => setBasketUniverse(u.key)}
-                        className={segBtnClass(basketUniverse === u.key, loading)}
+                        title={
+                          basketMemberCount <= 2 && basketVrvAssets.includes(u.key)
+                            ? '至少保留两个成分'
+                            : '每个资产作为一个 sub-index；可不选 Cal Vol'
+                        }
+                        onClick={() => toggleBasketVrv(u.key)}
+                        className={segBtnClass(basketVrvAssets.includes(u.key), loading)}
                       >
                         {u.label}
                       </button>
@@ -1182,42 +1189,25 @@ const QisView: React.FC = () => {
                   </div>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Cal Vol</span>
-                  <div className="flex rounded-md border border-slate-200 overflow-hidden">
-                    {BASKET_SIGNALS.map((s) => (
-                      <button
-                        key={s.key}
-                        type="button"
-                        disabled={loading}
-                        title={
-                          basketMemberCount <= 2 && basketSignals.includes(s.key)
-                            ? '至少保留两个成分'
-                            : undefined
-                        }
-                        onClick={() => toggleBasketSignal(s.key)}
-                        className={segBtnClass(basketSignals.includes(s.key), loading)}
-                      >
-                        {s.label}
-                      </button>
-                    ))}
-                  </div>
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Other</span>
+                  <button
+                    type="button"
+                    disabled={loading}
+                    title={
+                      basketMemberCount <= 2 && basketIncludeCarry
+                        ? '至少保留两个成分'
+                        : undefined
+                    }
+                    onClick={() => {
+                      if (basketIncludeCarry && basketMemberCount <= 2) return;
+                      setBasketIncludeCarry((on) => !on);
+                    }}
+                    className={segBtnClass(basketIncludeCarry, loading)}
+                  >
+                    Cross Carry
+                  </button>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Tenor</span>
-                  <div className="flex rounded-md border border-slate-200 overflow-hidden">
-                    {CAL_VOL_TENORS.map((t) => (
-                      <button
-                        key={t.key}
-                        type="button"
-                        disabled={loading}
-                        onClick={() => setTenorPair(t.key)}
-                        className={segBtnClass(tenorPair === t.key, loading)}
-                      >
-                        {t.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <span className="text-[10px] text-slate-400 font-mono">{basketMemberCount} legs</span>
                 <label className="flex items-center gap-1 text-[10px] text-slate-500">
                   Lookback
                   <input
@@ -1254,46 +1244,62 @@ const QisView: React.FC = () => {
               </div>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-end">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Vol RV</span>
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Cal Vol（可选）</span>
                   <div className="flex rounded-md border border-slate-200 overflow-hidden">
-                    {BASKET_VRV_ASSETS.map((u) => (
+                    {BASKET_SIGNALS.map((s) => (
                       <button
-                        key={u.key}
+                        key={s.key}
                         type="button"
                         disabled={loading}
                         title={
-                          basketMemberCount <= 2 && basketVrvAssets.includes(u.key)
+                          basketMemberCount <= 2 && basketSignals.includes(s.key)
                             ? '至少保留两个成分'
-                            : '每个资产作为一个 sub-index'
+                            : '可不选；仅选 Vol RV 亦可组 Basket'
                         }
-                        onClick={() => toggleBasketVrv(u.key)}
-                        className={segBtnClass(basketVrvAssets.includes(u.key), loading)}
+                        onClick={() => toggleBasketSignal(s.key)}
+                        className={segBtnClass(basketSignals.includes(s.key), loading)}
                       >
-                        {u.label}
+                        {s.label}
                       </button>
                     ))}
                   </div>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Other</span>
-                  <button
-                    type="button"
-                    disabled={loading}
-                    title={
-                      basketMemberCount <= 2 && basketIncludeCarry
-                        ? '至少保留两个成分'
-                        : undefined
-                    }
-                    onClick={() => {
-                      if (basketIncludeCarry && basketMemberCount <= 2) return;
-                      setBasketIncludeCarry((on) => !on);
-                    }}
-                    className={segBtnClass(basketIncludeCarry, loading)}
-                  >
-                    Cross Carry
-                  </button>
-                </div>
-                <span className="text-[10px] text-slate-400 font-mono">{basketMemberCount} legs</span>
+                {basketSignals.length > 0 && (
+                  <>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Cal Index</span>
+                      <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                        {CAL_VOL_UNIVERSES.map((u) => (
+                          <button
+                            key={u.key}
+                            type="button"
+                            disabled={loading}
+                            onClick={() => setBasketUniverse(u.key)}
+                            className={segBtnClass(basketUniverse === u.key, loading)}
+                          >
+                            {u.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Tenor</span>
+                      <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                        {CAL_VOL_TENORS.map((t) => (
+                          <button
+                            key={t.key}
+                            type="button"
+                            disabled={loading}
+                            onClick={() => setTenorPair(t.key)}
+                            className={segBtnClass(tenorPair === t.key, loading)}
+                          >
+                            {t.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           )}

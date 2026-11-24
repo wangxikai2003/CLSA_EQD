@@ -432,8 +432,8 @@ def list_strategies():
                     "lookback": 63,
                     "rebalance": 21,
                     "universe": "300",
-                    "signals": list(BASKET_SIGNAL_CHOICES),
-                    "vol_rv_assets": [],
+                    "signals": [],
+                    "vol_rv_assets": ["300", "50", "1000"],
                     "include_carry": False,
                 },
             },
@@ -573,9 +573,9 @@ def backtest(
                     raise ValueError(f"unknown basket signals {bad}; choose {list(BASKET_SIGNAL_CHOICES)}")
                 mems = parse_members([f"cal:{basket_universe}:{s}" for s in sigs])
             else:
-                mems = parse_members(
-                    [f"cal:{basket_universe}:{s}" for s in BASKET_SIGNAL_CHOICES]
-                )
+                from engine.qis_basket import DEFAULT_MEMBERS
+
+                mems = parse_members(list(DEFAULT_MEMBERS))
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
 
