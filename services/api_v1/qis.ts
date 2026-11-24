@@ -351,9 +351,17 @@ export function fetchQisBacktest(
     if (basket.spread_mode) q.set('spread_mode', String(basket.spread_mode));
   }
   const qs = q.toString();
+  const retry = _asRetryOpts(opts);
+  // Heavy QIS engines (Vol RV / Basket cold miss) can exceed one gateway wait;
+  // keep retries but prefer fewer, longer-backed-off attempts over spam.
   return getJsonWithRetry<QisBacktestResponse>(
     `/api/v1/qis/backtest/${strategyId}?${qs}`,
-    _asRetryOpts(opts)
+    {
+      ...retry,
+      maxAttempts: retry.maxAttempts ?? 6,
+      baseDelayMs: retry.baseDelayMs ?? 2000,
+      maxDelayMs: retry.maxDelayMs ?? 20000,
+    }
   );
 }
 

@@ -404,7 +404,11 @@ const QisView: React.FC = () => {
     const manualAtRequest = manualParamKey;
     setLoading(true);
     setErr(null);
-    setLoadStatus(refresh ? '强制重算并覆盖缓存…' : '加载回测（优先读库）…');
+    setLoadStatus(
+      refresh
+        ? '强制重算并覆盖缓存（可能需数分钟）…'
+        : '加载回测（优先读库；未命中缓存时首次会较慢）…',
+    );
     fetchQisBacktest(
       strategyId,
       refresh,
@@ -469,7 +473,21 @@ const QisView: React.FC = () => {
       })
       .catch((e) => {
         if ((e as Error)?.name === 'AbortError' || signal?.aborted) return;
-        setErr('回测仍在准备中，请稍后点 Refresh 再试。');
+        const raw = (e as Error)?.message || String(e);
+        // 504/503：多半是冷启动或未命中缓存时引擎重跑超过 Cloud Run 时限，不是参数坏了。
+        if (/\b504\b/.test(raw) || /deadline|timed out|Timeout/i.test(raw)) {
+          setErr(
+            '回测超时（服务端计算超过时限）。常见原因：首次未命中缓存需重跑引擎（Vol RV / Basket 多腿尤慢）。请稍后再点 Refresh；命中结果库后会快很多。',
+          );
+        } else if (/\b503\b|\b502\b|\b429\b/.test(raw)) {
+          setErr(
+            '服务冷启动或繁忙（' +
+              raw.slice(0, 120) +
+              '）。请稍后点 Refresh 再试；同参数第二次通常直接读缓存。',
+          );
+        } else {
+          setErr(`回测失败：${raw.slice(0, 240)}`);
+        }
       })
       .finally(() => {
         if (!signal?.aborted) setLoading(false);

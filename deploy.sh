@@ -68,7 +68,7 @@ gcloud run deploy "$SERVICE" \
   --memory 2Gi \
   --cpu 2 \
   --concurrency 40 \
-  --timeout 300 \
+  --timeout 600 \
   --no-traffic \
   --quiet
 

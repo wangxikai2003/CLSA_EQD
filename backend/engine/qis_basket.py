@@ -711,7 +711,8 @@ def run_qis_basket(
 
     navs: Dict[str, pd.Series] = {}
     labels: Dict[str, str] = {}
-    for mid in mem_ids:
+
+    def _one(mid: str) -> Tuple[str, pd.Series, str]:
         payload = load_member_payload(
             mid,
             initial_nav=initial_nav,
@@ -725,8 +726,21 @@ def run_qis_basket(
         s = nav_series_from_payload(payload)
         if s.empty:
             raise ValueError(f"member {mid} has empty NAV")
-        navs[mid] = s
-        labels[mid] = member_label(mid)
+        return mid, s, member_label(mid)
+
+    # Parallelize cold member engines — sequential 3× Vol RV often exceeds Cloud Run timeout.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    workers = min(4, max(1, len(mem_ids)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = {pool.submit(_one, mid): mid for mid in mem_ids}
+        for fut in as_completed(futs):
+            mid, s, lab = fut.result()
+            navs[mid] = s
+            labels[mid] = lab
+    # Keep member order stable for charts / weights.
+    navs = {mid: navs[mid] for mid in mem_ids}
+    labels = {mid: labels[mid] for mid in mem_ids}
 
     nav_df = pd.DataFrame(navs).dropna(how="any").sort_index()
     if nav_df.shape[0] < lb + 5:
