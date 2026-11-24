@@ -401,6 +401,11 @@ const QisView: React.FC = () => {
   const paramsDirty = appliedManualKey != null && appliedManualKey !== manualParamKey;
 
   const load = (refresh = false, signal?: AbortSignal) => {
+    if (family === 'qis_basket' && buildBasketMembers().length < 2) {
+      setLoading(false);
+      setErr('Basket 至少需要 2 个成分（可只选 Vol RV 资产，或混选 Cal Vol / Carry）。');
+      return;
+    }
     const manualAtRequest = manualParamKey;
     setLoading(true);
     setErr(null);
@@ -474,6 +479,20 @@ const QisView: React.FC = () => {
       .catch((e) => {
         if ((e as Error)?.name === 'AbortError' || signal?.aborted) return;
         const raw = (e as Error)?.message || String(e);
+        // Prefer JSON {"detail":"..."} over the long URL prefix (otherwise slice hides the reason).
+        let detail = '';
+        const detailMatch = raw.match(/"detail"\s*:\s*"((?:\\.|[^"\\])*)"/);
+        if (detailMatch) {
+          try {
+            detail = JSON.parse(`"${detailMatch[1]}"`);
+          } catch {
+            detail = detailMatch[1];
+          }
+        } else {
+          const after = raw.indexOf(': ');
+          detail = after >= 0 ? raw.slice(after + 2).trim() : raw;
+          if (detail.startsWith('/api/')) detail = raw.slice(0, 80);
+        }
         // 504/503：多半是冷启动或未命中缓存时引擎重跑超过 Cloud Run 时限，不是参数坏了。
         if (/\b504\b/.test(raw) || /deadline|timed out|Timeout/i.test(raw)) {
           setErr(
@@ -481,12 +500,16 @@ const QisView: React.FC = () => {
           );
         } else if (/\b503\b|\b502\b|\b429\b/.test(raw)) {
           setErr(
-            '服务冷启动或繁忙（' +
-              raw.slice(0, 120) +
-              '）。请稍后点 Refresh 再试；同参数第二次通常直接读缓存。',
+            `服务冷启动或繁忙${detail ? `：${detail.slice(0, 160)}` : ''}。请稍后点 Refresh；同参数第二次通常直接读缓存。`,
+          );
+        } else if (/\b400\b/.test(raw)) {
+          setErr(
+            detail
+              ? `参数无效：${detail.slice(0, 200)}`
+              : '参数无效（Basket 需至少 2 个成分，或检查 lookback / 成员组合）。',
           );
         } else {
-          setErr(`回测失败：${raw.slice(0, 240)}`);
+          setErr(`回测失败：${(detail || raw).slice(0, 240)}`);
         }
       })
       .finally(() => {
