@@ -27,14 +27,18 @@ DEFAULT_CVAR_ALPHA = 0.05
 DEFAULT_LOOKBACK = 63
 DEFAULT_REBALANCE = 21
 DEFAULT_MEMBERS = ("cal:300:quantile", "cal:300:garch_z", "cal:300:regime2")
+DEFAULT_VRV_TILT = "balanced"
+CARRY_MEMBER_ID = "carry:cross:na"
 
-# Catalog of selectable calendar-vol legs (sub-indices + Regime strategy).
+# Calendar-vol legs (sub-indices + Regime strategy).
 BASKET_SIGNAL_CHOICES = ("quantile", "garch_z", "regime2")
 BASKET_SIGNAL_LABELS = {
     "quantile": "Quantile",
     "garch_z": "GARCH-z",
     "regime2": "Regime",
 }
+# Member kinds: cal = Calendar Vol, vrv = Vol RV (one sub-index per asset), carry = Cross Carry.
+BASKET_MEMBER_KINDS = ("cal", "vrv", "carry")
 
 
 def normalize_method(method: str) -> str:
@@ -58,12 +62,45 @@ def member_id(universe: str, signal_mode: str) -> str:
     return f"cal:{universe}:{signal_mode}"
 
 
+def vrv_member_id(universe: str, tilt: str = DEFAULT_VRV_TILT) -> str:
+    return f"vrv:{universe}:{tilt or DEFAULT_VRV_TILT}"
+
+
 def parse_member_id(mid: str) -> Tuple[str, str, str]:
-    """Return (kind, universe, signal_mode)."""
+    """Return (kind, universe_or_key, signal_or_tilt).
+
+    Formats
+    -------
+    - cal:<universe>:<signal>   e.g. cal:300:quantile
+    - vrv:<universe>:<tilt>     e.g. vrv:AU:balanced  (each Vol RV asset = one sub-index)
+    - carry:cross:na            Cross Calendar Carry
+    """
     parts = str(mid).strip().split(":")
-    if len(parts) != 3 or parts[0] != "cal":
-        raise ValueError(f"unsupported basket member {mid!r}; expected cal:<uni>:<signal>")
-    return parts[0], parts[1], parts[2]
+    if len(parts) != 3:
+        raise ValueError(
+            f"unsupported basket member {mid!r}; "
+            "expected cal:<uni>:<signal> | vrv:<uni>:<tilt> | carry:cross:na"
+        )
+    kind, a, b = parts[0].lower(), parts[1], parts[2]
+    if kind not in BASKET_MEMBER_KINDS:
+        raise ValueError(f"unknown member kind {kind!r} in {mid!r}")
+    if kind == "carry":
+        if a.lower() not in ("cross", "cross_calendar_carry", "xcal"):
+            raise ValueError(f"unsupported carry member {mid!r}")
+        return "carry", "cross", "na"
+    if kind == "vrv":
+        if not a:
+            raise ValueError(f"vrv member missing universe: {mid!r}")
+        return "vrv", a, (b or DEFAULT_VRV_TILT).lower()
+    # cal
+    if a not in ("50", "300", "1000") and a not in BASKET_SIGNAL_CHOICES:
+        # allow any calendar UNIVERSES key; validated at load
+        pass
+    if b not in BASKET_SIGNAL_CHOICES:
+        raise ValueError(
+            f"unknown calendar signal {b!r} in {mid!r}; choose {list(BASKET_SIGNAL_CHOICES)}"
+        )
+    return "cal", a, b
 
 
 def parse_members(raw: Optional[str | Sequence[str]]) -> List[str]:
@@ -75,17 +112,46 @@ def parse_members(raw: Optional[str | Sequence[str]]) -> List[str]:
         items = [str(x).strip() for x in raw if str(x).strip()]
     if not items:
         raise ValueError("basket members empty")
-    # validate
     out: List[str] = []
     seen = set()
     for m in items:
-        parse_member_id(m)
-        if m not in seen:
-            out.append(m)
-            seen.add(m)
+        kind, a, b = parse_member_id(m)
+        if kind == "carry":
+            norm = CARRY_MEMBER_ID
+        elif kind == "vrv":
+            norm = vrv_member_id(a, b)
+        else:
+            norm = member_id(a, b)
+        if norm not in seen:
+            out.append(norm)
+            seen.add(norm)
     if len(out) < 2:
         raise ValueError("basket needs at least 2 members")
     return out
+
+
+def member_label(mid: str) -> str:
+    kind, a, b = parse_member_id(mid)
+    if kind == "carry":
+        return "Cross Calendar Carry"
+    if kind == "vrv":
+        try:
+            from engine.csi300_vol_rv_strategy import VOL_RV_UNIVERSES, normalize_universe
+
+            u = normalize_universe(a)
+            lab = VOL_RV_UNIVERSES[u].get("label", u)
+        except Exception:
+            lab = a
+        tilt = b if b != DEFAULT_VRV_TILT else ""
+        return f"Vol RV {lab}" + (f" ({tilt})" if tilt else "")
+    # cal
+    try:
+        from engine.calendar_vol_strategy import UNIVERSES
+
+        uni_lab = UNIVERSES.get(a, {}).get("index_name", a)
+    except Exception:
+        uni_lab = a
+    return f"{uni_lab} {BASKET_SIGNAL_LABELS.get(b, b)}"
 
 
 def basket_cache_sig(
@@ -440,6 +506,164 @@ def load_calendar_member_payload(
     return payload
 
 
+def load_vol_rv_member_payload(
+    universe: str,
+    tilt: str = DEFAULT_VRV_TILT,
+    *,
+    initial_nav: float,
+    source_key: str,
+    refresh: bool = False,
+) -> Dict[str, Any]:
+    """Load one Vol RV asset NAV (ablation off for speed)."""
+    from api.v1 import qis_results_store as qrs
+    from engine.csi300_vol_rv_strategy import (
+        CACHE_SIDE,
+        CACHE_SPREAD,
+        cache_tenor_for,
+        normalize_tilt,
+        normalize_universe,
+        run_csi300_vol_rv,
+        vol_rv_cache_sig,
+    )
+
+    uni = normalize_universe(universe)
+    t = normalize_tilt(tilt)
+    cache_tenor = cache_tenor_for(uni)
+    # Match live default knobs used by the Vol RV UI.
+    target_otm_delta = 0.15
+    long_delta_threshold = 0.05
+    hedger_mode = "eod_close"
+    sig = vol_rv_cache_sig(
+        t,
+        target_otm_delta,
+        long_delta_threshold,
+        hedger_mode,
+        None,
+        None,
+        None,
+        uni,
+    )
+    # Prefer rows written by the main Vol RV API (ablation may be present).
+    if not refresh:
+        hit = qrs.get_cached(
+            "csi300_vol_rv",
+            252,
+            initial_nav,
+            source_key,
+            tenor_pair=cache_tenor,
+            side_mode=CACHE_SIDE,
+            spread_mode=CACHE_SPREAD,
+            signal_mode=sig,
+        )
+        if hit is not None:
+            return hit
+
+    payload = run_csi300_vol_rv(
+        initial_nav=initial_nav,
+        tilt=t,
+        universe=uni,
+        target_otm_delta=target_otm_delta,
+        long_delta_threshold=long_delta_threshold,
+        hedger_mode=hedger_mode,
+        run_ablation=False,
+    )
+    qrs.put_cached(
+        "csi300_vol_rv",
+        252,
+        initial_nav,
+        source_key,
+        payload,
+        tenor_pair=cache_tenor,
+        side_mode=CACHE_SIDE,
+        spread_mode=CACHE_SPREAD,
+        signal_mode=sig,
+    )
+    return payload
+
+
+def load_carry_member_payload(
+    *,
+    initial_nav: float,
+    source_key: str,
+    refresh: bool = False,
+) -> Dict[str, Any]:
+    """Load Cross Calendar Carry NAV via the same cache PK as the carry API."""
+    from api.v1 import qis_results_store as qrs
+
+    # Mirror qis_backtest cost defaults (avoid circular import at module load).
+    slippage = 2e-4
+    fee = 0.0023 / 100.0
+    cs = qrs.cost_sig(slippage, fee)
+    if not refresh:
+        hit = qrs.get_cached(
+            "cross_calendar_carry",
+            qrs.CROSS_Z_WINDOW,
+            initial_nav,
+            source_key,
+            tenor_pair=qrs.CROSS_TENOR,
+            side_mode=qrs.CROSS_SIDE,
+            spread_mode=qrs.CROSS_SPREAD,
+            signal_mode=cs,
+        )
+        if hit is not None:
+            return hit
+
+    from api.v1 import qis_backtest as qb
+
+    payload = qb.run_cross_calendar_carry(initial_nav=initial_nav)
+    qrs.put_cached(
+        "cross_calendar_carry",
+        qrs.CROSS_Z_WINDOW,
+        initial_nav,
+        source_key,
+        payload,
+        tenor_pair=qrs.CROSS_TENOR,
+        side_mode=qrs.CROSS_SIDE,
+        spread_mode=qrs.CROSS_SPREAD,
+        signal_mode=cs,
+    )
+    return payload
+
+
+def load_member_payload(
+    mid: str,
+    *,
+    initial_nav: float,
+    z_window: int,
+    tenor_pair: str,
+    side_mode: str,
+    spread_mode: str,
+    source_key: str,
+    refresh: bool = False,
+) -> Dict[str, Any]:
+    kind, a, b = parse_member_id(mid)
+    if kind == "cal":
+        return load_calendar_member_payload(
+            a,
+            b,
+            initial_nav=initial_nav,
+            z_window=z_window,
+            tenor_pair=tenor_pair,
+            side_mode=side_mode,
+            spread_mode=spread_mode,
+            source_key=source_key,
+            refresh=refresh,
+        )
+    if kind == "vrv":
+        return load_vol_rv_member_payload(
+            a,
+            b,
+            initial_nav=initial_nav,
+            source_key=source_key,
+            refresh=refresh,
+        )
+    return load_carry_member_payload(
+        initial_nav=initial_nav,
+        source_key=source_key,
+        refresh=refresh,
+    )
+
+
 def run_qis_basket(
     *,
     initial_nav: float = 100_000_000.0,
@@ -486,10 +710,8 @@ def run_qis_basket(
     navs: Dict[str, pd.Series] = {}
     labels: Dict[str, str] = {}
     for mid in mem_ids:
-        _kind, uni, sig = parse_member_id(mid)
-        payload = load_calendar_member_payload(
-            uni,
-            sig,
+        payload = load_member_payload(
+            mid,
             initial_nav=initial_nav,
             z_window=z_window,
             tenor_pair=tenor_pair,
@@ -502,10 +724,7 @@ def run_qis_basket(
         if s.empty:
             raise ValueError(f"member {mid} has empty NAV")
         navs[mid] = s
-        from engine.calendar_vol_strategy import UNIVERSES
-
-        uni_lab = UNIVERSES.get(uni, {}).get("index_name", uni)
-        labels[mid] = f"{uni_lab} {BASKET_SIGNAL_LABELS.get(sig, sig)}"
+        labels[mid] = member_label(mid)
 
     nav_df = pd.DataFrame(navs).dropna(how="any").sort_index()
     if nav_df.shape[0] < lb + 5:

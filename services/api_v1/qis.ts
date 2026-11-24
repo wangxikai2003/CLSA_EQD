@@ -65,6 +65,7 @@ export interface QisBasketParams {
   rebalance?: number;
   universe?: '50' | '300' | '1000' | string;
   signals?: QisBasketSignal[] | string[];
+  /** Explicit member ids: cal:… / vrv:… / carry:cross:na */
   members?: string;
   tenor_pair?: QisTenorPair | string;
   side_mode?: QisSideMode | string;

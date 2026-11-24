@@ -9,12 +9,16 @@ import pytest
 
 from engine.qis_basket import (
     BASKET_SIGNAL_CHOICES,
+    CARRY_MEMBER_ID,
     build_basket_returns,
     estimate_weights,
     member_id,
+    member_label,
     normalize_method,
+    parse_member_id,
     parse_members,
     scale_to_target,
+    vrv_member_id,
 )
 
 
@@ -46,6 +50,16 @@ def test_normalize_and_parse_members():
     assert member_id("300", "regime2") == "cal:300:regime2"
     with pytest.raises(ValueError):
         parse_members(["cal:300:quantile"])
+
+
+def test_parse_vrv_and_carry_members():
+    assert vrv_member_id("AU") == "vrv:AU:balanced"
+    assert parse_member_id("vrv:SC:balanced") == ("vrv", "SC", "balanced")
+    assert parse_member_id(CARRY_MEMBER_ID) == ("carry", "cross", "na")
+    mixed = parse_members("cal:300:quantile,vrv:300:balanced,carry:cross:na")
+    assert mixed == ["cal:300:quantile", "vrv:300:balanced", CARRY_MEMBER_ID]
+    assert "Vol RV" in member_label("vrv:AU:balanced")
+    assert member_label(CARRY_MEMBER_ID) == "Cross Calendar Carry"
 
 
 def test_inverse_vol_weights_favor_low_vol():

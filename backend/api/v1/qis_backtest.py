@@ -353,7 +353,13 @@ def list_strategies():
         for key, u in UNIVERSES.items()
     ]
     from engine.csi300_vol_rv_strategy import STYLE_PRESETS, VOL_RV_UNIVERSES
-    from engine.qis_basket import BASKET_SIGNAL_CHOICES, BASKET_SIGNAL_LABELS, METHODS
+    from engine.qis_basket import (
+        BASKET_SIGNAL_CHOICES,
+        BASKET_SIGNAL_LABELS,
+        CARRY_MEMBER_ID,
+        METHODS,
+        vrv_member_id,
+    )
 
     return {
         "strategies": [
@@ -399,14 +405,25 @@ def list_strategies():
                 "name": "QIS Basket",
                 "status": "live",
                 "blurb": (
-                    "Risk parity / CVaR risk parity over Calendar Vol sub-indices "
-                    f"({', '.join(BASKET_SIGNAL_LABELS[s] for s in BASKET_SIGNAL_CHOICES)}) "
-                    "with selectable target vol"
+                    "Risk parity / CVaR risk parity over Calendar Vol sub-indices, "
+                    "Vol RV assets (each universe = one sub-index), and Cross Carry; "
+                    "selectable target vol"
                 ),
                 "family": "qis_basket",
                 "methods": list(METHODS),
                 "signals": [
                     {"key": s, "label": BASKET_SIGNAL_LABELS[s]} for s in BASKET_SIGNAL_CHOICES
+                ],
+                "vol_rv_assets": [
+                    {
+                        "key": u["key"],
+                        "label": u["label"],
+                        "member_id": vrv_member_id(u["key"]),
+                    }
+                    for u in VOL_RV_UNIVERSES.values()
+                ],
+                "other_strategies": [
+                    {"key": "carry", "label": "Cross Calendar Carry", "member_id": CARRY_MEMBER_ID}
                 ],
                 "defaults": {
                     "method": "vol_rp",
@@ -416,6 +433,8 @@ def list_strategies():
                     "rebalance": 21,
                     "universe": "300",
                     "signals": list(BASKET_SIGNAL_CHOICES),
+                    "vol_rv_assets": [],
+                    "include_carry": False,
                 },
             },
         ],
@@ -427,6 +446,7 @@ def list_strategies():
         "vol_rv_universes": list(VOL_RV_UNIVERSES.keys()),
         "basket_methods": list(METHODS),
         "basket_signals": list(BASKET_SIGNAL_CHOICES),
+        "basket_vol_rv_assets": list(VOL_RV_UNIVERSES.keys()),
     }
 
 

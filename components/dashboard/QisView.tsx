@@ -131,9 +131,18 @@ const BASKET_SIGNALS: { key: QisBasketSignal; label: string }[] = [
   { key: 'regime2', label: 'Regime' },
 ];
 
+/** Vol RV: each asset universe is one basket sub-index. */
+const BASKET_VRV_ASSETS: { key: QisVolRvUniverse; label: string }[] = [
+  { key: '300', label: 'VRV CSI300' },
+  { key: '50', label: 'VRV SSE50' },
+  { key: '1000', label: 'VRV CSI1000' },
+  { key: 'AU', label: 'VRV Gold' },
+  { key: 'SC', label: 'VRV Crude' },
+];
+
 const BASKET_TARGET_VOLS = [0.05, 0.08, 0.1, 0.12, 0.15];
 
-const BASKET_COLORS = ['#EAB308', '#7C3AED', '#0F766E', '#C2410C', '#2563EB', '#A16207'];
+const BASKET_COLORS = ['#EAB308', '#7C3AED', '#0F766E', '#C2410C', '#2563EB', '#A16207', '#DC2626', '#16A34A'];
 
 const VOL_RV_TILTS: { key: QisVolRvTilt; label: string }[] = [
   { key: 'balanced', label: 'Balanced' },
@@ -262,6 +271,8 @@ const QisView: React.FC = () => {
     'garch_z',
     'regime2',
   ]);
+  const [basketVrvAssets, setBasketVrvAssets] = useState<QisVolRvUniverse[]>([]);
+  const [basketIncludeCarry, setBasketIncludeCarry] = useState(false);
   const [basketLookback, setBasketLookback] = useState(63);
   const [basketRebalance, setBasketRebalance] = useState(21);
   const [data, setData] = useState<QisBacktestResponse | null>(null);
@@ -281,13 +292,37 @@ const QisView: React.FC = () => {
     return CAL_VOL_UNIVERSES.find((u) => u.key === universe)?.id ?? 'equity_3_6_calendar_vol_300';
   }, [family, universe]);
 
+  const basketMemberCount =
+    basketSignals.length + basketVrvAssets.length + (basketIncludeCarry ? 1 : 0);
+
+  const buildBasketMembers = () => {
+    const mems: string[] = [
+      ...basketSignals.map((s) => `cal:${basketUniverse}:${s}`),
+      ...basketVrvAssets.map((u) => `vrv:${u}:balanced`),
+    ];
+    if (basketIncludeCarry) mems.push('carry:cross:na');
+    return mems;
+  };
+
   const toggleBasketSignal = (sig: QisBasketSignal) => {
     setBasketSignals((prev) => {
       if (prev.includes(sig)) {
-        if (prev.length <= 2) return prev; // need ≥2 members
-        return prev.filter((s) => s !== sig);
+        const next = prev.filter((s) => s !== sig);
+        if (next.length + basketVrvAssets.length + (basketIncludeCarry ? 1 : 0) < 2) return prev;
+        return next;
       }
       return [...prev, sig];
+    });
+  };
+
+  const toggleBasketVrv = (uni: QisVolRvUniverse) => {
+    setBasketVrvAssets((prev) => {
+      if (prev.includes(uni)) {
+        const next = prev.filter((u) => u !== uni);
+        if (basketSignals.length + next.length + (basketIncludeCarry ? 1 : 0) < 2) return prev;
+        return next;
+      }
+      return [...prev, uni];
     });
   };
 
@@ -314,6 +349,8 @@ const QisView: React.FC = () => {
         basketCvarAlpha,
         basketUniverse,
         basketSignals: [...basketSignals].sort(),
+        basketVrvAssets: [...basketVrvAssets].sort(),
+        basketIncludeCarry,
       }),
     [
       strategyId,
@@ -330,6 +367,8 @@ const QisView: React.FC = () => {
       basketCvarAlpha,
       basketUniverse,
       basketSignals,
+      basketVrvAssets,
+      basketIncludeCarry,
     ],
   );
 
@@ -403,7 +442,7 @@ const QisView: React.FC = () => {
             lookback: basketLookback,
             rebalance: basketRebalance,
             universe: basketUniverse,
-            signals: basketSignals,
+            members: buildBasketMembers().join(','),
             tenor_pair: tenorPair,
             side_mode: sideMode,
             spread_mode: spreadMode,
@@ -1143,14 +1182,18 @@ const QisView: React.FC = () => {
                   </div>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Sub-index</span>
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Cal Vol</span>
                   <div className="flex rounded-md border border-slate-200 overflow-hidden">
                     {BASKET_SIGNALS.map((s) => (
                       <button
                         key={s.key}
                         type="button"
                         disabled={loading}
-                        title={basketSignals.length <= 2 && basketSignals.includes(s.key) ? '至少保留两个成分' : undefined}
+                        title={
+                          basketMemberCount <= 2 && basketSignals.includes(s.key)
+                            ? '至少保留两个成分'
+                            : undefined
+                        }
                         onClick={() => toggleBasketSignal(s.key)}
                         className={segBtnClass(basketSignals.includes(s.key), loading)}
                       >
@@ -1208,6 +1251,49 @@ const QisView: React.FC = () => {
                   />
                   d
                 </label>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-end">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Vol RV</span>
+                  <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                    {BASKET_VRV_ASSETS.map((u) => (
+                      <button
+                        key={u.key}
+                        type="button"
+                        disabled={loading}
+                        title={
+                          basketMemberCount <= 2 && basketVrvAssets.includes(u.key)
+                            ? '至少保留两个成分'
+                            : '每个资产作为一个 sub-index'
+                        }
+                        onClick={() => toggleBasketVrv(u.key)}
+                        className={segBtnClass(basketVrvAssets.includes(u.key), loading)}
+                      >
+                        {u.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Other</span>
+                  <button
+                    type="button"
+                    disabled={loading}
+                    title={
+                      basketMemberCount <= 2 && basketIncludeCarry
+                        ? '至少保留两个成分'
+                        : undefined
+                    }
+                    onClick={() => {
+                      if (basketIncludeCarry && basketMemberCount <= 2) return;
+                      setBasketIncludeCarry((on) => !on);
+                    }}
+                    className={segBtnClass(basketIncludeCarry, loading)}
+                  >
+                    Cross Carry
+                  </button>
+                </div>
+                <span className="text-[10px] text-slate-400 font-mono">{basketMemberCount} legs</span>
               </div>
             </div>
           )}
