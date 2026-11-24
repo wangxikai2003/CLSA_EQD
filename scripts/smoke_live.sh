@@ -73,6 +73,20 @@ if u != "SC":
     sys.exit(f"vol_rv SC universe={u!r}")
 print("OK  csi300_vol_rv balanced u=SC")
 PY
+# Overseas Vol RV (COMEX GC / NYMEX CL / CME ES — hedge=ES fut).
+for u in GC CL ES; do
+  curl_ok "/api/v1/qis/backtest/csi300_vol_rv?tilt=balanced&universe=${u}&ablation=false"
+  EXPECT_U="$u" python3 - <<'PY'
+import json, os, sys
+body = open("/tmp/clsa_smoke_body").read()
+data = json.loads(body)
+got = (data.get("params") or {}).get("universe")
+exp = os.environ["EXPECT_U"]
+if got != exp:
+    sys.exit(f"vol_rv {exp} universe={got!r}")
+print(f"OK  csi300_vol_rv balanced u={exp}")
+PY
+done
 # Catalog only — full basket backtest may cold-run multiple calendar legs.
 curl_ok "/api/v1/qis/strategies"
 python3 - <<'PY'

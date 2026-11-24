@@ -24,6 +24,7 @@ PANEL_CANDIDATES = [
 ]
 TS_CANDIDATES = [
     ROOT / "data" / "corr_realized_timeseries.parquet",
+    ROOT / "data" / "us_realized_corr_timeseries.parquet",
 ]
 MAT_CANDIDATES = [
     ROOT / "data" / "corr_web_matrices.json",

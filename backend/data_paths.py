@@ -30,7 +30,11 @@ HOT_FILES = (
     "commodity_fut.sqlite",
     "commodity_vol_au.sqlite",
     "commodity_vol_sc.sqlite",
+    "commodity_vol_gc.sqlite",
+    "commodity_vol_cl.sqlite",
+    "commodity_vol_es.sqlite",
     "commodity_vol.sqlite",
+    "overseas_vol.sqlite",
     "qis_results.sqlite",
     "rates_eod.parquet",
     "index_spot.parquet",
@@ -91,22 +95,33 @@ def commodity_vol() -> Optional[Path]:
             "commodity_vol_lite.sqlite",
             "commodity_vol_au.sqlite",
             "commodity_vol_sc.sqlite",
+            "commodity_vol_gc.sqlite",
+            "commodity_vol_cl.sqlite",
+            "commodity_vol_es.sqlite",
+            "overseas_vol.sqlite",
         ]
     )
 
 
 def commodity_vol_for(product: str) -> Optional[Path]:
-    """Resolve a commodity option DB that contains ``product`` (AU/SC/…)."""
+    """Resolve a commodity option DB that contains ``product`` (AU/SC/GC/CL/ES/…)."""
     prod = str(product or "").strip().upper()
     names = [
         "commodity_vol.sqlite",
         "commodity_vol_lite.sqlite",
         f"commodity_vol_{prod.lower()}.sqlite" if prod else "",
+        "overseas_vol.sqlite",
     ]
     if prod == "AU":
         names.append("commodity_vol_au.sqlite")
     if prod == "SC":
         names.append("commodity_vol_sc.sqlite")
+    if prod == "GC":
+        names.extend(["commodity_vol_gc.sqlite", "overseas_vol.sqlite"])
+    if prod == "CL":
+        names.extend(["commodity_vol_cl.sqlite", "overseas_vol.sqlite"])
+    if prod == "ES":
+        names.extend(["commodity_vol_es.sqlite", "overseas_vol.sqlite"])
     for name in names:
         if not name:
             continue

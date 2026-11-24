@@ -31,7 +31,7 @@ def main() -> None:
     if args:
         want_u = []
         for a in args:
-            au = a.upper() if a.upper() in ("AU", "SC") else a
+            au = a.upper() if a.upper() in ("AU", "SC", "GC", "CL", "ES") else a
             if au in VOL_RV_UNIVERSES:
                 want_u.append(au)
         want_t = [a for a in args if a in STYLE_PRESETS]

@@ -5,12 +5,15 @@ Daily overlapping vintages:
   futures delta hedge via pluggable hedgers, premium-based long leverage (Step 3),
   and Step1/2/3 ablation NAV paths.
 
-Universes: CSI300 (IO), SSE50 (HO), CSI1000 (MO), SHFE Gold (AU), INE Crude (SC).
+Universes: CSI300 (IO), SSE50 (HO), CSI1000 (MO), SHFE Gold (AU), INE Crude (SC),
+COMEX Gold (GC), NYMEX WTI (CL), CME E-mini S&P (ES) — overseas via CMDS
+→ commodity_vol_{gc,cl,es}.sqlite. ES hedge leg = ES futures (not SPX spot).
 Does not modify calendar_vol_strategy.
 """
 from __future__ import annotations
 
 import math
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -143,6 +146,52 @@ VOL_RV_UNIVERSES: Dict[str, Dict[str, Any]] = {
         "quarter_months": tuple(range(1, 13)),
         "cache_tenor": "SC-SC",
     },
+    "GC": {
+        "key": "GC",
+        "label": "COMEX Gold",
+        "strategy_name": "COMEX Gold Vol RV",
+        "product": "GC",
+        "fut_root": "GC",
+        "spot_code": None,
+        "spot_mode": "front_fut",
+        "db": "commodity",
+        # COMEX GC: USD/oz, 100 troy oz.
+        "m_opt": 100.0,
+        "m_fut": 100.0,
+        "quarter_months": (2, 4, 6, 8, 10, 12),
+        "cache_tenor": "GC-GC",
+    },
+    "CL": {
+        "key": "CL",
+        "label": "NYMEX WTI",
+        "strategy_name": "NYMEX WTI Vol RV",
+        "product": "CL",
+        "fut_root": "CL",
+        "spot_code": None,
+        "spot_mode": "front_fut",
+        "db": "commodity",
+        # NYMEX CL: USD/bbl, 1000 barrels.
+        "m_opt": 1000.0,
+        "m_fut": 1000.0,
+        "quarter_months": tuple(range(1, 13)),
+        "cache_tenor": "CL-CL",
+    },
+    "ES": {
+        "key": "ES",
+        "label": "CME E-mini S&P",
+        "strategy_name": "E-mini S&P Vol RV",
+        "product": "ES",
+        "fut_root": "ES",
+        "spot_code": None,
+        # Confirmed: hedge with ES futures, not SPX/NDX spot.
+        "spot_mode": "front_fut",
+        "db": "commodity",
+        # E-mini S&P: USD 50 × index.
+        "m_opt": 50.0,
+        "m_fut": 50.0,
+        "quarter_months": (3, 6, 9, 12),
+        "cache_tenor": "ES-ES",
+    },
 }
 
 
@@ -177,6 +226,30 @@ def _commodity_vol_db(product: str) -> Path:
         ordered.append(ROOT / "data" / "commodity_vol_au.sqlite")
     if prod == "SC":
         ordered.append(ROOT / "data" / "commodity_vol_sc.sqlite")
+    if prod == "GC":
+        ordered.extend(
+            [
+                ROOT / "data" / "commodity_vol_gc.sqlite",
+                ROOT.parent / "data" / "commodity_vol_gc.sqlite",
+                ROOT.parent / "data" / "overseas_vol.sqlite",
+            ]
+        )
+    if prod == "CL":
+        ordered.extend(
+            [
+                ROOT / "data" / "commodity_vol_cl.sqlite",
+                ROOT.parent / "data" / "commodity_vol_cl.sqlite",
+                ROOT.parent / "data" / "overseas_vol.sqlite",
+            ]
+        )
+    if prod == "ES":
+        ordered.extend(
+            [
+                ROOT / "data" / "commodity_vol_es.sqlite",
+                ROOT.parent / "data" / "commodity_vol_es.sqlite",
+                ROOT.parent / "data" / "overseas_vol.sqlite",
+            ]
+        )
     for p in ordered:
         if not (p.exists() and p.stat().st_size > 0):
             continue
@@ -223,9 +296,22 @@ def normalize_universe(universe: Optional[str]) -> str:
         "crude": "SC",
         "oil": "SC",
         "ine_crude": "SC",
+        "gc": "GC",
+        "comex_gold": "GC",
+        "comex": "GC",
+        "cl": "CL",
+        "wti": "CL",
+        "nymex": "CL",
+        "nymex_wti": "CL",
+        "es": "ES",
+        "spx": "ES",
+        "emini": "ES",
+        "e_mini": "ES",
+        "e-mini": "ES",
+        "mes": "ES",
     }
     key = aliases.get(raw.lower(), raw)
-    if key.upper() in ("AU", "SC"):
+    if key.upper() in ("AU", "SC", "GC", "CL", "ES"):
         key = key.upper()
     if key not in VOL_RV_UNIVERSES:
         raise ValueError(f"unknown universe {universe!r}; choose {list(VOL_RV_UNIVERSES)}")
@@ -306,6 +392,35 @@ def select_short_expiry(
     return exps[-1] if exps else None
 
 
+def select_long_expiry_candidates(
+    day_opts: pd.DataFrame,
+    short_expiry: str,
+    today: str,
+    dates: Sequence[str],
+    prefer_quarter: bool = True,
+    quarter_months: Sequence[int] = (3, 6, 9, 12),
+) -> List[str]:
+    """Ordered long-expiry candidates (~90 DTE quarters first, then other deferred)."""
+    exps = sorted({str(x)[:10] for x in day_opts["expiry"].astype(str).unique()})
+    candidates = [e for e in exps if e > short_expiry]
+    if not candidates:
+        return []
+    if prefer_quarter:
+        quarters = [e for e in candidates if _is_quarter_expiry(e, quarter_months)]
+        if quarters:
+            scored = []
+            for e in quarters:
+                dte = trading_days_to_expiry(dates, today, e)
+                # Prefer ~90 DTE, then deeper slices (more strikes) as soft tie-break later.
+                n = int((day_opts["expiry"].astype(str).str[:10] == e).sum())
+                scored.append((abs(dte - 90), -n, e))
+            scored.sort()
+            ordered = [e for _, _, e in scored]
+            rest = [e for e in candidates if e not in ordered]
+            return ordered + rest
+    return candidates
+
+
 def select_long_expiry(
     day_opts: pd.DataFrame,
     short_expiry: str,
@@ -314,28 +429,54 @@ def select_long_expiry(
     prefer_quarter: bool = True,
     quarter_months: Sequence[int] = (3, 6, 9, 12),
 ) -> Optional[str]:
-    exps = sorted({str(x)[:10] for x in day_opts["expiry"].astype(str).unique()})
-    candidates = [e for e in exps if e > short_expiry]
-    if not candidates:
-        return None
-    if prefer_quarter:
-        quarters = [e for e in candidates if _is_quarter_expiry(e, quarter_months)]
-        if quarters:
-            # Prefer ~3M–6M remaining.
-            scored = []
-            for e in quarters:
-                dte = trading_days_to_expiry(dates, today, e)
-                scored.append((abs(dte - 90), e))
-            scored.sort()
-            return scored[0][1]
-    return candidates[0]
+    cands = select_long_expiry_candidates(
+        day_opts, short_expiry, today, dates, prefer_quarter, quarter_months
+    )
+    return cands[0] if cands else None
 
 
 def pick_atm_strike(slice_: pd.DataFrame, forward: float) -> Optional[float]:
-    strikes = sorted({float(k) for k in slice_["strike"].unique()})
-    if not strikes:
+    """Nearest strike to forward; prefer strikes listed on both call and put."""
+    cp = slice_["cp"].astype(str).str.upper().str[:1]
+    calls = set(float(k) for k in slice_.loc[cp == "C", "strike"])
+    puts = set(float(k) for k in slice_.loc[cp == "P", "strike"])
+    both = sorted(calls & puts)
+    pool = both if both else sorted(calls | puts)
+    if not pool:
         return None
-    return min(strikes, key=lambda k: abs(k - float(forward)))
+    return min(pool, key=lambda k: abs(k - float(forward)))
+
+
+def _is_valid_ym(ym: Any) -> bool:
+    s = str(ym or "").strip()
+    return len(s) == 4 and s.isdigit()
+
+
+def _is_continuous_code(code: Any, root: str) -> bool:
+    """True for CME continuous roots like ESc1 / GCc1 (not dated ESH25)."""
+    c = str(code or "").upper()
+    r = str(root or "").upper()
+    if not r or not c.startswith(r):
+        return False
+    rest = c[len(r) :]
+    return bool(re.fullmatch(r"[CV]\d{1,2}", rest))
+
+
+def _ranked_fut_day(day_fut: pd.DataFrame, root: str) -> pd.DataFrame:
+    """Prefer continuous c1, then dated YYMM ascending; drop empty ym noise."""
+    if day_fut is None or day_fut.empty:
+        return day_fut
+    g = day_fut.copy()
+    g["_cont"] = g["wind_code"].map(lambda c: _is_continuous_code(c, root))
+    g["_ym_ok"] = g["contract_ym"].map(_is_valid_ym)
+    g["_ym_sort"] = g["contract_ym"].map(lambda y: str(y) if _is_valid_ym(y) else "9999")
+    # continuous first (c1 before c2…), then dated months
+    g["_rank"] = 0
+    cont = g["_cont"]
+    g.loc[cont, "_rank"] = g.loc[cont, "wind_code"].astype(str).str.extract(r"(\d+)$", expand=False).fillna("99").astype(int)
+    g.loc[~cont & g["_ym_ok"], "_rank"] = 100 + g.loc[~cont & g["_ym_ok"], "_ym_sort"].astype(int)
+    g.loc[~cont & ~g["_ym_ok"], "_rank"] = 10_000
+    return g.sort_values(["_rank", "wind_code"]).drop(columns=["_cont", "_ym_ok", "_ym_sort", "_rank"])
 
 
 def pick_otm_strike_by_delta(
@@ -531,16 +672,19 @@ class Csi300VolRvEngine:
         opt["cp"] = opt["cp"].astype(str).str.upper().str[:1]
 
         if self.spot_mode == "front_fut":
-            # Commodity: use front-month futures close as spot proxy for basis/greeks.
-            front = (
-                fut.sort_values(["trade_date", "contract_ym"])
-                .groupby("trade_date", as_index=False)
-                .first()
-                .set_index("trade_date")["close"]
-                .astype(float)
-                .sort_index()
+            # Prefer continuous c1 (e.g. ESc1) when dated near months are gone from CMDS.
+            root = str(self.fut_root)
+            pieces = []
+            for td, g in fut.groupby("trade_date"):
+                ranked = _ranked_fut_day(g, root)
+                if ranked is None or ranked.empty:
+                    continue
+                pieces.append((td, float(ranked.iloc[0]["close"])))
+            spot = (
+                pd.Series({td: px for td, px in pieces}, dtype=float).sort_index()
+                if pieces
+                else pd.Series(dtype=float)
             )
-            spot = front
         else:
             spot_df = pd.read_parquet(_spot_path())
             spot_df = spot_df[spot_df["wind_code"] == str(self.spot_code)].copy()
@@ -554,12 +698,12 @@ class Csi300VolRvEngine:
     def _pick_if(self, day_fut: pd.DataFrame, prefer_ym: Optional[str] = None) -> Tuple[str, float, str]:
         if day_fut is None or day_fut.empty:
             return "", float("nan"), ""
-        g = day_fut.sort_values("contract_ym")
-        if prefer_ym:
-            hit = g[g["contract_ym"].astype(str) == str(prefer_ym)]
+        if prefer_ym and _is_valid_ym(prefer_ym):
+            hit = day_fut[day_fut["contract_ym"].astype(str) == str(prefer_ym)]
             if not hit.empty:
                 r = hit.iloc[0]
                 return str(r["wind_code"]), float(r["close"]), str(r["contract_ym"])
+        g = _ranked_fut_day(day_fut, str(self.fut_root))
         r = g.iloc[0]
         return str(r["wind_code"]), float(r["close"]), str(r["contract_ym"])
 
@@ -721,26 +865,14 @@ class Csi300VolRvEngine:
         short_exp = select_short_expiry(day_opts, d, dates, self.short_min_dte)
         if short_exp is None:
             return None
-        long_exp = select_long_expiry(
-            day_opts,
-            short_exp,
-            d,
-            dates,
-            prefer_quarter=True,
-            quarter_months=self.quarter_months,
-        )
-        if long_exp is None:
-            return None
         short_slice = day_opts[day_opts["expiry"].astype(str).str[:10] == short_exp]
-        long_slice = day_opts[day_opts["expiry"].astype(str).str[:10] == long_exp]
-        if short_slice.empty or long_slice.empty:
+        if short_slice.empty:
             return None
         F_s = float(short_slice["forward"].median())
-        F_l = float(long_slice["forward"].median())
-        if not (math.isfinite(F_s) and math.isfinite(F_l) and F_s > 0 and F_l > 0):
+        if not (math.isfinite(F_s) and F_s > 0):
             return None
 
-        # Probe ATM premium for short sizing.
+        # Probe ATM premium for short sizing (needs both C and P).
         K_atm = pick_atm_strike(short_slice, F_s)
         if K_atm is None:
             return None
@@ -758,10 +890,36 @@ class Csi300VolRvEngine:
             return None
 
         short_legs = self._build_strangle(short_slice, F_s, n_short, leg="short", otm_delta=None)
-        long_legs = self._build_strangle(
-            long_slice, F_l, n_short * float(leverage), leg="long", otm_delta=self.target_otm_delta
+        if not short_legs:
+            return None
+
+        # Deferred leg: try ~90 DTE first, then deeper listed months with enough strikes
+        # (CMDS often keeps only far ES months after near dated futures drop off).
+        long_cands = select_long_expiry_candidates(
+            day_opts,
+            short_exp,
+            d,
+            dates,
+            prefer_quarter=True,
+            quarter_months=self.quarter_months,
         )
-        if not short_legs or not long_legs:
+        long_legs = None
+        long_exp = None
+        F_l = float("nan")
+        for cand in long_cands:
+            long_slice = day_opts[day_opts["expiry"].astype(str).str[:10] == cand]
+            if long_slice.empty or len(long_slice) < 4:
+                continue
+            F_try = float(long_slice["forward"].median())
+            if not (math.isfinite(F_try) and F_try > 0):
+                continue
+            legs = self._build_strangle(
+                long_slice, F_try, n_short * float(leverage), leg="long", otm_delta=self.target_otm_delta
+            )
+            if legs:
+                long_legs, long_exp, F_l = legs, cand, F_try
+                break
+        if not long_legs or long_exp is None:
             return None
         long_prem = sum(abs(p.mid) for p in long_legs)
         premium_pct = long_prem / F_l if F_l > 0 else float("nan")
@@ -1096,12 +1254,13 @@ class Csi300VolRvEngine:
             else:
                 dec = hedger.compute_eod_hedge(ctx)
 
-            # Map IF codes: front for short, deferred for long.
+            # Map IF codes: front (c1 / nearest dated) for short; next dated for long.
             code_s, px_s, _ = self._pick_if(day_fut)
-            code_l, px_l, _ = self._pick_if(day_fut)
-            if len(day_fut) >= 2:
-                g = day_fut.sort_values("contract_ym")
-                code_l, px_l = str(g.iloc[-1]["wind_code"]), float(g.iloc[-1]["close"])
+            code_l, px_l = code_s, px_s
+            ranked = _ranked_fut_day(day_fut, str(self.fut_root))
+            if ranked is not None and len(ranked) >= 2:
+                r1 = ranked.iloc[1]
+                code_l, px_l = str(r1["wind_code"]), float(r1["close"])
             t_s = float(dec.target_futures_positions.get("IF_short", 0.0))
             t_l = float(dec.target_futures_positions.get("IF_long", 0.0))
             d_s = t_s - book.fut_short
@@ -1178,7 +1337,13 @@ class Csi300VolRvEngine:
             dates = [d for d in dates if d >= self.start_date]
         if self.end_date:
             dates = [d for d in dates if d <= self.end_date]
-        min_days = 60 if (self.start_date or self.end_date) else 300
+        # Equity CFFEX books are long; overseas GC/CL/ES (and AU/SC extracts) are shorter.
+        if self.start_date or self.end_date:
+            min_days = 60
+        elif str(self.cfg.get("db") or "") == "commodity":
+            min_days = 60
+        else:
+            min_days = 300
         if len(dates) < min_days:
             raise RuntimeError(f"Insufficient IO/IF history: {len(dates)} days")
 

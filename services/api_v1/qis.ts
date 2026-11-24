@@ -52,7 +52,7 @@ export type QisSignalMode =
   | 'regime_fade'
   | 'regime2';
 export type QisVolRvTilt = 'balanced' | 'carry' | 'defensive';
-export type QisVolRvUniverse = '300' | '50' | '1000' | 'AU' | 'SC';
+export type QisVolRvUniverse = '300' | '50' | '1000' | 'AU' | 'SC' | 'GC' | 'CL' | 'ES';
 export type QisHedgerMode = 'eod_close' | 'intraday_curve';
 export type QisBasketMethod = 'vol_rp' | 'cvar_rp';
 export type QisBasketSignal = 'quantile' | 'garch_z' | 'regime2';

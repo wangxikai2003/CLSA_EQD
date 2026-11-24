@@ -20,10 +20,13 @@ COPY data/cffex_vol.sqlite /app/data/cffex_vol.sqlite
 COPY data/rates_eod.parquet /app/data/rates_eod.parquet
 COPY data/index_spot.parquet /app/data/index_spot.parquet
 # Slim commodity futures-only DB (~20MB); full commodity_vol.sqlite (~1.4G) not shipped.
-# Product extracts for Vol RV commodity universes (AU gold, SC crude).
+# Product extracts for Vol RV: AU/SC domestic + GC/CL/ES overseas (COMEX/NYMEX/CME).
 COPY data/commodity_fut.sqlite /app/data/commodity_fut.sqlite
 COPY data/commodity_vol_au.sqlite /app/data/commodity_vol_au.sqlite
 COPY data/commodity_vol_sc.sqlite /app/data/commodity_vol_sc.sqlite
+COPY data/commodity_vol_gc.sqlite /app/data/commodity_vol_gc.sqlite
+COPY data/commodity_vol_cl.sqlite /app/data/commodity_vol_cl.sqlite
+COPY data/commodity_vol_es.sqlite /app/data/commodity_vol_es.sqlite
 COPY data/vol_spread_levels.parquet /app/data/vol_spread_levels.parquet
 # Realized Correlation web panels (Market/Spread Corr tabs).
 # Runtime reads corr_web_matrices.json (see realized_corr_service). Do not COPY
@@ -31,6 +34,8 @@ COPY data/vol_spread_levels.parquet /app/data/vol_spread_levels.parquet
 # loader is switched off JSON — they are research artifacts, not image inputs.
 COPY data/corr_mark_cmds_panel.parquet /app/data/corr_mark_cmds_panel.parquet
 COPY data/corr_realized_timeseries.parquet /app/data/corr_realized_timeseries.parquet
+COPY data/us_realized_corr_timeseries.parquet /app/data/us_realized_corr_timeseries.parquet
+COPY data/ndx_implied_corr_surface.parquet /app/data/ndx_implied_corr_surface.parquet
 COPY data/corr_web_matrices.json /app/data/corr_web_matrices.json
 COPY data/corr_mark_universe.csv /app/data/corr_mark_universe.csv
 # Runtime imports corr_mark_cmds.py / corr_mark_local.py / corr_mark_cmds_mapping.py
@@ -52,4 +57,4 @@ ENV PORT=8080
 EXPOSE 8080
 CMD exec uvicorn backend.app:app --host 0.0.0.0 --port ${PORT:-8080}
 
-# deploy-stamp 20261118T005007Z
+# deploy-stamp 20261124T170257Z

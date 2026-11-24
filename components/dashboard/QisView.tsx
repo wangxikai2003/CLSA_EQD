@@ -138,6 +138,9 @@ const BASKET_VRV_ASSETS: { key: QisVolRvUniverse; label: string }[] = [
   { key: '1000', label: 'VRV CSI1000' },
   { key: 'AU', label: 'VRV Gold' },
   { key: 'SC', label: 'VRV Crude' },
+  { key: 'GC', label: 'VRV COMEX Gold' },
+  { key: 'CL', label: 'VRV NYMEX WTI' },
+  { key: 'ES', label: 'VRV E-mini S&P' },
 ];
 
 const BASKET_TARGET_VOLS = [0.05, 0.08, 0.1, 0.12, 0.15];
@@ -156,6 +159,9 @@ const VOL_RV_UNIVERSES: { key: QisVolRvUniverse; label: string }[] = [
   { key: '1000', label: 'CSI 1000' },
   { key: 'AU', label: 'Gold AU' },
   { key: 'SC', label: 'Crude SC' },
+  { key: 'GC', label: 'COMEX GC' },
+  { key: 'CL', label: 'NYMEX CL' },
+  { key: 'ES', label: 'E-mini ES' },
 ];
 
 const VOL_RV_CHART = {

@@ -14,6 +14,9 @@ data/*.sqlite-*
 !data/commodity_fut.sqlite
 !data/commodity_vol_au.sqlite
 !data/commodity_vol_sc.sqlite
+!data/commodity_vol_gc.sqlite
+!data/commodity_vol_cl.sqlite
+!data/commodity_vol_es.sqlite
 !data/qis_results.sqlite
 data/exports/*.xlsx
 !data/exports/.gitkeep

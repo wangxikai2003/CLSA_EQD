@@ -215,7 +215,7 @@ def backtest(
     tilt: str = Query("balanced", description="Vol RV style: balanced | carry | defensive"),
     universe: str = Query(
         "300",
-        description="Vol RV universe: 300|50|1000|AU|SC|GC (COMEX)|CL (NYMEX WTI)",
+        description="Vol RV universe: 300|50|1000|AU|SC|GC (COMEX)|CL (NYMEX WTI)|ES (E-mini; hedge=ES fut)",
     ),
     target_otm_delta: float = Query(0.15, gt=0.01, lt=0.5, description="OTM long target |delta|"),
     long_delta_threshold: float = Query(
