@@ -25,16 +25,17 @@ _DEFAULT_SIDE = "both"
 _DEFAULT_SPREAD = "iv"
 _DEFAULT_SIGNAL = "quantile"
 
-# Cross Calendar Carry sentinel PK fields (cost encoded in signal_mode).
+# Cross Calendar Carry sentinel PK fields (cost + engine version in signal_mode).
 CROSS_Z_WINDOW = 0
-CROSS_TENOR = "n/a"
+CROSS_TENOR = "listed-roll-v1"
 CROSS_SIDE = "n/a"
 CROSS_SPREAD = "n/a"
+CROSS_ENGINE = "listed-roll-v1"
 
 
-def cost_sig(slippage: float = 0.0, fee: float = 0.0) -> str:
+def cost_sig(slippage: float = 0.0, fee: float = 0.0, engine: str = CROSS_ENGINE) -> str:
     """Stable cost fingerprint; used as signal_mode for carry rows."""
-    return f"{float(slippage):.8g}|{float(fee):.8g}"
+    return f"{float(slippage):.8g}|{float(fee):.8g}|{engine}"
 
 
 def attach_cache_meta(
