@@ -159,3 +159,66 @@ export function fetchCorrSpreads(
   if (params.symbol4) q.set('symbol4', params.symbol4);
   return getJsonWithRetry<CorrSpreadsResponse>(`/api/v1/correlation/spreads?${q}`, _asRetryOpts(opts));
 }
+
+/* ---------- NDX Implied / CRP ---------- */
+
+export interface ImpliedCrpMeta {
+  basket: string;
+  top_n: number;
+  root_pref: string;
+  tenors: number[];
+  mnys: number[];
+  variants: string[];
+  history_start: string | null;
+  history_end: string | null;
+  n_rows: number;
+  n_dates: number;
+  atm_crp_points: number;
+  capabilities: string[];
+  note?: string;
+}
+
+export interface ImpliedCrpSeriesResponse {
+  mode: string;
+  label: string;
+  basket: string;
+  tenor_days: number;
+  mny: number;
+  variant: string;
+  history_start: string;
+  history_end: string;
+  n_obs: number;
+  series: Array<{
+    d: string;
+    v: number | null;
+    rho_imp: number | null;
+    rho_real: number | null;
+    crp: number | null;
+  }>;
+  stats: CorrSpreadsResponse['stats'];
+  stats_imp?: CorrSpreadsResponse['stats'];
+  stats_real?: CorrSpreadsResponse['stats'];
+  realized_last?: number | null;
+  implied_last?: number | null;
+  crp_last?: number | null;
+  note?: string;
+}
+
+export function fetchImpliedCrpMeta(opts?: AbortSignal | FetchRetryOpts) {
+  return getJsonWithRetry<ImpliedCrpMeta>(`/api/v1/correlation/implied-crp/meta`, _asRetryOpts(opts));
+}
+
+export function fetchImpliedCrpSeries(
+  params: { tenor_days?: number; mny?: number; variant?: 'clean' | 'dirty' },
+  opts?: AbortSignal | FetchRetryOpts
+) {
+  const q = new URLSearchParams({
+    tenor_days: String(params.tenor_days ?? 30),
+    mny: String(params.mny ?? 1),
+    variant: params.variant ?? 'clean',
+  });
+  return getJsonWithRetry<ImpliedCrpSeriesResponse>(
+    `/api/v1/correlation/implied-crp/series?${q}`,
+    _asRetryOpts(opts)
+  );
+}

@@ -120,3 +120,35 @@ def get_precomputed_matrix(
         raise
     except Exception as ex:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(ex)) from ex
+
+
+@router.get("/implied-crp/meta")
+def get_implied_crp_meta() -> dict[str, Any]:
+    """Available tenors / moneyness / history for NDX basket implied CRP."""
+    try:
+        from engine import implied_corr_service as svc
+
+        return svc.meta()
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=503, detail=str(ex)) from ex
+    except Exception as ex:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+
+
+@router.get("/implied-crp/series")
+def get_implied_crp_series(
+    tenor_days: int = Query(30, description="30 | 60 | 90"),
+    mny: float = Query(1.0, description="Spot moneyness K/S"),
+    variant: str = Query("clean", pattern="^(clean|dirty)$"),
+) -> dict[str, Any]:
+    """NDX basket implied vs forward realized CRP time series (spread-shaped payload)."""
+    try:
+        from engine import implied_corr_service as svc
+
+        return svc.series(tenor_days=tenor_days, mny=mny, variant=variant)
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=503, detail=str(ex)) from ex
+    except KeyError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
+    except Exception as ex:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(ex)) from ex

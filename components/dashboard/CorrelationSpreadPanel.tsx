@@ -11,7 +11,14 @@ import {
   Legend,
 } from 'recharts';
 import AssetUniverseSelector from '../common/AssetUniverseSelector';
-import { CorrSpreadsResponse, fetchCorrSpreads } from '../../services/api_v1';
+import {
+  CorrSpreadsResponse,
+  ImpliedCrpMeta,
+  ImpliedCrpSeriesResponse,
+  fetchCorrSpreads,
+  fetchImpliedCrpMeta,
+  fetchImpliedCrpSeries,
+} from '../../services/api_v1';
 
 const selectClass =
   'px-2 py-1.5 text-xs font-bold border border-slate-200 rounded-md bg-slate-50 text-[#000066]';
@@ -41,11 +48,27 @@ const CorrelationSpreadPanel: React.FC = () => {
   const [s4, setS4] = useState('HSTECH');
   const [longWin, setLongWin] = useState(126);
   const [data, setData] = useState<CorrSpreadsResponse | null>(null);
+  const [crp, setCrp] = useState<ImpliedCrpSeriesResponse | null>(null);
+  const [crpMeta, setCrpMeta] = useState<ImpliedCrpMeta | null>(null);
   const [loading, setLoading] = useState(false);
   const [board, setBoard] = useState<BoardRow[]>([]);
-  const [sourceHint] = useState<'realized' | 'crp'>('realized');
+  const [sourceHint, setSourceHint] = useState<'realized' | 'crp'>('realized');
+  const [tenor, setTenor] = useState(30);
+  const [mny, setMny] = useState(1.0);
+  const [variant, setVariant] = useState<'clean' | 'dirty'>('clean');
 
   useEffect(() => {
+    fetchImpliedCrpMeta()
+      .then((m) => {
+        setCrpMeta(m);
+        if (m.tenors?.length && !m.tenors.includes(tenor)) setTenor(m.tenors[0]);
+      })
+      .catch(() => setCrpMeta(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (sourceHint !== 'realized') return;
     const ac = new AbortController();
     setLoading(true);
     fetchCorrSpreads(
@@ -68,9 +91,28 @@ const CorrelationSpreadPanel: React.FC = () => {
         if (!ac.signal.aborted) setLoading(false);
       });
     return () => ac.abort();
-  }, [mode, s1, s2, s3, s4, longWin]);
+  }, [sourceHint, mode, s1, s2, s3, s4, longWin]);
 
   useEffect(() => {
+    if (sourceHint !== 'crp') return;
+    const ac = new AbortController();
+    setLoading(true);
+    fetchImpliedCrpSeries(
+      { tenor_days: tenor, mny, variant },
+      { signal: ac.signal }
+    )
+      .then((d) => {
+        if (!ac.signal.aborted) setCrp(d);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!ac.signal.aborted) setLoading(false);
+      });
+    return () => ac.abort();
+  }, [sourceHint, tenor, mny, variant]);
+
+  useEffect(() => {
+    if (sourceHint !== 'realized') return;
     let cancelled = false;
     (async () => {
       const rows: BoardRow[] = [];
@@ -83,14 +125,6 @@ const CorrelationSpreadPanel: React.FC = () => {
             short_win: 21,
             long_win: 126,
           });
-          const r21 = await fetchCorrSpreads({
-            mode: 'term',
-            symbol1: m.a,
-            symbol2: m.b,
-            short_win: 21,
-            long_win: 21,
-          });
-          // last short/long from series tip
           const last = term.series[term.series.length - 1];
           rows.push({
             label: m.label,
@@ -101,7 +135,6 @@ const CorrelationSpreadPanel: React.FC = () => {
             pctl: term.stats.pctl ?? null,
             z: term.stats.z ?? null,
           });
-          void r21;
         } catch {
           rows.push({
             label: m.label,
@@ -119,9 +152,25 @@ const CorrelationSpreadPanel: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [sourceHint]);
 
   const chart = useMemo(() => {
+    if (sourceHint === 'crp') {
+      if (!crp?.series?.length) return [];
+      const mean = crp.stats.mean ?? 0;
+      const sd = crp.stats.std ?? 0;
+      return crp.series.map((p) => ({
+        d: p.d,
+        v: p.crp,
+        rho_imp: p.rho_imp,
+        rho_real: p.rho_real,
+        mean,
+        p1: mean + sd,
+        m1: mean - sd,
+        p2: mean + 2 * sd,
+        m2: mean - 2 * sd,
+      }));
+    }
     if (!data?.series?.length) return [];
     const mean = data.stats.mean ?? 0;
     const sd = data.stats.std ?? 0;
@@ -134,99 +183,189 @@ const CorrelationSpreadPanel: React.FC = () => {
       p2: mean + 2 * sd,
       m2: mean - 2 * sd,
     }));
-  }, [data]);
+  }, [sourceHint, data, crp]);
+
+  const tenors = crpMeta?.tenors?.length ? crpMeta.tenors : [30, 60, 90];
+  const mnys = crpMeta?.mnys?.length ? crpMeta.mnys : [0.95, 1.0, 1.05];
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
-          {(
-            [
-              ['term', 'Term Structure Spread'],
-              ['cross', 'Cross-Pair Spread'],
-            ] as const
-          ).map(([id, lab]) => (
-            <button
-              key={id}
-              onClick={() => setMode(id)}
-              className={`px-3 py-1.5 text-xs font-bold rounded-md ${
-                mode === id ? 'bg-white text-[#000066] shadow' : 'text-slate-500'
-              }`}
-            >
-              {lab}
-            </button>
-          ))}
-        </div>
-        <select className={selectClass} value={longWin} onChange={(e) => setLongWin(Number(e.target.value))}>
-          <option value={63}>Long = 63D</option>
-          <option value={126}>Long = 126D</option>
-        </select>
-        <select className={selectClass} value={sourceHint} disabled title="Implied CRP reserved">
+        {sourceHint === 'realized' && (
+          <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
+            {(
+              [
+                ['term', 'Term Structure Spread'],
+                ['cross', 'Cross-Pair Spread'],
+              ] as const
+            ).map(([id, lab]) => (
+              <button
+                key={id}
+                onClick={() => setMode(id)}
+                className={`px-3 py-1.5 text-xs font-bold rounded-md ${
+                  mode === id ? 'bg-white text-[#000066] shadow' : 'text-slate-500'
+                }`}
+              >
+                {lab}
+              </button>
+            ))}
+          </div>
+        )}
+        {sourceHint === 'realized' && (
+          <select className={selectClass} value={longWin} onChange={(e) => setLongWin(Number(e.target.value))}>
+            <option value={63}>Long = 63D</option>
+            <option value={126}>Long = 126D</option>
+          </select>
+        )}
+        <select
+          className={selectClass}
+          value={sourceHint}
+          onChange={(e) => setSourceHint(e.target.value as 'realized' | 'crp')}
+        >
           <option value="realized">Realized</option>
-          <option value="crp">Implied vs Realized (CRP) — soon</option>
+          <option value="crp">Implied vs Realized (CRP)</option>
         </select>
+        {sourceHint === 'crp' && (
+          <>
+            <select className={selectClass} value={tenor} onChange={(e) => setTenor(Number(e.target.value))}>
+              {tenors.map((t) => (
+                <option key={t} value={t}>
+                  Tenor {t}D
+                </option>
+              ))}
+            </select>
+            <select className={selectClass} value={mny} onChange={(e) => setMny(Number(e.target.value))}>
+              {mnys.map((m) => (
+                <option key={m} value={m}>
+                  Mny {m.toFixed(2)}
+                </option>
+              ))}
+            </select>
+            <select
+              className={selectClass}
+              value={variant}
+              onChange={(e) => setVariant(e.target.value as 'clean' | 'dirty')}
+            >
+              <option value="clean">Clean</option>
+              <option value="dirty">Dirty</option>
+            </select>
+          </>
+        )}
         {loading && <span className="text-[10px] text-slate-400">Loading…</span>}
       </div>
 
-      <div className="flex flex-wrap gap-3 items-end bg-white border border-slate-200 rounded-lg p-3">
-        <AssetUniverseSelector label="Pair1 A" value={s1} onChange={setS1} />
-        <AssetUniverseSelector label="Pair1 B" value={s2} onChange={setS2} />
-        {mode === 'cross' && (
-          <>
-            <AssetUniverseSelector label="Pair2 A" value={s3} onChange={setS3} />
-            <AssetUniverseSelector label="Pair2 B" value={s4} onChange={setS4} />
-          </>
-        )}
-      </div>
+      {sourceHint === 'crp' ? (
+        <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-[11px] text-slate-600">
+          <span className="font-bold text-[#000066]">NDX basket CRP</span>
+          {' · '}Top50 · NDXP · forward realized
+          {crpMeta?.history_start && (
+            <span className="ml-2 text-slate-400">
+              history {crpMeta.history_start} → {crpMeta.history_end} ({crpMeta.n_dates} dates)
+            </span>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-3 items-end bg-white border border-slate-200 rounded-lg p-3">
+          <AssetUniverseSelector label="Pair1 A" value={s1} onChange={setS1} />
+          <AssetUniverseSelector label="Pair1 B" value={s2} onChange={setS2} />
+          {mode === 'cross' && (
+            <>
+              <AssetUniverseSelector label="Pair2 A" value={s3} onChange={setS3} />
+              <AssetUniverseSelector label="Pair2 B" value={s4} onChange={setS4} />
+            </>
+          )}
+        </div>
+      )}
 
-      {/* Scoreboard */}
-      <div className="bg-white border border-slate-200 rounded-lg p-3 overflow-x-auto">
-        <h3 className="text-xs font-bold text-[#000066] mb-2">Monitor Scoreboard (Term 126−21)</h3>
-        <table className="w-full text-[10px]">
-          <thead>
-            <tr className="text-slate-500">
-              <th className="text-left p-1">Pair</th>
-              <th className="p-1">ρ 21D</th>
-              <th className="p-1">ρ 126D</th>
-              <th className="p-1">Spread</th>
-              <th className="p-1">Z</th>
-              <th className="p-1">PCTL</th>
-            </tr>
-          </thead>
-          <tbody>
-            {board.map((r) => {
-              const hot = r.pctl != null && (r.pctl > 85 || r.pctl < 15);
-              return (
-                <tr key={r.label} className="border-t border-slate-100">
-                  <td className="p-1 font-bold">{r.label}</td>
-                  <td className="p-1 text-center font-mono">{r.r21?.toFixed(3) ?? '—'}</td>
-                  <td className="p-1 text-center font-mono">{r.r126?.toFixed(3) ?? '—'}</td>
-                  <td className="p-1 text-center font-mono">{r.spread?.toFixed(3) ?? '—'}</td>
-                  <td className="p-1 text-center font-mono">{r.z?.toFixed(2) ?? '—'}</td>
-                  <td className={`p-1 text-center font-mono ${hot ? 'text-[#E20000] font-bold' : ''}`}>
-                    {r.pctl != null ? (
-                      <span className="inline-flex items-center gap-1">
-                        {r.pctl.toFixed(0)}%
-                        <span className="inline-block h-1.5 w-12 bg-slate-100 rounded overflow-hidden">
-                          <span
-                            className={`block h-full ${hot ? 'bg-[#E20000]' : 'bg-[#000066]'}`}
-                            style={{ width: `${Math.max(0, Math.min(100, r.pctl))}%` }}
-                          />
+      {sourceHint === 'realized' && (
+        <div className="bg-white border border-slate-200 rounded-lg p-3 overflow-x-auto">
+          <h3 className="text-xs font-bold text-[#000066] mb-2">Monitor Scoreboard (Term 126−21)</h3>
+          <table className="w-full text-[10px]">
+            <thead>
+              <tr className="text-slate-500">
+                <th className="text-left p-1">Pair</th>
+                <th className="p-1">ρ 21D</th>
+                <th className="p-1">ρ 126D</th>
+                <th className="p-1">Spread</th>
+                <th className="p-1">Z</th>
+                <th className="p-1">PCTL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {board.map((r) => {
+                const hot = r.pctl != null && (r.pctl > 85 || r.pctl < 15);
+                return (
+                  <tr key={r.label} className="border-t border-slate-100">
+                    <td className="p-1 font-bold">{r.label}</td>
+                    <td className="p-1 text-center font-mono">{r.r21?.toFixed(3) ?? '—'}</td>
+                    <td className="p-1 text-center font-mono">{r.r126?.toFixed(3) ?? '—'}</td>
+                    <td className="p-1 text-center font-mono">{r.spread?.toFixed(3) ?? '—'}</td>
+                    <td className="p-1 text-center font-mono">{r.z?.toFixed(2) ?? '—'}</td>
+                    <td className={`p-1 text-center font-mono ${hot ? 'text-[#E20000] font-bold' : ''}`}>
+                      {r.pctl != null ? (
+                        <span className="inline-flex items-center gap-1">
+                          {r.pctl.toFixed(0)}%
+                          <span className="inline-block h-1.5 w-12 bg-slate-100 rounded overflow-hidden">
+                            <span
+                              className={`block h-full ${hot ? 'bg-[#E20000]' : 'bg-[#000066]'}`}
+                              style={{ width: `${Math.max(0, Math.min(100, r.pctl))}%` }}
+                            />
+                          </span>
                         </span>
-                      </span>
-                    ) : (
-                      '—'
-                    )}
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {sourceHint === 'crp' && crp && (
+        <div className="bg-white border border-slate-200 rounded-lg p-3 overflow-x-auto">
+          <h3 className="text-xs font-bold text-[#000066] mb-2">NDX Implied / Realized / CRP</h3>
+          <table className="w-full text-[10px]">
+            <thead>
+              <tr className="text-slate-500">
+                <th className="text-left p-1">Metric</th>
+                <th className="p-1">Last</th>
+                <th className="p-1">Mean</th>
+                <th className="p-1">Z</th>
+                <th className="p-1">PCTL</th>
+                <th className="p-1">Range</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(
+                [
+                  ['ρ_imp', crp.stats_imp, crp.implied_last],
+                  ['ρ_real', crp.stats_real, crp.realized_last],
+                  ['CRP', crp.stats, crp.crp_last],
+                ] as const
+              ).map(([lab, st, last]) => (
+                <tr key={lab} className="border-t border-slate-100">
+                  <td className="p-1 font-bold">{lab}</td>
+                  <td className="p-1 text-center font-mono">{last != null ? last.toFixed(3) : '—'}</td>
+                  <td className="p-1 text-center font-mono">{st?.mean != null ? st.mean.toFixed(3) : '—'}</td>
+                  <td className="p-1 text-center font-mono">{st?.z != null ? st.z.toFixed(2) : '—'}</td>
+                  <td className="p-1 text-center font-mono">{st?.pctl != null ? `${st.pctl.toFixed(0)}%` : '—'}</td>
+                  <td className="p-1 text-center font-mono">
+                    {st?.low != null && st?.high != null ? `[${st.low.toFixed(2)}, ${st.high.toFixed(2)}]` : '—'}
                   </td>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <div className="bg-white border border-slate-200 rounded-lg p-4">
-        <h3 className="text-xs font-bold text-[#000066] mb-2">{data?.label || 'Spread'}</h3>
+        <h3 className="text-xs font-bold text-[#000066] mb-2">
+          {sourceHint === 'crp' ? crp?.label || 'NDX CRP' : data?.label || 'Spread'}
+        </h3>
         <div className="h-[300px]">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chart}>
@@ -235,7 +374,21 @@ const CorrelationSpreadPanel: React.FC = () => {
               <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
               <Tooltip contentStyle={{ fontSize: 11 }} />
               <Legend wrapperStyle={{ fontSize: 10 }} />
-              <Line type="monotone" dataKey="v" name="Spread" stroke="#000066" strokeWidth={2} dot={false} />
+              {sourceHint === 'crp' && (
+                <>
+                  <Line type="monotone" dataKey="rho_imp" name="ρ_imp" stroke="#0891b2" strokeWidth={1.5} dot={false} connectNulls />
+                  <Line type="monotone" dataKey="rho_real" name="ρ_real" stroke="#EAB308" strokeWidth={1.5} dot={false} connectNulls />
+                </>
+              )}
+              <Line
+                type="monotone"
+                dataKey="v"
+                name={sourceHint === 'crp' ? 'CRP' : 'Spread'}
+                stroke="#000066"
+                strokeWidth={2}
+                dot={false}
+                connectNulls
+              />
               <Line type="monotone" dataKey="mean" name="Mean" stroke="#94a3b8" strokeDasharray="4 4" dot={false} />
               <Line type="monotone" dataKey="p1" name="+1SD" stroke="#16a34a" strokeDasharray="2 2" dot={false} />
               <Line type="monotone" dataKey="m1" name="-1SD" stroke="#16a34a" strokeDasharray="2 2" dot={false} />
@@ -245,7 +398,13 @@ const CorrelationSpreadPanel: React.FC = () => {
             </LineChart>
           </ResponsiveContainer>
         </div>
-        {data?.stats && (
+        {sourceHint === 'crp' && crp?.stats && (
+          <div className="mt-2 text-[10px] font-mono text-slate-500">
+            CRP last={crp.stats.last?.toFixed(4)} · z={crp.stats.z?.toFixed(2)} · pctl={crp.stats.pctl?.toFixed(1)}% ·
+            ρ_imp={crp.implied_last?.toFixed(3)} · ρ_real={crp.realized_last?.toFixed(3)}
+          </div>
+        )}
+        {sourceHint === 'realized' && data?.stats && (
           <div className="mt-2 text-[10px] font-mono text-slate-500">
             last={data.stats.last?.toFixed(4)} · z={data.stats.z?.toFixed(2)} · pctl={data.stats.pctl?.toFixed(1)}% ·
             range [{data.stats.low?.toFixed(3)}, {data.stats.high?.toFixed(3)}]
