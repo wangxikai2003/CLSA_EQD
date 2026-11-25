@@ -91,3 +91,8 @@ def test_carry_sentinel_row(store):
     assert hit is not None
     assert hit["_cache"]["signal_mode"] == cs
     assert hit["_cache"]["source"] == "db"
+    daily = qrs.cost_sig(2e-4, 0.0023 / 100.0, open_every_n=1)
+    weekly = qrs.cost_sig(2e-4, 0.0023 / 100.0, open_every_n=5)
+    assert daily != weekly
+    assert "|oe1|" in daily
+    assert "|oe5|" in weekly

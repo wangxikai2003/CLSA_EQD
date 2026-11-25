@@ -283,6 +283,10 @@ const QisView: React.FC = () => {
   const [basketIncludeCarry, setBasketIncludeCarry] = useState(false);
   const [basketLookback, setBasketLookback] = useState(63);
   const [basketRebalance, setBasketRebalance] = useState(21);
+  const [carryOpenEveryN, setCarryOpenEveryN] = useState(1);
+  const [carryNRoll, setCarryNRoll] = useState(2);
+  const [carryBudgetFrac, setCarryBudgetFrac] = useState(1 / 21);
+  const [carryShortMinDte, setCarryShortMinDte] = useState(5);
   const [data, setData] = useState<QisBacktestResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadStatus, setLoadStatus] = useState('Running backtest…');
@@ -359,6 +363,7 @@ const QisView: React.FC = () => {
         basketSignals: [...basketSignals].sort(),
         basketVrvAssets: [...basketVrvAssets].sort(),
         basketIncludeCarry,
+        carryOpenEveryN,
       }),
     [
       strategyId,
@@ -377,6 +382,7 @@ const QisView: React.FC = () => {
       basketSignals,
       basketVrvAssets,
       basketIncludeCarry,
+      carryOpenEveryN,
     ],
   );
 
@@ -392,6 +398,9 @@ const QisView: React.FC = () => {
         reboundRatio,
         basketLookback,
         basketRebalance,
+        carryNRoll,
+        carryBudgetFrac,
+        carryShortMinDte,
       }),
     [
       targetOtmDelta,
@@ -402,6 +411,9 @@ const QisView: React.FC = () => {
       reboundRatio,
       basketLookback,
       basketRebalance,
+      carryNRoll,
+      carryBudgetFrac,
+      carryShortMinDte,
     ],
   );
   const paramsDirty = appliedManualKey != null && appliedManualKey !== manualParamKey;
@@ -463,6 +475,14 @@ const QisView: React.FC = () => {
             tenor_pair: tenorPair,
             side_mode: sideMode,
             spread_mode: spreadMode,
+          }
+        : undefined,
+      family === 'cross_calendar_carry'
+        ? {
+            open_every_n: carryOpenEveryN,
+            n_roll: carryNRoll,
+            daily_budget_frac: carryBudgetFrac,
+            short_min_dte: carryShortMinDte,
           }
         : undefined,
     )
@@ -1159,6 +1179,78 @@ const QisView: React.FC = () => {
               </a>
             )}
           </div>
+          {family === 'cross_calendar_carry' && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-end w-full max-w-3xl">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">Open</span>
+                <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                  {[
+                    { n: 1, label: 'Daily' },
+                    { n: 5, label: '5d' },
+                    { n: 21, label: '21d' },
+                  ].map((opt) => (
+                    <button
+                      key={opt.n}
+                      type="button"
+                      disabled={loading}
+                      onClick={() => setCarryOpenEveryN(opt.n)}
+                      className={segBtnClass(carryOpenEveryN === opt.n, loading)}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                n_roll
+                <input
+                  type="number"
+                  min={0}
+                  max={20}
+                  step={1}
+                  disabled={loading}
+                  value={carryNRoll}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    if (Number.isFinite(v) && v >= 0 && v <= 20) setCarryNRoll(Math.round(v));
+                  }}
+                  className="w-12 px-1 py-0.5 border border-slate-200 rounded text-[10px] font-bold text-[#000066]"
+                />
+              </label>
+              <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                budget
+                <input
+                  type="number"
+                  min={0.01}
+                  max={1}
+                  step={0.01}
+                  disabled={loading}
+                  value={Number(carryBudgetFrac.toFixed(4))}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    if (Number.isFinite(v) && v > 0.005 && v <= 1) setCarryBudgetFrac(v);
+                  }}
+                  className="w-16 px-1 py-0.5 border border-slate-200 rounded text-[10px] font-bold text-[#000066]"
+                />
+              </label>
+              <label className="flex items-center gap-1 text-[10px] text-slate-500">
+                min DTE
+                <input
+                  type="number"
+                  min={1}
+                  max={60}
+                  step={1}
+                  disabled={loading}
+                  value={carryShortMinDte}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    if (Number.isFinite(v) && v >= 1 && v <= 60) setCarryShortMinDte(Math.round(v));
+                  }}
+                  className="w-12 px-1 py-0.5 border border-slate-200 rounded text-[10px] font-bold text-[#000066]"
+                />
+              </label>
+            </div>
+          )}
           {family === 'qis_basket' && (
             <div className="flex flex-col gap-1.5 w-full max-w-4xl">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 justify-end">

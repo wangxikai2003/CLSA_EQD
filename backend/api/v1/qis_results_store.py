@@ -25,17 +25,34 @@ _DEFAULT_SIDE = "both"
 _DEFAULT_SPREAD = "iv"
 _DEFAULT_SIGNAL = "quantile"
 
-# Cross Calendar Carry sentinel PK fields (cost + engine version in signal_mode).
+# Cross Calendar Carry sentinel PK fields (cost + engine + knobs in signal_mode).
 CROSS_Z_WINDOW = 0
-CROSS_TENOR = "listed-roll-v1"
+CROSS_TENOR = "listed-roll-v2"
 CROSS_SIDE = "n/a"
 CROSS_SPREAD = "n/a"
-CROSS_ENGINE = "listed-roll-v1"
+CROSS_ENGINE = "listed-roll-v2"
+CROSS_OPEN_EVERY_N = 1
+CROSS_N_ROLL = 2
+CROSS_BUDGET_FRAC = 1.0 / 21.0
+CROSS_SHORT_MIN_DTE = 5
 
 
-def cost_sig(slippage: float = 0.0, fee: float = 0.0, engine: str = CROSS_ENGINE) -> str:
-    """Stable cost fingerprint; used as signal_mode for carry rows."""
-    return f"{float(slippage):.8g}|{float(fee):.8g}|{engine}"
+def cost_sig(
+    slippage: float = 0.0,
+    fee: float = 0.0,
+    engine: str = CROSS_ENGINE,
+    *,
+    open_every_n: int = CROSS_OPEN_EVERY_N,
+    n_roll: int = CROSS_N_ROLL,
+    budget_frac: float = CROSS_BUDGET_FRAC,
+    short_min_dte: int = CROSS_SHORT_MIN_DTE,
+) -> str:
+    """Stable carry fingerprint; used as signal_mode so knobs do not collide."""
+    return (
+        f"{float(slippage):.8g}|{float(fee):.8g}|{engine}"
+        f"|oe{int(open_every_n)}|nr{int(n_roll)}"
+        f"|bf{float(budget_frac):.6g}|dte{int(short_min_dte)}"
+    )
 
 
 def attach_cache_meta(

@@ -25,6 +25,7 @@ def run_cross_calendar_carry(
     initial_nav: float = _INITIAL_NAV,
     slippage: float = _SLIPPAGE,
     fee: float = _FEE,
+    **kwargs: Any,
 ) -> Dict[str, Any]:
     """Listed overlapping IM/IH calendar vintages (Vol-RV style). See engine module."""
     from engine.cross_calendar_carry_strategy import (
@@ -32,7 +33,7 @@ def run_cross_calendar_carry(
     )
 
     try:
-        return _run_listed(initial_nav=initial_nav, slippage=slippage, fee=fee)
+        return _run_listed(initial_nav=initial_nav, slippage=slippage, fee=fee, **kwargs)
     except FileNotFoundError as e:
         raise HTTPException(503, str(e)) from e
     except RuntimeError as e:
@@ -85,8 +86,8 @@ def list_strategies():
                 "name": "Cross Calendar Carry",
                 "status": "live",
                 "blurb": (
-                    "Listed overlapping vintages: +IM_near −IM_deferred −IH_near +IH_deferred; "
-                    "exit before short expiry (no constant-maturity lerp)"
+                    "Daily overlapping listed vintages: +IM_near −IM_deferred −IH_near +IH_deferred; "
+                    "exit n_roll sessions before short expiry (no constant-maturity lerp)"
                 ),
                 "family": "futures_carry",
             },
@@ -258,6 +259,21 @@ def backtest(
         description="Comma-separated signals (quantile,garch_z,regime2) under basket_universe",
     ),
     basket_universe: str = Query("300", description="Universe for basket_signals shortcut"),
+    carry_open_every_n: int = Query(
+        1, ge=1, le=63, description="Cross Carry: open a new vintage every N sessions (1=daily)"
+    ),
+    carry_n_roll: int = Query(
+        2, ge=0, le=20, description="Cross Carry: exit this many sessions before short expiry"
+    ),
+    carry_budget_frac: float = Query(
+        1.0 / 21.0,
+        gt=0.005,
+        le=1.0,
+        description="Cross Carry: NAV fraction of gross point notional per vintage",
+    ),
+    carry_short_min_dte: int = Query(
+        5, ge=1, le=60, description="Cross Carry: skip short months with fewer calendar days to expiry"
+    ),
 ):
     db = st._equity_db()
     from api.v1 import qis_results_store as qrs
@@ -524,8 +540,15 @@ def backtest(
         )
 
     if strategy_id == "cross_calendar_carry":
-        # Persist under sentinel PK; encode slippage|fee in signal_mode.
-        cs = qrs.cost_sig(_SLIPPAGE, _FEE)
+        # Persist under sentinel PK; knobs live in signal_mode so caches do not collide.
+        cs = qrs.cost_sig(
+            _SLIPPAGE,
+            _FEE,
+            open_every_n=int(carry_open_every_n),
+            n_roll=int(carry_n_roll),
+            budget_frac=float(carry_budget_frac),
+            short_min_dte=int(carry_short_min_dte),
+        )
         mem_key = (
             strategy_id,
             qrs.CROSS_Z_WINDOW,
@@ -562,7 +585,17 @@ def backtest(
                     signal_mode=cs,
                 )
 
-        payload = run_cross_calendar_carry()
+        try:
+            payload = run_cross_calendar_carry(
+                open_every_n=int(carry_open_every_n),
+                n_roll=int(carry_n_roll),
+                daily_budget_frac=float(carry_budget_frac),
+                short_min_dte=int(carry_short_min_dte),
+            )
+        except FileNotFoundError as e:
+            raise HTTPException(503, str(e)) from e
+        except (RuntimeError, ValueError) as e:
+            raise HTTPException(400, str(e)) from e
         qrs.put_cached(
             strategy_id,
             qrs.CROSS_Z_WINDOW,

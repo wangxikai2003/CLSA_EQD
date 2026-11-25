@@ -57,6 +57,17 @@ export type QisHedgerMode = 'eod_close' | 'intraday_curve';
 export type QisBasketMethod = 'vol_rp' | 'cvar_rp';
 export type QisBasketSignal = 'quantile' | 'garch_z' | 'regime2';
 
+export interface QisCarryParams {
+  /** Open a new vintage every N sessions (1 = daily). */
+  open_every_n?: number;
+  /** Exit this many sessions before the short-month expiry. */
+  n_roll?: number;
+  /** Gross point notional per vintage as a fraction of NAV. */
+  daily_budget_frac?: number;
+  /** Skip a short month with fewer calendar days to expiry. */
+  short_min_dte?: number;
+}
+
 export interface QisBasketParams {
   method?: QisBasketMethod | string;
   target_vol?: number;
@@ -303,6 +314,7 @@ export function fetchQisBacktest(
   reboundRatio = 0.9,
   volRv?: QisVolRvParams,
   basket?: QisBasketParams,
+  carry?: QisCarryParams,
 ) {
   const q = new URLSearchParams();
   if (refresh) q.set('refresh', 'true');
@@ -336,6 +348,12 @@ export function fetchQisBacktest(
       q.set('futures_slippage_pct', String(volRv.futures_slippage_pct));
     }
     if (volRv.ablation != null) q.set('ablation', volRv.ablation ? 'true' : 'false');
+  }
+  if (strategyId === 'cross_calendar_carry' && carry) {
+    if (carry.open_every_n != null) q.set('carry_open_every_n', String(carry.open_every_n));
+    if (carry.n_roll != null) q.set('carry_n_roll', String(carry.n_roll));
+    if (carry.daily_budget_frac != null) q.set('carry_budget_frac', String(carry.daily_budget_frac));
+    if (carry.short_min_dte != null) q.set('carry_short_min_dte', String(carry.short_min_dte));
   }
   if (strategyId === 'qis_basket' && basket) {
     if (basket.method) q.set('basket_method', String(basket.method));

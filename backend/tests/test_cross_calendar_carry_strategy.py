@@ -4,6 +4,8 @@ from __future__ import annotations
 import pandas as pd
 
 from engine.cross_calendar_carry_strategy import (
+    OPEN_EVERY_N,
+    _ENGINE_VERSION,
     _pick_short_long_ym,
     third_friday,
     trading_days_to_expiry,
@@ -41,3 +43,8 @@ def test_pick_short_long_prefers_quarter():
     short_ym, long_ym = pair
     assert short_ym == "2401"
     assert long_ym == "2403"
+
+
+def test_defaults_are_daily_roll_v2():
+    assert OPEN_EVERY_N == 1
+    assert _ENGINE_VERSION == "listed-roll-v2"

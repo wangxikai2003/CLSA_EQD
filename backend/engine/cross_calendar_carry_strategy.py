@@ -29,15 +29,15 @@ DEFAULT_SLIPPAGE = 2e-4
 DEFAULT_FEE = 0.0023 / 100.0
 SHORT_MIN_DTE = 5
 N_ROLL = 2
-# Futures notional turnover is far costlier than option-premium budgets in Vol RV;
-# open every N sessions so vintages still overlap but costs do not dominate.
-OPEN_EVERY_N = 5
-DAILY_BUDGET_FRAC = 1.0 / 10.0
+# Daily overlapping vintages (Vol-RV cadence). Budget ~1/21 NAV so a month of
+# stacked vintages is about one full NAV of gross point notional.
+OPEN_EVERY_N = 1
+DAILY_BUDGET_FRAC = 1.0 / 21.0
 LONG_MIN_GAP_DAYS = 40
 QUARTER_MONTHS = (3, 6, 9, 12)
 # DB product → public Wind root
 _DB_PRODUCT = {"IH": "HO", "IM": "MO"}
-_ENGINE_VERSION = "listed-roll-v1"
+_ENGINE_VERSION = "listed-roll-v2"
 
 ROOT = Path(__file__).resolve().parents[2]
 _DB_CANDIDATES = [
@@ -615,7 +615,11 @@ class CrossCalendarCarryEngine:
                 "tenor_pair": _ENGINE_VERSION,
                 "side_mode": "n/a",
                 "spread_mode": "n/a",
-                "signal_mode": f"{self.slippage:.8g}|{self.fee:.8g}|{_ENGINE_VERSION}",
+                "signal_mode": (
+                    f"{self.slippage:.8g}|{self.fee:.8g}|{_ENGINE_VERSION}"
+                    f"|oe{self.open_every_n}|nr{self.n_roll}"
+                    f"|bf{self.daily_budget_frac:.6g}|dte{self.short_min_dte}"
+                ),
                 "n_opened": n_opened,
                 "n_closed": n_closed,
                 "mean_sos_capture": mean_sos_capture,
