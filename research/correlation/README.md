@@ -67,3 +67,11 @@ python corr_mark_cmds.py --mode EQ.EQ --rules
 
 后端：`GET/POST /api/v1/correlation/*`（universe / pairwise / matrix / spreads）  
 前端：Market Data → **Corr**；Spread → **Corr** 子 Tab。
+
+## Web 上线（NDX Implied / CRP）
+
+离线（课题树）：`ndx_implied_corr.py` → `compute_us_realized_corr.py` → `validate_phase1_pipeline.py`  
+Web 导出：`python build_web_implied_data.py` → `CLSA_EQD/data/corr_ndx_implied_crp.parquet`  
+
+后端：`GET /api/v1/correlation/implied-crp/meta`、`GET .../implied-crp/series`  
+前端：Spread → Corr → 数据源 **Implied vs Realized (CRP)**（NDX Top50 / NDXP）。

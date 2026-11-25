@@ -1,0 +1,19 @@
+{
+  "built_at": "2026-11-25T05:46:28.283699+00:00",
+  "source": "ndx_implied_corr_surface + ndx_realized_corr forward",
+  "rows": 354,
+  "dates": 21,
+  "date_min": "2024-09-06",
+  "date_max": "2026-05-01",
+  "tenors": [
+    30,
+    60,
+    90
+  ],
+  "mnys": [
+    0.95,
+    1.0,
+    1.05
+  ],
+  "note": "Top50 NDXP; history sparse until denser CMDS refresh merges"
+}
