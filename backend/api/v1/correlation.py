@@ -152,3 +152,59 @@ def get_implied_crp_series(
         raise HTTPException(status_code=404, detail=str(ex)) from ex
     except Exception as ex:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(ex)) from ex
+
+
+@router.get("/implied-crp/levels")
+def get_implied_crp_levels(
+    variant: str = Query("clean", pattern="^(clean|dirty)$"),
+    metrics: Optional[str] = Query("rho_imp,rho_real,crp", description="Comma list"),
+    tenors: Optional[str] = Query(None, description="Comma list e.g. 30,60,90"),
+    mnys: Optional[str] = Query(None, description="Comma list e.g. 0.95,1,1.05"),
+) -> dict[str, Any]:
+    """Bulk levels nested like vol-spreads for multi-select overlays."""
+    try:
+        from engine import implied_corr_service as svc
+
+        return svc.levels(variant=variant, metrics=metrics, tenors=tenors, mnys=mnys)
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=503, detail=str(ex)) from ex
+    except Exception as ex:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+
+
+@router.get("/implied-crp/skew")
+def get_implied_crp_skew(
+    trade_date: Optional[str] = Query(None, description="YYYY-MM-DD; default latest"),
+    tenor_days: int = Query(30),
+    variant: str = Query("clean", pattern="^(clean|dirty)$"),
+) -> dict[str, Any]:
+    """Fixed-date moneyness skew (ρ_imp / CRP vs mny)."""
+    try:
+        from engine import implied_corr_service as svc
+
+        return svc.skew_slice(trade_date=trade_date, tenor_days=tenor_days, variant=variant)
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=503, detail=str(ex)) from ex
+    except KeyError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
+    except Exception as ex:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+
+
+@router.get("/implied-crp/term-structure")
+def get_implied_crp_term(
+    trade_date: Optional[str] = Query(None, description="YYYY-MM-DD; default latest"),
+    mny: float = Query(1.0),
+    variant: str = Query("clean", pattern="^(clean|dirty)$"),
+) -> dict[str, Any]:
+    """Fixed-date term structure (ρ_imp / ρ_real / CRP vs tenor)."""
+    try:
+        from engine import implied_corr_service as svc
+
+        return svc.term_structure(trade_date=trade_date, mny=mny, variant=variant)
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=503, detail=str(ex)) from ex
+    except KeyError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
+    except Exception as ex:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
