@@ -29,6 +29,7 @@ from engine.hedgers import (
     OptionLot,
     get_hedger,
 )
+from engine.ledger_aggregator import build_position_ledger, option_intrinsic, portfolio_pnl_by_day
 
 try:
     from data_paths import cffex_vol as _dp_cffex
@@ -362,7 +363,27 @@ def vol_rv_cache_sig(
     th = int(round(float(long_delta_threshold) * 100))
     hm = str(hedger_mode or "eod_close").strip().lower().replace(" ", "")
     # Universe also encoded in tenor_pair PK; keep here for tilt fingerprint clarity.
-    return f"u{u}|tilt_{t}|d{d}|th{th}|{hm}|L{lam:.2f}_{lo:.2f}_{hi:.2f}"
+    return f"u{u}|tilt_{t}|d{d}|th{th}|{hm}|L{lam:.2f}_{lo:.2f}_{hi:.2f}|led1"
+
+
+def _frame_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    if df is None or df.empty:
+        return []
+    clean = df.astype(object).where(pd.notna(df), None)
+
+    def _cell(v: Any) -> Any:
+        if v is None:
+            return None
+        if hasattr(v, "item"):
+            try:
+                v = v.item()
+            except Exception:
+                pass
+        if isinstance(v, float) and not math.isfinite(v):
+            return None
+        return v
+
+    return [{k: _cell(v) for k, v in rec.items()} for rec in clean.to_dict(orient="records")]
 
 
 def _is_quarter_expiry(expiry: str, months: Sequence[int] = (3, 6, 9, 12)) -> bool:
@@ -636,6 +657,7 @@ class Csi300VolRvEngine:
         self.m_opt = float(self.cfg["m_opt"])
         self.m_fut = float(self.cfg["m_fut"])
         self._holdings_rows: List[Dict[str, Any]] = []
+        self._ledger_days: List[Dict[str, Any]] = []
 
     def _load(self) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
         if self.cfg["db"] == "commodity":
@@ -916,6 +938,200 @@ class Csi300VolRvEngine:
             df.to_excel(xl, sheet_name="holdings", index=False)
         return out
 
+    @staticmethod
+    def _leg_role(leg: str) -> str:
+        return "SHORT_LEG" if str(leg) == "short" else "LONG_LEG"
+
+    @staticmethod
+    def _fut_close(day_fut: pd.DataFrame, code: str) -> float:
+        if not code or day_fut is None or day_fut.empty:
+            return float("nan")
+        hit = day_fut[day_fut["wind_code"] == code]
+        if hit.empty:
+            return float("nan")
+        return float(hit.iloc[0]["close"])
+
+    def _option_prev_seeds(self, book: BookState) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for v in book.vintages:
+            for p in v.legs:
+                rows.append(
+                    {
+                        "ticker": p.wind_code,
+                        "asset_type": "OPTION",
+                        "leg_role": self._leg_role(p.leg),
+                        "multiplier": self.m_opt,
+                        "qty": float(p.n),
+                        "close": float(p.mid),
+                        "strike": float(p.strike),
+                        "cp": p.cp,
+                        "expiry": str(p.expiry)[:10],
+                    }
+                )
+        return rows
+
+    def _fut_prev_seeds(self, book: BookState, prev_fut: pd.DataFrame) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for qty, code in (
+            (book.fut_short, book.fut_short_code),
+            (book.fut_long, book.fut_long_code),
+        ):
+            if not code or abs(float(qty)) <= 1e-12:
+                continue
+            px = self._fut_close(prev_fut, code)
+            rows.append(
+                {
+                    "ticker": code,
+                    "asset_type": "FUTURE",
+                    "leg_role": "HEDGE_FUT",
+                    "multiplier": self.m_fut,
+                    "qty": float(qty),
+                    "close": px if math.isfinite(px) else None,
+                    "strike": None,
+                    "cp": None,
+                    "expiry": None,
+                }
+            )
+        return rows
+
+    def _emit_option_trades(
+        self,
+        trades: List[Dict[str, Any]],
+        vintage: Vintage,
+        action: str,
+        sign: float,
+        today: str,
+    ) -> None:
+        for p in vintage.legs:
+            act = action
+            if action != "OPEN_NEW_VINTAGE" and str(p.expiry)[:10] <= today:
+                act = "EXPIRY_SETTLE"
+            trades.append(
+                {
+                    "ticker": p.wind_code,
+                    "asset_type": "OPTION",
+                    "leg_role": self._leg_role(p.leg),
+                    "action_type": act,
+                    "vintage_id": vintage.vintage_id,
+                    "qty": float(sign) * float(p.n),
+                    "trade_price": float(p.mid),
+                    "multiplier": self.m_opt,
+                    "strike": float(p.strike),
+                    "cp": p.cp,
+                    "expiry": str(p.expiry)[:10],
+                }
+            )
+
+    def _emit_hedge_leg(
+        self,
+        trades: List[Dict[str, Any]],
+        old_qty: float,
+        old_code: str,
+        new_qty: float,
+        new_code: str,
+        new_px: float,
+        day_fut: pd.DataFrame,
+        prev_px_by_code: Dict[str, Optional[float]],
+        mark_futures: bool,
+    ) -> None:
+        old_code = str(old_code or "")
+        new_code = str(new_code or "")
+        if abs(old_qty) <= 1e-12 and abs(new_qty) <= 1e-12:
+            return
+
+        def _px(code: str, hinted: float) -> float:
+            if math.isfinite(hinted):
+                return float(hinted)
+            looked = self._fut_close(day_fut, code)
+            if math.isfinite(looked):
+                return looked
+            prev = prev_px_by_code.get(code)
+            return float(prev) if prev is not None and math.isfinite(float(prev)) else float("nan")
+
+        def _push(code: str, qty: float, px: float, action: str) -> None:
+            if not code or abs(qty) <= 1e-12 or not math.isfinite(px):
+                return
+            price = float(px)
+            if not mark_futures:
+                prev = prev_px_by_code.get(code)
+                if prev is not None and math.isfinite(float(prev)):
+                    price = float(prev)
+            trades.append(
+                {
+                    "ticker": code,
+                    "asset_type": "FUTURE",
+                    "leg_role": "HEDGE_FUT",
+                    "action_type": action,
+                    "vintage_id": "PORTFOLIO_HEDGE",
+                    "qty": float(qty),
+                    "trade_price": price,
+                    "multiplier": self.m_fut,
+                    "strike": None,
+                    "cp": None,
+                    "expiry": None,
+                }
+            )
+
+        if old_code and old_code == new_code:
+            _push(new_code, new_qty - old_qty, _px(new_code, new_px), "EOD_DELTA_HEDGE")
+            return
+        if old_code and abs(old_qty) > 1e-12:
+            _push(old_code, -old_qty, _px(old_code, float("nan")), "FUTURES_ROLL")
+        if new_code and abs(new_qty) > 1e-12:
+            action = "FUTURES_ROLL" if old_code and old_code != new_code else "EOD_DELTA_HEDGE"
+            _push(new_code, new_qty, _px(new_code, new_px), action)
+
+    def _eod_marks(self, book: BookState, px_s: float, px_l: float) -> Dict[str, Dict[str, Any]]:
+        acc: Dict[str, Dict[str, float]] = {}
+        for v in book.vintages:
+            for p in v.legs:
+                slot = acc.setdefault(
+                    p.wind_code,
+                    {"qty": 0.0, "delta": 0.0, "gamma": 0.0, "vega": 0.0, "theta": 0.0, "close": float(p.mid)},
+                )
+                slot["qty"] += float(p.n)
+                slot["delta"] += float(p.n) * float(p.delta)
+                slot["gamma"] += float(p.n) * float(p.gamma)
+                slot["vega"] += float(p.n) * float(p.vega)
+                slot["theta"] += float(p.n) * float(p.theta)
+                slot["close"] = float(p.mid)
+        marks: Dict[str, Dict[str, Any]] = {}
+        for ticker, slot in acc.items():
+            q = slot["qty"]
+            scale = (1.0 / q) if abs(q) > 1e-12 else 0.0
+            marks[ticker] = {
+                "close": slot["close"],
+                "delta": slot["delta"] * scale,
+                "gamma": slot["gamma"] * scale,
+                "vega": slot["vega"] * scale,
+                "theta": slot["theta"] * scale,
+                "asset_type": "OPTION",
+                "multiplier": self.m_opt,
+            }
+        if book.fut_short_code and abs(book.fut_short) > 1e-12 and math.isfinite(px_s):
+            marks[book.fut_short_code] = {
+                "close": float(px_s),
+                "delta": 1.0,
+                "gamma": 0.0,
+                "vega": 0.0,
+                "theta": 0.0,
+                "asset_type": "FUTURE",
+                "multiplier": self.m_fut,
+            }
+        if book.fut_long_code and abs(book.fut_long) > 1e-12 and math.isfinite(px_l):
+            prev = marks.get(book.fut_long_code)
+            if prev is None or prev.get("asset_type") == "FUTURE":
+                marks[book.fut_long_code] = {
+                    "close": float(px_l),
+                    "delta": 1.0,
+                    "gamma": 0.0,
+                    "vega": 0.0,
+                    "theta": 0.0,
+                    "asset_type": "FUTURE",
+                    "multiplier": self.m_fut,
+                }
+        return marks
+
     def _lots_from_book(self, book: BookState, vintage_filter: Optional[str] = None) -> List[OptionLot]:
         lots: List[OptionLot] = []
         for v in book.vintages:
@@ -1166,6 +1382,16 @@ class Csi300VolRvEngine:
             S = float(spot.loc[d]) if d in spot.index else float("nan")
             short_opt = long_opt = fut_pnl = cost = 0.0
             g_delta = g_basis = g_gamma = g_theta = g_vega = g_resid = 0.0
+            day_trades: List[Dict[str, Any]] = []
+            prev_seeds: List[Dict[str, Any]] = []
+            had_vintages = bool(book.vintages)
+            mark_futures = i > 0 and had_vintages
+            if record_holdings:
+                prev_seeds.extend(self._option_prev_seeds(book))
+                if i > 0:
+                    prev_seeds.extend(
+                        self._fut_prev_seeds(book, fut_by_day.get(dates[i - 1], pd.DataFrame()))
+                    )
 
             # 1) Mark previous book to today + Black-76 greek / basis decomposition.
             if i > 0 and book.vintages:
@@ -1226,12 +1452,18 @@ class Csi300VolRvEngine:
                 for v in book.vintages:
                     still = []
                     for p in v.legs:
-                        mtm = self._mtm_leg(p, day_opts)
-                        if mtm is None:
-                            # Drop missing; crystallize zero overnight.
-                            still.append(p)
-                            continue
-                        mid_now, iv_now, g = mtm
+                        expired = str(p.expiry)[:10] <= d and math.isfinite(S)
+                        if expired:
+                            mid_now = option_intrinsic(S, float(p.strike), p.cp)
+                            iv_now = float(p.iv)
+                            g = {"delta": 0.0, "gamma": 0.0, "vega": 0.0, "theta": 0.0}
+                        else:
+                            mtm = self._mtm_leg(p, day_opts)
+                            if mtm is None:
+                                # Missing quote: crystallize zero overnight.
+                                still.append(p)
+                                continue
+                            mid_now, iv_now, g = mtm
                         pnl = self.m_opt * p.n * (mid_now - p.mid)
                         if p.leg == "short":
                             short_opt += pnl
@@ -1279,12 +1511,13 @@ class Csi300VolRvEngine:
             kept: List[Vintage] = []
             for v in book.vintages:
                 if d >= v.exit_date:
-                    # Close options at mid; cost on notional.
+                    # Close options at the mark already booked above; cost only.
+                    if record_holdings:
+                        self._emit_option_trades(day_trades, v, "CLOSE_ROLL", -1.0, d)
                     for p in v.legs:
                         notional = abs(p.n) * p.mid * self.m_opt
                         c = self._option_trade_cost(notional)
                         cost += c
-                        # Closing PnL already in overnight mark; here only costs.
                     continue
                 kept.append(v)
             book.vintages = kept
@@ -1333,6 +1566,8 @@ class Csi300VolRvEngine:
                     open_cost += self._option_trade_cost(abs(p.n) * p.mid * self.m_opt)
                 cost += open_cost
                 book.vintages.append(vin)
+                if record_holdings:
+                    self._emit_option_trades(day_trades, vin, "OPEN_NEW_VINTAGE", 1.0, d)
                 if math.isfinite(vin.premium_pct):
                     premium_hist.append(vin.premium_pct)
                 leverages.append(vin.leverage)
@@ -1374,12 +1609,52 @@ class Csi300VolRvEngine:
                 cost += self._fut_trade_cost(d_s, px_s)
             if math.isfinite(px_l):
                 cost += self._fut_trade_cost(d_l, px_l)
+            if record_holdings:
+                prev_px = {
+                    str(s["ticker"]): s.get("close")
+                    for s in prev_seeds
+                    if s.get("asset_type") == "FUTURE"
+                }
+                self._emit_hedge_leg(
+                    day_trades,
+                    book.fut_short,
+                    book.fut_short_code,
+                    t_s,
+                    code_s,
+                    px_s,
+                    day_fut,
+                    prev_px,
+                    mark_futures,
+                )
+                self._emit_hedge_leg(
+                    day_trades,
+                    book.fut_long,
+                    book.fut_long_code,
+                    t_l,
+                    code_l,
+                    px_l,
+                    day_fut,
+                    prev_px,
+                    mark_futures,
+                )
             book.fut_short = t_s
             book.fut_long = t_l
             book.fut_short_code = code_s
             book.fut_long_code = code_l
             if record_holdings and (book.vintages or abs(book.fut_short) > 1e-12 or abs(book.fut_long) > 1e-12):
                 self._snapshot_holdings(d, book, px_s, px_l)
+            if record_holdings:
+                self._ledger_days.append(
+                    {
+                        "trade_date": d,
+                        "spot": S if math.isfinite(S) else None,
+                        "prev": prev_seeds,
+                        "trades": day_trades,
+                        "marks": self._eod_marks(book, px_s, px_l),
+                        "mark_futures": mark_futures,
+                        "gross_pnl": short_opt + long_opt + fut_pnl,
+                    }
+                )
 
             nav -= cost  # subtract costs not already in net (overnight net excluded cost)
             # Recompute day's net including costs for attribution identity.
@@ -1436,6 +1711,8 @@ class Csi300VolRvEngine:
         }
 
     def run(self) -> Dict[str, Any]:
+        self._holdings_rows = []
+        self._ledger_days = []
         opt, spot, fut = self._load()
         opt_by_day = {td: g.copy() for td, g in opt.groupby("trade_date")}
         fut_by_day = self._fut_map(fut)
@@ -1723,6 +2000,32 @@ class Csi300VolRvEngine:
                 "spread": [None for _ in idx],
                 "position": [int(perf[i]["position"]) for i in idx],
                 "signal_mode": "csi300_vol_rv",
+            },
+            **self._ledger_payload(),
+        }
+
+    def _ledger_payload(self) -> Dict[str, Any]:
+        if not self._ledger_days:
+            return {"ledger": {"available": False, "start": None, "end": None, "n_rows": 0}}
+        ledger_df, blotter_df = build_position_ledger(self._ledger_days)
+        by_day = portfolio_pnl_by_day(ledger_df)
+        gap = 0.0
+        for day in self._ledger_days:
+            gross = day.get("gross_pnl")
+            if gross is None:
+                continue
+            got = by_day.get(str(day["trade_date"])[:10], 0.0)
+            gap = max(gap, abs(got - float(gross)))
+        dates = [str(d) for d in ledger_df["trade_date"].tolist()] if not ledger_df.empty else []
+        return {
+            "position_pnl_ledger": _frame_records(ledger_df),
+            "trade_blotter": _frame_records(blotter_df),
+            "ledger": {
+                "available": not ledger_df.empty,
+                "start": dates[0] if dates else None,
+                "end": dates[-1] if dates else None,
+                "n_rows": int(len(ledger_df)),
+                "max_abs_gap": gap,
             },
         }
 

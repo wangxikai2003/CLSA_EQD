@@ -165,3 +165,4 @@ class QISBacktestResponse(BaseModel):
     pnl_decomposition: Optional[PnLDecomposition] = None
     signal: Optional[QISSignalSeries] = None
     pnl_contribution: Optional[Dict[str, Any]] = None
+    ledger: Optional[Dict[str, Any]] = None

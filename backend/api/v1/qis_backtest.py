@@ -21,6 +21,145 @@ _ANN = 252
 _cache: Dict[str, Any] = {"key": None, "payload": None}
 
 
+def _ensure_vol_rv(
+    *,
+    src: str,
+    refresh: bool,
+    universe: str,
+    tilt: str,
+    target_otm_delta: float,
+    long_delta_threshold: float,
+    hedger_mode: str,
+    lambda_tilt: Optional[float],
+    l_min: Optional[float],
+    l_max: Optional[float],
+    option_fee_pct: float,
+    option_slippage_pct: float,
+    futures_fee_pct: float,
+    futures_slippage_pct: float,
+    ablation: bool,
+) -> Dict[str, Any]:
+    from api.v1 import qis_results_store as qrs
+    from engine.csi300_vol_rv_strategy import (
+        CACHE_SIDE,
+        CACHE_SPREAD,
+        cache_tenor_for,
+        normalize_tilt,
+        normalize_universe,
+        run_csi300_vol_rv,
+        vol_rv_cache_sig,
+    )
+
+    try:
+        t = normalize_tilt(tilt)
+        uni = normalize_universe(universe)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    cache_tenor = cache_tenor_for(uni)
+    hm = str(hedger_mode or "eod_close").strip().lower()
+    if hm not in ("eod_close", "eod", "close", "intraday_curve", "intraday", "curve"):
+        raise HTTPException(400, f"unknown hedger_mode {hedger_mode!r}")
+    run_hm = "eod_close"
+    sig = vol_rv_cache_sig(
+        t,
+        target_otm_delta,
+        long_delta_threshold,
+        hm if hm.startswith("intraday") else run_hm,
+        lambda_tilt,
+        l_min,
+        l_max,
+        uni,
+    )
+    strategy_id = "csi300_vol_rv"
+    mem_key = (
+        strategy_id,
+        252,
+        src,
+        _INITIAL_NAV,
+        cache_tenor,
+        CACHE_SIDE,
+        CACHE_SPREAD,
+        sig,
+        bool(ablation),
+        round(float(option_fee_pct), 6),
+        round(float(option_slippage_pct), 6),
+        round(float(futures_fee_pct), 6),
+        round(float(futures_slippage_pct), 6),
+    )
+    if not refresh:
+        hit = qrs.get_cached(
+            strategy_id,
+            252,
+            _INITIAL_NAV,
+            src,
+            tenor_pair=cache_tenor,
+            side_mode=CACHE_SIDE,
+            spread_mode=CACHE_SPREAD,
+            signal_mode=sig,
+        )
+        if hit is not None:
+            return hit
+        mem = _cache.get("vol_rv_map") or {}
+        if mem_key in mem:
+            return qrs.attach_cache_meta(
+                mem[mem_key],
+                hit=True,
+                source="memory",
+                source_key=src,
+                tenor_pair=cache_tenor,
+                side_mode=CACHE_SIDE,
+                spread_mode=CACHE_SPREAD,
+                signal_mode=sig,
+            )
+    try:
+        payload = run_csi300_vol_rv(
+            initial_nav=_INITIAL_NAV,
+            tilt=t,
+            universe=uni,
+            target_otm_delta=target_otm_delta,
+            long_delta_threshold=long_delta_threshold,
+            hedger_mode=run_hm,
+            lambda_tilt=lambda_tilt,
+            l_min=l_min,
+            l_max=l_max,
+            option_fee_pct=option_fee_pct,
+            option_slippage_pct=option_slippage_pct,
+            futures_fee_pct=futures_fee_pct,
+            futures_slippage_pct=futures_slippage_pct,
+            run_ablation=bool(ablation),
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(503, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, f"csi300_vol_rv failed: {e}") from e
+    qrs.put_cached(
+        strategy_id,
+        252,
+        _INITIAL_NAV,
+        src,
+        payload,
+        tenor_pair=cache_tenor,
+        side_mode=CACHE_SIDE,
+        spread_mode=CACHE_SPREAD,
+        signal_mode=sig,
+    )
+    clean = {k: v for k, v in payload.items() if not str(k).startswith("_")}
+    mem = _cache.get("vol_rv_map") or {}
+    mem[mem_key] = clean
+    _cache["vol_rv_map"] = mem
+    return qrs.attach_cache_meta(
+        payload,
+        hit=False,
+        source="miss",
+        source_key=src,
+        persisted=True,
+        tenor_pair=cache_tenor,
+        side_mode=CACHE_SIDE,
+        spread_mode=CACHE_SPREAD,
+        signal_mode=sig,
+    )
+
+
 def run_cross_calendar_carry(
     initial_nav: float = _INITIAL_NAV,
     slippage: float = _SLIPPAGE,
@@ -418,125 +557,22 @@ def backtest(
         )
 
     if strategy_id == "csi300_vol_rv":
-        from engine.csi300_vol_rv_strategy import (
-            CACHE_SIDE,
-            CACHE_SPREAD,
-            cache_tenor_for,
-            normalize_tilt,
-            normalize_universe,
-            run_csi300_vol_rv,
-            vol_rv_cache_sig,
-        )
-
-        try:
-            t = normalize_tilt(tilt)
-            uni = normalize_universe(universe)
-        except ValueError as e:
-            raise HTTPException(400, str(e)) from e
-        cache_tenor = cache_tenor_for(uni)
-        hm = str(hedger_mode or "eod_close").strip().lower()
-        if hm not in ("eod_close", "eod", "close", "intraday_curve", "intraday", "curve"):
-            raise HTTPException(400, f"unknown hedger_mode {hedger_mode!r}")
-        # Stub: fall back to EOD until intraday bars exist; still fingerprint the request.
-        run_hm = "eod_close"
-        sig = vol_rv_cache_sig(
-            t,
-            target_otm_delta,
-            long_delta_threshold,
-            hm if hm.startswith("intraday") else run_hm,
-            lambda_tilt,
-            l_min,
-            l_max,
-            uni,
-        )
-        mem_key = (
-            strategy_id,
-            252,
-            src,
-            _INITIAL_NAV,
-            cache_tenor,
-            CACHE_SIDE,
-            CACHE_SPREAD,
-            sig,
-            bool(ablation),
-            round(float(option_fee_pct), 6),
-            round(float(option_slippage_pct), 6),
-            round(float(futures_fee_pct), 6),
-            round(float(futures_slippage_pct), 6),
-        )
-        if not refresh:
-            hit = qrs.get_cached(
-                strategy_id,
-                252,
-                _INITIAL_NAV,
-                src,
-                tenor_pair=cache_tenor,
-                side_mode=CACHE_SIDE,
-                spread_mode=CACHE_SPREAD,
-                signal_mode=sig,
-            )
-            if hit is not None:
-                return hit
-            mem = _cache.get("vol_rv_map") or {}
-            if mem_key in mem:
-                return qrs.attach_cache_meta(
-                    mem[mem_key],
-                    hit=True,
-                    source="memory",
-                    source_key=src,
-                    tenor_pair=cache_tenor,
-                    side_mode=CACHE_SIDE,
-                    spread_mode=CACHE_SPREAD,
-                    signal_mode=sig,
-                )
-
-        try:
-            payload = run_csi300_vol_rv(
-                initial_nav=_INITIAL_NAV,
-                tilt=t,
-                universe=uni,
-                target_otm_delta=target_otm_delta,
-                long_delta_threshold=long_delta_threshold,
-                hedger_mode=run_hm,
-                lambda_tilt=lambda_tilt,
-                l_min=l_min,
-                l_max=l_max,
-                option_fee_pct=option_fee_pct,
-                option_slippage_pct=option_slippage_pct,
-                futures_fee_pct=futures_fee_pct,
-                futures_slippage_pct=futures_slippage_pct,
-                run_ablation=bool(ablation),
-            )
-        except FileNotFoundError as e:
-            raise HTTPException(503, str(e)) from e
-        except Exception as e:
-            raise HTTPException(500, f"csi300_vol_rv failed: {e}") from e
-
-        qrs.put_cached(
-            strategy_id,
-            252,
-            _INITIAL_NAV,
-            src,
-            payload,
-            tenor_pair=cache_tenor,
-            side_mode=CACHE_SIDE,
-            spread_mode=CACHE_SPREAD,
-            signal_mode=sig,
-        )
-        clean = {k: v for k, v in payload.items() if not str(k).startswith("_")}
-        mem = _cache.get("vol_rv_map") or {}
-        mem[mem_key] = clean
-        _cache["vol_rv_map"] = mem
-        return qrs.attach_cache_meta(
-            payload,
-            hit=False,
-            source="miss",
-            source_key=src,
-            persisted=True,
-            tenor_pair=cache_tenor,
-            side_mode=CACHE_SIDE,
-            spread_mode=CACHE_SPREAD,
-            signal_mode=sig,
+        return _ensure_vol_rv(
+            src=src,
+            refresh=bool(refresh),
+            universe=universe,
+            tilt=tilt,
+            target_otm_delta=target_otm_delta,
+            long_delta_threshold=long_delta_threshold,
+            hedger_mode=hedger_mode,
+            lambda_tilt=lambda_tilt,
+            l_min=l_min,
+            l_max=l_max,
+            option_fee_pct=option_fee_pct,
+            option_slippage_pct=option_slippage_pct,
+            futures_fee_pct=futures_fee_pct,
+            futures_slippage_pct=futures_slippage_pct,
+            ablation=bool(ablation),
         )
 
     if strategy_id == "cross_calendar_carry":
@@ -729,6 +765,203 @@ def cache_status():
     from api.v1 import qis_results_store as qrs
 
     return {"db": str(qrs.results_db_path(create_parent=False)), "entries": qrs.list_cached()}
+
+
+_LEDGER_DROP = {
+    "strategy_id",
+    "z_window",
+    "initial_nav",
+    "tenor_pair",
+    "side_mode",
+    "spread_mode",
+    "signal_mode",
+    "seq",
+}
+
+
+def _public_ledger_row(rec: Dict[str, Any]) -> Dict[str, Any]:
+    out = {}
+    for k, v in rec.items():
+        if k in _LEDGER_DROP:
+            continue
+        if isinstance(v, float) and v != v:
+            out[k] = None
+        else:
+            out[k] = v
+    return out
+
+
+def _sum_field(rows: List[Dict[str, Any]], key: str) -> float:
+    total = 0.0
+    for r in rows:
+        try:
+            v = float(r.get(key) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if v == v:
+            total += v
+    return total
+
+
+@router.get("/backtest/{strategy_id}/ledger")
+def download_ledger(
+    strategy_id: str,
+    trade_date: Optional[str] = Query(None, description="YYYY-MM-DD; default latest"),
+    view: str = Query("day", description="day | aggregate"),
+    refresh: bool = Query(False),
+    universe: str = Query("300"),
+    tilt: str = Query("balanced"),
+    target_otm_delta: float = Query(0.15, gt=0.01, lt=0.5),
+    long_delta_threshold: float = Query(0.05, ge=0.0, le=1.0),
+    lambda_tilt: Optional[float] = Query(None),
+    l_min: Optional[float] = Query(None),
+    l_max: Optional[float] = Query(None),
+    hedger_mode: str = Query("eod_close"),
+    option_fee_pct: float = Query(0.0, ge=0.0, le=0.05),
+    option_slippage_pct: float = Query(0.0, ge=0.0, le=0.05),
+    futures_fee_pct: float = Query(0.0, ge=0.0, le=0.05),
+    futures_slippage_pct: float = Query(0.0, ge=0.0, le=0.05),
+):
+    """Position & P&L ledger for Vol RV. Day view or full-sample aggregate. Fees excluded."""
+    if strategy_id != "csi300_vol_rv":
+        raise HTTPException(404, f"Ledger export only for csi300_vol_rv; got {strategy_id}")
+    if view not in ("day", "aggregate"):
+        raise HTTPException(400, "view must be day or aggregate")
+    from api.v1 import qis_results_store as qrs
+    from engine.margin_estimator import estimate_margin
+
+    db = st._equity_db()
+    spot_path = next((p for p in st._SPOT_CANDIDATES if p.exists()), None)
+    src = qrs.source_key(db, spot_path)
+    # Match the default backtest cache (ablation on). Step3 is the only book that records the ledger.
+    payload = _ensure_vol_rv(
+        src=src,
+        refresh=bool(refresh),
+        universe=universe,
+        tilt=tilt,
+        target_otm_delta=target_otm_delta,
+        long_delta_threshold=long_delta_threshold,
+        hedger_mode=hedger_mode,
+        lambda_tilt=lambda_tilt,
+        l_min=l_min,
+        l_max=l_max,
+        option_fee_pct=option_fee_pct,
+        option_slippage_pct=option_slippage_pct,
+        futures_fee_pct=futures_fee_pct,
+        futures_slippage_pct=futures_slippage_pct,
+        ablation=True,
+    )
+    meta = payload.get("_cache") or {}
+    sig = str(meta.get("signal_mode") or "")
+    tenor = str(meta.get("tenor_pair") or "")
+    side = str(meta.get("side_mode") or "both")
+    spread = str(meta.get("spread_mode") or "iv")
+    dates = qrs.ledger_dates(strategy_id, 252, _INITIAL_NAV, tenor, side, spread, sig)
+    chosen = str(trade_date)[:10] if trade_date else (dates[-1] if dates else None)
+    if chosen and dates and chosen not in dates:
+        raise HTTPException(404, f"no ledger rows on {chosen}")
+
+    def _margin_for(day_rows: List[Dict[str, Any]], day: Optional[str]) -> Dict[str, Any]:
+        if not day_rows or not day:
+            return {
+                "option_short_margin": None,
+                "futures_margin": None,
+                "total_margin_required": None,
+                "margin_to_nav_ratio": None,
+                "margin_note": None,
+            }
+        frame = pd.DataFrame(day_rows)
+        nav_map = {}
+        base = float((payload.get("params") or {}).get("initial_nav") or _INITIAL_NAV)
+        for rec in payload.get("nav_daily") or []:
+            try:
+                nav_map[str(rec["d"])[:10]] = float(rec["nav"]) * base
+            except (KeyError, TypeError, ValueError):
+                continue
+        nav_s = pd.Series(nav_map) if nav_map else None
+        est = estimate_margin(frame, nav=nav_s)
+        if est.empty:
+            return {
+                "option_short_margin": None,
+                "futures_margin": None,
+                "total_margin_required": None,
+                "margin_to_nav_ratio": None,
+                "margin_note": None,
+            }
+        hit = est[est["trade_date"] == day]
+        row = (hit.iloc[0] if not hit.empty else est.iloc[-1]).to_dict()
+        return {k: _public_ledger_row({k: row.get(k)}).get(k) for k in (
+            "option_short_margin",
+            "futures_margin",
+            "total_margin_required",
+            "margin_to_nav_ratio",
+            "margin_note",
+        )}
+
+    if view == "aggregate":
+        rows = [_public_ledger_row(r) for r in qrs.ledger_aggregate(
+            strategy_id, 252, _INITIAL_NAV, tenor, side, spread, sig
+        )]
+        last = dates[-1] if dates else None
+        day_pack = (
+            qrs.ledger_day(strategy_id, 252, _INITIAL_NAV, tenor, side, spread, sig, last)
+            if last
+            else {"rows": [], "blotter": []}
+        )
+        margin = _margin_for(day_pack["rows"], last)
+        summary = {
+            "holding_pnl": _sum_field(rows, "holding_pnl"),
+            "trading_pnl": _sum_field(rows, "trading_pnl"),
+            "total_pnl": _sum_field(rows, "total_pnl"),
+            "n_trades": int(_sum_field(rows, "trade_days")),
+            "eod_delta": None,
+            "eod_gamma": None,
+            "eod_vega": None,
+            "eod_theta": None,
+            "fee": 0.0,
+            **margin,
+        }
+        return {
+            "strategy_id": strategy_id,
+            "view": "aggregate",
+            "trade_date": last,
+            "dates": dates,
+            "rows": rows,
+            "blotter": [],
+            "summary": summary,
+            "ledger": payload.get("ledger") or {},
+        }
+
+    pack = (
+        qrs.ledger_day(strategy_id, 252, _INITIAL_NAV, tenor, side, spread, sig, chosen)
+        if chosen
+        else {"rows": [], "blotter": []}
+    )
+    rows = [_public_ledger_row(r) for r in pack["rows"]]
+    blotter = [_public_ledger_row(r) for r in pack["blotter"]]
+    margin = _margin_for(pack["rows"], chosen)
+    summary = {
+        "holding_pnl": _sum_field(rows, "holding_pnl"),
+        "trading_pnl": _sum_field(rows, "trading_pnl"),
+        "total_pnl": _sum_field(rows, "total_pnl"),
+        "n_trades": len(blotter),
+        "eod_delta": _sum_field(rows, "eod_delta"),
+        "eod_gamma": _sum_field(rows, "eod_gamma"),
+        "eod_vega": _sum_field(rows, "eod_vega"),
+        "eod_theta": _sum_field(rows, "eod_theta"),
+        "fee": 0.0,
+        **margin,
+    }
+    return {
+        "strategy_id": strategy_id,
+        "view": "day",
+        "trade_date": chosen,
+        "dates": dates,
+        "rows": rows,
+        "blotter": blotter,
+        "summary": summary,
+        "ledger": payload.get("ledger") or {},
+    }
 
 
 @router.get("/backtest/{strategy_id}/holdings.xlsx")

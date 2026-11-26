@@ -23,6 +23,7 @@ import {
   isRegimeSignalMode,
 } from '../../services/api_v1';
 import ChartZoomFrame from './ChartZoomFrame';
+import QisLedgerPanel from './QisLedgerPanel';
 
 const CAL_VOL_TENORS: { key: QisTenorPair; label: string }[] = [
   { key: '3M-6M', label: '3M–6M' },
@@ -268,6 +269,7 @@ const QisView: React.FC = () => {
   const [hedgerMode, setHedgerMode] = useState<QisHedgerMode>('eod_close');
   const [optFeePct, setOptFeePct] = useState(0);
   const [optSlipPct, setOptSlipPct] = useState(0);
+  const [ledgerChartDate, setLedgerChartDate] = useState<string | null>(null);
   const [basketMethod, setBasketMethod] = useState<QisBasketMethod>('vol_rp');
   const [basketTargetVol, setBasketTargetVol] = useState(0.1);
   const [basketCvarAlpha, setBasketCvarAlpha] = useState(0.05);
@@ -1952,7 +1954,13 @@ const QisView: React.FC = () => {
             >
               {(win) => (
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={win.data}>
+                  <LineChart
+                    data={win.data}
+                    onClick={(state) => {
+                      const label = (state as { activeLabel?: string | number } | undefined)?.activeLabel;
+                      if (isVolRv && label != null) setLedgerChartDate(String(label));
+                    }}
+                  >
                     <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                     <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
                     <YAxis
@@ -2027,12 +2035,27 @@ const QisView: React.FC = () => {
             </ChartZoomFrame>
             <p className="text-[9px] text-slate-400 mt-1">
               {isVolRv
-                ? '主曲线 Step3（动态杠杆，实线）；Step2 长端阈值虚线；Step1 全量 EOD 对冲虚线。贴边滑条可缩放/平移。'
+                ? '主曲线 Step3（动态杠杆，实线）；Step2 长端阈值虚线；Step1 全量 EOD 对冲虚线。点击曲线上的日期打开当日持仓台账。贴边滑条可缩放/平移。'
                 : isBasket
                   ? '黄线：Basket 净值（目标波动杠杆后）。灰虚线：等权未杠杆参考。权重仅用过去 lookback，无前视。'
                   : '黄线：净值（粗）与 IV spread（细）。点落在 spread 轴上：Long/Normal 红 · Short/Reverse 绿 · 平仓蓝（由 executed position 变化推导）。贴边滑条：横向/纵向缩放与平移。'}
             </p>
           </div>
+
+          {isVolRv && (
+            <QisLedgerPanel
+              chartDate={ledgerChartDate}
+              params={{
+                universe: volUniverse,
+                tilt: volTilt,
+                target_otm_delta: targetOtmDelta,
+                long_delta_threshold: longDeltaThr,
+                hedger_mode: hedgerMode,
+                option_fee_pct: optFeePct,
+                option_slippage_pct: optSlipPct,
+              }}
+            />
+          )}
 
           {isBasket && data.basket && (
             <>

@@ -279,6 +279,14 @@ export interface QisBacktestResponse {
   greeks_summary?: QisVolRvGreeksSummary;
   /** QIS Basket risk-parity block. */
   basket?: QisBasketBlock;
+  /** Vol RV ledger is stored beside the chart payload and loaded by date. */
+  ledger?: {
+    available: boolean;
+    start?: string | null;
+    end?: string | null;
+    n_rows?: number;
+    max_abs_gap?: number;
+  };
   /** Result-store reuse: hit=true means engine was skipped. */
   _cache?: {
     hit: boolean;
@@ -380,6 +388,102 @@ export function fetchQisBacktest(
       baseDelayMs: retry.baseDelayMs ?? 2000,
       maxDelayMs: retry.maxDelayMs ?? 20000,
     }
+  );
+}
+
+export interface QisLedgerRow {
+  trade_date?: string;
+  ticker: string;
+  asset_type?: string;
+  leg_role?: string;
+  multiplier?: number | null;
+  prev_close?: number | null;
+  close_price?: number | null;
+  prev_pos?: number | null;
+  trade_qty?: number | null;
+  avg_trade_price?: number | null;
+  curr_pos?: number | null;
+  holding_pnl?: number | null;
+  trading_pnl?: number | null;
+  total_pnl?: number | null;
+  eod_delta?: number | null;
+  eod_gamma?: number | null;
+  eod_vega?: number | null;
+  eod_theta?: number | null;
+  strike?: number | null;
+  cp?: string | null;
+  expiry?: string | null;
+  trade_days?: number | null;
+}
+
+export interface QisBlotterRow {
+  trade_date?: string;
+  ticker: string;
+  asset_type?: string;
+  leg_role?: string;
+  action_type: string;
+  vintage_id?: string | null;
+  qty?: number | null;
+  trade_price?: number | null;
+  notional?: number | null;
+}
+
+export interface QisLedgerSummary {
+  holding_pnl: number;
+  trading_pnl: number;
+  total_pnl: number;
+  n_trades: number;
+  eod_delta: number | null;
+  eod_gamma: number | null;
+  eod_vega: number | null;
+  eod_theta: number | null;
+  option_short_margin: number | null;
+  futures_margin: number | null;
+  total_margin_required: number | null;
+  margin_to_nav_ratio: number | null;
+  margin_note?: string | null;
+  fee?: number;
+}
+
+export interface QisLedgerResponse {
+  strategy_id: string;
+  view: 'day' | 'aggregate';
+  trade_date: string | null;
+  dates: string[];
+  rows: QisLedgerRow[];
+  blotter: QisBlotterRow[];
+  summary: QisLedgerSummary;
+}
+
+export function fetchQisLedger(
+  params: QisVolRvParams & { trade_date?: string | null; view?: 'day' | 'aggregate'; refresh?: boolean },
+  opts?: AbortSignal | FetchRetryOpts,
+) {
+  const q = new URLSearchParams();
+  q.set('view', params.view || 'day');
+  if (params.trade_date) q.set('trade_date', params.trade_date);
+  if (params.refresh) q.set('refresh', 'true');
+  if (params.universe) q.set('universe', String(params.universe));
+  if (params.tilt) q.set('tilt', String(params.tilt));
+  if (params.target_otm_delta != null) q.set('target_otm_delta', String(params.target_otm_delta));
+  if (params.long_delta_threshold != null) q.set('long_delta_threshold', String(params.long_delta_threshold));
+  if (params.lambda_tilt != null) q.set('lambda_tilt', String(params.lambda_tilt));
+  if (params.l_min != null) q.set('l_min', String(params.l_min));
+  if (params.l_max != null) q.set('l_max', String(params.l_max));
+  if (params.hedger_mode) q.set('hedger_mode', String(params.hedger_mode));
+  if (params.option_fee_pct != null) q.set('option_fee_pct', String(params.option_fee_pct));
+  if (params.option_slippage_pct != null) q.set('option_slippage_pct', String(params.option_slippage_pct));
+  if (params.futures_fee_pct != null) q.set('futures_fee_pct', String(params.futures_fee_pct));
+  if (params.futures_slippage_pct != null) q.set('futures_slippage_pct', String(params.futures_slippage_pct));
+  const retry = _asRetryOpts(opts);
+  return getJsonWithRetry<QisLedgerResponse>(
+    `/api/v1/qis/backtest/csi300_vol_rv/ledger?${q}`,
+    {
+      ...retry,
+      maxAttempts: retry.maxAttempts ?? 4,
+      baseDelayMs: retry.baseDelayMs ?? 1500,
+      maxDelayMs: retry.maxDelayMs ?? 12000,
+    },
   );
 }
 

@@ -98,6 +98,69 @@ CREATE TABLE IF NOT EXISTS qis_backtest_cache (
   PRIMARY KEY (strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode, signal_mode)
 );
 CREATE INDEX IF NOT EXISTS idx_qis_cache_src ON qis_backtest_cache(source_key);
+
+CREATE TABLE IF NOT EXISTS qis_position_ledger (
+  strategy_id TEXT NOT NULL,
+  z_window INTEGER NOT NULL,
+  initial_nav REAL NOT NULL,
+  tenor_pair TEXT NOT NULL,
+  side_mode TEXT NOT NULL,
+  spread_mode TEXT NOT NULL,
+  signal_mode TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  ticker TEXT NOT NULL,
+  asset_type TEXT,
+  leg_role TEXT,
+  multiplier REAL,
+  prev_close REAL,
+  close_price REAL,
+  prev_pos REAL,
+  trade_qty REAL,
+  avg_trade_price REAL,
+  curr_pos REAL,
+  holding_pnl REAL,
+  trading_pnl REAL,
+  total_pnl REAL,
+  eod_notional REAL,
+  eod_delta REAL,
+  eod_gamma REAL,
+  eod_vega REAL,
+  eod_theta REAL,
+  strike REAL,
+  cp TEXT,
+  expiry TEXT,
+  spot REAL,
+  PRIMARY KEY (
+    strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode, signal_mode,
+    trade_date, ticker
+  )
+);
+CREATE INDEX IF NOT EXISTS idx_qis_ledger_date ON qis_position_ledger(strategy_id, signal_mode, trade_date);
+
+CREATE TABLE IF NOT EXISTS qis_trade_blotter (
+  strategy_id TEXT NOT NULL,
+  z_window INTEGER NOT NULL,
+  initial_nav REAL NOT NULL,
+  tenor_pair TEXT NOT NULL,
+  side_mode TEXT NOT NULL,
+  spread_mode TEXT NOT NULL,
+  signal_mode TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  trade_date TEXT NOT NULL,
+  ticker TEXT NOT NULL,
+  asset_type TEXT,
+  leg_role TEXT,
+  action_type TEXT,
+  vintage_id TEXT,
+  qty REAL,
+  trade_price REAL,
+  notional REAL,
+  multiplier REAL,
+  PRIMARY KEY (
+    strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode, signal_mode, seq
+  )
+);
+CREATE INDEX IF NOT EXISTS idx_qis_blotter_date ON qis_trade_blotter(strategy_id, signal_mode, trade_date, ticker);
 """
 
 
@@ -330,6 +393,12 @@ def put_cached(
     conn = connect(create=True)
     try:
         clean = {k: v for k, v in payload.items() if not str(k).startswith("_")}
+        ledger_rows = clean.pop("position_pnl_ledger", None)
+        blotter_rows = clean.pop("trade_blotter", None)
+        payload.pop("position_pnl_ledger", None)
+        payload.pop("trade_blotter", None)
+        if isinstance(clean.get("ledger"), dict) and "position_pnl_ledger" not in clean:
+            payload["ledger"] = clean["ledger"]
         conn.execute(
             """
             INSERT INTO qis_backtest_cache
@@ -355,6 +424,19 @@ def put_cached(
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
+        if ledger_rows is not None or blotter_rows is not None:
+            _replace_vol_rv_ledger(
+                conn,
+                strategy_id,
+                int(z_window),
+                float(initial_nav),
+                str(tenor_pair),
+                str(side_mode),
+                str(spread_mode),
+                str(signal_mode),
+                list(ledger_rows or []),
+                list(blotter_rows or []),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -390,5 +472,230 @@ def list_cached() -> list:
             }
             for r in rows
         ]
+    finally:
+        conn.close()
+
+
+_LEDGER_VALUE_COLS = (
+    "asset_type",
+    "leg_role",
+    "multiplier",
+    "prev_close",
+    "close_price",
+    "prev_pos",
+    "trade_qty",
+    "avg_trade_price",
+    "curr_pos",
+    "holding_pnl",
+    "trading_pnl",
+    "total_pnl",
+    "eod_notional",
+    "eod_delta",
+    "eod_gamma",
+    "eod_vega",
+    "eod_theta",
+    "strike",
+    "cp",
+    "expiry",
+    "spot",
+)
+
+
+def _key_args(
+    strategy_id: str,
+    z_window: int,
+    initial_nav: float,
+    tenor_pair: str,
+    side_mode: str,
+    spread_mode: str,
+    signal_mode: str,
+):
+    return (
+        strategy_id,
+        int(z_window),
+        float(initial_nav),
+        str(tenor_pair),
+        str(side_mode),
+        str(spread_mode),
+        str(signal_mode),
+    )
+
+
+def _replace_vol_rv_ledger(
+    conn: sqlite3.Connection,
+    strategy_id: str,
+    z_window: int,
+    initial_nav: float,
+    tenor_pair: str,
+    side_mode: str,
+    spread_mode: str,
+    signal_mode: str,
+    ledger_rows: list,
+    blotter_rows: list,
+) -> None:
+    key = _key_args(strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode, signal_mode)
+    where = (
+        "strategy_id=? AND z_window=? AND initial_nav=? AND tenor_pair=? "
+        "AND side_mode=? AND spread_mode=? AND signal_mode=?"
+    )
+    conn.execute(f"DELETE FROM qis_position_ledger WHERE {where}", key)
+    conn.execute(f"DELETE FROM qis_trade_blotter WHERE {where}", key)
+    if ledger_rows:
+        sql = (
+            "INSERT INTO qis_position_ledger ("
+            "strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode, signal_mode, "
+            "trade_date, ticker, " + ", ".join(_LEDGER_VALUE_COLS) + ") VALUES ("
+            + ",".join(["?"] * (9 + len(_LEDGER_VALUE_COLS)))
+            + ")"
+        )
+        payload = []
+        for rec in ledger_rows:
+            payload.append(
+                key
+                + (
+                    str(rec.get("trade_date") or "")[:10],
+                    str(rec.get("ticker") or ""),
+                )
+                + tuple(rec.get(c) for c in _LEDGER_VALUE_COLS)
+            )
+        conn.executemany(sql, payload)
+    if blotter_rows:
+        sql = (
+            "INSERT INTO qis_trade_blotter ("
+            "strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode, signal_mode, "
+            "seq, trade_date, ticker, asset_type, leg_role, action_type, vintage_id, qty, trade_price, "
+            "notional, multiplier) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        )
+        payload = []
+        for i, rec in enumerate(blotter_rows):
+            payload.append(
+                key
+                + (
+                    int(i),
+                    str(rec.get("trade_date") or "")[:10],
+                    str(rec.get("ticker") or ""),
+                    rec.get("asset_type"),
+                    rec.get("leg_role"),
+                    rec.get("action_type"),
+                    rec.get("vintage_id"),
+                    rec.get("qty"),
+                    rec.get("trade_price"),
+                    rec.get("notional"),
+                    rec.get("multiplier"),
+                )
+            )
+        conn.executemany(sql, payload)
+
+
+def _rows_to_dicts(cur: sqlite3.Cursor) -> list:
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def ledger_dates(
+    strategy_id: str,
+    z_window: int,
+    initial_nav: float,
+    tenor_pair: str,
+    side_mode: str,
+    spread_mode: str,
+    signal_mode: str,
+) -> list:
+    conn = connect(create=True)
+    try:
+        key = _key_args(strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode, signal_mode)
+        cur = conn.execute(
+            """
+            SELECT DISTINCT trade_date FROM qis_position_ledger
+             WHERE strategy_id=? AND z_window=? AND initial_nav=? AND tenor_pair=?
+               AND side_mode=? AND spread_mode=? AND signal_mode=?
+             ORDER BY trade_date
+            """,
+            key,
+        )
+        return [r[0] for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def ledger_day(
+    strategy_id: str,
+    z_window: int,
+    initial_nav: float,
+    tenor_pair: str,
+    side_mode: str,
+    spread_mode: str,
+    signal_mode: str,
+    trade_date: str,
+) -> Dict[str, Any]:
+    conn = connect(create=True)
+    try:
+        key = _key_args(
+            strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode, signal_mode
+        ) + (str(trade_date)[:10],)
+        where = (
+            "strategy_id=? AND z_window=? AND initial_nav=? AND tenor_pair=? "
+            "AND side_mode=? AND spread_mode=? AND signal_mode=? AND trade_date=?"
+        )
+        rows = _rows_to_dicts(
+            conn.execute(
+                f"SELECT * FROM qis_position_ledger WHERE {where} ORDER BY ticker",
+                key,
+            )
+        )
+        blotter = _rows_to_dicts(
+            conn.execute(
+                f"SELECT * FROM qis_trade_blotter WHERE {where} ORDER BY seq",
+                key,
+            )
+        )
+        return {"rows": rows, "blotter": blotter}
+    finally:
+        conn.close()
+
+
+def ledger_aggregate(
+    strategy_id: str,
+    z_window: int,
+    initial_nav: float,
+    tenor_pair: str,
+    side_mode: str,
+    spread_mode: str,
+    signal_mode: str,
+) -> list:
+    conn = connect(create=True)
+    try:
+        key = _key_args(strategy_id, z_window, initial_nav, tenor_pair, side_mode, spread_mode, signal_mode)
+        cur = conn.execute(
+            """
+            WITH keyed AS (
+              SELECT * FROM qis_position_ledger
+               WHERE strategy_id=? AND z_window=? AND initial_nav=? AND tenor_pair=?
+                 AND side_mode=? AND spread_mode=? AND signal_mode=?
+            ),
+            sums AS (
+              SELECT ticker,
+                     SUM(holding_pnl) AS holding_pnl,
+                     SUM(trading_pnl) AS trading_pnl,
+                     SUM(total_pnl) AS total_pnl,
+                     SUM(CASE WHEN ABS(COALESCE(trade_qty, 0)) > 1e-12 THEN 1 ELSE 0 END) AS trade_days
+                FROM keyed
+               GROUP BY ticker
+            ),
+            last AS (
+              SELECT ticker, asset_type, leg_role, curr_pos, close_price, multiplier, expiry, cp, strike,
+                     ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY trade_date DESC) AS rn
+                FROM keyed
+            )
+            SELECT s.ticker, l.asset_type, l.leg_role, l.multiplier, l.curr_pos, l.close_price,
+                   l.strike, l.cp, l.expiry,
+                   s.holding_pnl, s.trading_pnl, s.total_pnl, s.trade_days
+              FROM sums s
+              JOIN last l ON l.ticker = s.ticker AND l.rn = 1
+             ORDER BY s.total_pnl
+            """,
+            key,
+        )
+        return _rows_to_dicts(cur)
     finally:
         conn.close()
