@@ -22,6 +22,10 @@ needs_vol_db = pytest.mark.skipif(
 from engine.csi300_vol_rv_strategy import (
     STYLE_PRESETS,
     VOL_RV_UNIVERSES,
+    BookState,
+    Csi300VolRvEngine,
+    LegPos,
+    Vintage,
     causal_premium_ref,
     dynamic_leverage,
     normalize_tilt,
@@ -203,3 +207,49 @@ def test_e2e_commodity_universes(uni, product):
     assert payload["params"]["product"] == product
     assert payload["params"]["m_opt"] == 1000.0
     assert payload["summary"]["final_nav_multiple"] > 0
+
+
+def test_holdings_snapshot_option_and_futures():
+    eng = Csi300VolRvEngine(run_ablation=False)
+    leg = LegPos(
+        wind_code="IO2506-C-4000.CFE",
+        expiry="2025-06-20",
+        strike=4000.0,
+        cp="C",
+        n=-2.0,
+        mid=80.0,
+        iv=0.2,
+        ttm=0.2,
+        forward=4000.0,
+        r=0.02,
+        delta=0.5,
+        gamma=0.0,
+        vega=0.0,
+        theta=0.0,
+        leg="short",
+    )
+    book = BookState(
+        vintages=[
+            Vintage(
+                vintage_id="v1",
+                open_date="2025-01-02",
+                short_expiry="2025-01-17",
+                long_expiry="2025-06-20",
+                exit_date="2025-01-16",
+                legs=[leg],
+            )
+        ],
+        fut_short=-1.5,
+        fut_long=0.4,
+        fut_short_code="IF2501.CFE",
+        fut_long_code="IF2502.CFE",
+    )
+    eng._snapshot_holdings("2025-01-02", book, 4000.0, 3990.0)
+    df = eng.holdings_dataframe()
+    assert len(df) == 3
+    opt = df[df["instrument"] == "option"].iloc[0]
+    assert opt["direction"] == "short"
+    assert opt["qty"] == -2.0
+    assert opt["contract_ym"] == "2506"
+    futs = df[df["instrument"] == "future"]
+    assert set(futs["leg"]) == {"hedge_short", "hedge_long"}

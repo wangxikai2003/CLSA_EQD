@@ -1157,7 +1157,7 @@ const QisView: React.FC = () => {
               <RefreshCw size={12} className={loading ? 'animate-spin' : undefined} />{' '}
               {paramsDirty ? 'Refresh 应用细调' : 'Refresh'}
             </button>
-            {isCalVol && (
+            {(isCalVol || family === 'csi300_vol_rv') && (
               <a
                 href={qisHoldingsExcelUrl(
                   strategyId,
@@ -1169,11 +1169,22 @@ const QisView: React.FC = () => {
                   stopOn,
                   maxDdPct / 100,
                   reboundRatio,
+                  family === 'csi300_vol_rv'
+                    ? {
+                        universe: volUniverse,
+                        tilt: volTilt,
+                        target_otm_delta: targetOtmDelta,
+                        long_delta_threshold: longDeltaThr,
+                        hedger_mode: hedgerMode,
+                        option_fee_pct: optFeePct,
+                        option_slippage_pct: optSlipPct,
+                      }
+                    : undefined,
                 )}
                 className={`inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-md border border-slate-200 bg-white text-[#000066] hover:bg-slate-50 ${
                   loading ? 'pointer-events-none opacity-60' : ''
                 }`}
-                title="Download concrete holdings Excel (t−1 signal / t close)"
+                title="下载日终持仓 Excel（期权收盘价 / 期货收盘价）。Vol RV 会现场重算，可能需要几分钟。"
               >
                 <Download size={12} /> Holdings.xlsx
               </a>

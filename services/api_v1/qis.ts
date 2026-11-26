@@ -383,7 +383,7 @@ export function fetchQisBacktest(
   );
 }
 
-/** Calendar-vol concrete holdings Excel (date/contract/dir/qty/price). */
+/** Calendar-vol or Vol RV holdings Excel (date/contract/dir/qty/price). */
 export function qisHoldingsExcelUrl(
   strategyId: string,
   zWindow = 252,
@@ -394,6 +394,7 @@ export function qisHoldingsExcelUrl(
   stopLoss = false,
   maxDrawdownTarget = 0.1,
   reboundRatio = 0.9,
+  volRv?: QisVolRvParams,
 ) {
   const q = new URLSearchParams();
   q.set('z_window', String(zWindow));
@@ -405,6 +406,23 @@ export function qisHoldingsExcelUrl(
     q.set('stop_loss', 'true');
     q.set('max_drawdown_target', String(maxDrawdownTarget));
     q.set('rebound_ratio', String(reboundRatio));
+  }
+  if (strategyId === 'csi300_vol_rv' && volRv) {
+    if (volRv.universe) q.set('universe', String(volRv.universe));
+    if (volRv.tilt) q.set('tilt', String(volRv.tilt));
+    if (volRv.target_otm_delta != null) q.set('target_otm_delta', String(volRv.target_otm_delta));
+    if (volRv.long_delta_threshold != null) {
+      q.set('long_delta_threshold', String(volRv.long_delta_threshold));
+    }
+    if (volRv.hedger_mode) q.set('hedger_mode', String(volRv.hedger_mode));
+    if (volRv.option_fee_pct != null) q.set('option_fee_pct', String(volRv.option_fee_pct));
+    if (volRv.option_slippage_pct != null) {
+      q.set('option_slippage_pct', String(volRv.option_slippage_pct));
+    }
+    if (volRv.futures_fee_pct != null) q.set('futures_fee_pct', String(volRv.futures_fee_pct));
+    if (volRv.futures_slippage_pct != null) {
+      q.set('futures_slippage_pct', String(volRv.futures_slippage_pct));
+    }
   }
   q.set('persist', 'true');
   return `/api/v1/qis/backtest/${encodeURIComponent(strategyId)}/holdings.xlsx?${q}`;

@@ -635,6 +635,7 @@ class Csi300VolRvEngine:
         self.cache_tenor = str(self.cfg["cache_tenor"])
         self.m_opt = float(self.cfg["m_opt"])
         self.m_fut = float(self.cfg["m_fut"])
+        self._holdings_rows: List[Dict[str, Any]] = []
 
     def _load(self) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
         if self.cfg["db"] == "commodity":
@@ -811,6 +812,109 @@ class Csi300VolRvEngine:
     def _fut_trade_cost(self, n_contracts: float, price: float) -> float:
         notional = abs(n_contracts) * price * self.m_fut
         return notional * (self.futures_fee_pct + self.futures_slippage_pct)
+
+    @staticmethod
+    def _ym_from_expiry(expiry: str) -> str:
+        s = str(expiry)[:10]
+        if len(s) >= 7 and s[4] == "-":
+            return s[2:4] + s[5:7]
+        return s
+
+    def _snapshot_holdings(
+        self,
+        d: str,
+        book: BookState,
+        px_s: float,
+        px_l: float,
+    ) -> None:
+        """EOD book after today's open and hedge (option close / futures close)."""
+        for v in book.vintages:
+            for p in v.legs:
+                self._holdings_rows.append(
+                    {
+                        "trade_date": d,
+                        "instrument": "option",
+                        "wind_code": p.wind_code,
+                        "contract_ym": self._ym_from_expiry(p.expiry),
+                        "expiry": p.expiry,
+                        "strike": p.strike,
+                        "cp": p.cp,
+                        "direction": "long" if p.n > 0 else "short",
+                        "qty": float(p.n),
+                        "price": float(p.mid),
+                        "multiplier": self.m_opt,
+                        "leg": p.leg,
+                        "vintage_id": v.vintage_id,
+                        "leverage": v.leverage,
+                    }
+                )
+        if abs(book.fut_short) > 1e-12 and book.fut_short_code:
+            self._holdings_rows.append(
+                {
+                    "trade_date": d,
+                    "instrument": "future",
+                    "wind_code": book.fut_short_code,
+                    "contract_ym": "",
+                    "expiry": None,
+                    "strike": None,
+                    "cp": None,
+                    "direction": "long" if book.fut_short > 0 else "short",
+                    "qty": float(book.fut_short),
+                    "price": float(px_s) if math.isfinite(px_s) else None,
+                    "multiplier": self.m_fut,
+                    "leg": "hedge_short",
+                    "vintage_id": None,
+                    "leverage": None,
+                }
+            )
+        if abs(book.fut_long) > 1e-12 and book.fut_long_code:
+            self._holdings_rows.append(
+                {
+                    "trade_date": d,
+                    "instrument": "future",
+                    "wind_code": book.fut_long_code,
+                    "contract_ym": "",
+                    "expiry": None,
+                    "strike": None,
+                    "cp": None,
+                    "direction": "long" if book.fut_long > 0 else "short",
+                    "qty": float(book.fut_long),
+                    "price": float(px_l) if math.isfinite(px_l) else None,
+                    "multiplier": self.m_fut,
+                    "leg": "hedge_long",
+                    "vintage_id": None,
+                    "leverage": None,
+                }
+            )
+
+    def holdings_dataframe(self) -> pd.DataFrame:
+        cols = [
+            "trade_date",
+            "instrument",
+            "wind_code",
+            "contract_ym",
+            "expiry",
+            "strike",
+            "cp",
+            "direction",
+            "qty",
+            "price",
+            "multiplier",
+            "leg",
+            "vintage_id",
+            "leverage",
+        ]
+        if not self._holdings_rows:
+            return pd.DataFrame(columns=cols)
+        return pd.DataFrame(self._holdings_rows)
+
+    def write_holdings_excel(self, path: Path) -> Path:
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        df = self.holdings_dataframe()
+        with pd.ExcelWriter(out, engine="openpyxl") as xl:
+            df.to_excel(xl, sheet_name="holdings", index=False)
+        return out
 
     def _lots_from_book(self, book: BookState, vintage_filter: Optional[str] = None) -> List[OptionLot]:
         lots: List[OptionLot] = []
@@ -1038,6 +1142,7 @@ class Csi300VolRvEngine:
         use_dynamic_leverage: bool,
         flatten_long: bool,
         premium_hist_seed: List[float],
+        record_holdings: bool = False,
     ) -> Dict[str, Any]:
         hedger = get_hedger(
             "eod_close" if self.hedger_mode.startswith("eod") or flatten_long else self.hedger_mode,
@@ -1273,6 +1378,8 @@ class Csi300VolRvEngine:
             book.fut_long = t_l
             book.fut_short_code = code_s
             book.fut_long_code = code_l
+            if record_holdings and (book.vintages or abs(book.fut_short) > 1e-12 or abs(book.fut_long) > 1e-12):
+                self._snapshot_holdings(d, book, px_s, px_l)
 
             nav -= cost  # subtract costs not already in net (overnight net excluded cost)
             # Recompute day's net including costs for attribution identity.
@@ -1357,6 +1464,7 @@ class Csi300VolRvEngine:
             use_dynamic_leverage=True,
             flatten_long=False,
             premium_hist_seed=[],
+            record_holdings=True,
         )
         ablations = {"step3_dynamic_leverage": step3}
         if self.run_ablation:

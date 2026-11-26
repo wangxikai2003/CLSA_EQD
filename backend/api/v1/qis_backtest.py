@@ -753,8 +753,76 @@ def download_holdings(
         True,
         description="Also write Excel under data/exports/ on the server/local disk",
     ),
+    universe: str = Query("300", description="Vol RV universe"),
+    tilt: str = Query("balanced", description="Vol RV tilt"),
+    target_otm_delta: float = Query(0.15, gt=0.01, lt=0.5),
+    long_delta_threshold: float = Query(0.05, ge=0.0, le=1.0),
+    hedger_mode: str = Query("eod_close"),
+    option_fee_pct: float = Query(0.0, ge=0.0, le=0.05),
+    option_slippage_pct: float = Query(0.0, ge=0.0, le=0.05),
+    futures_fee_pct: float = Query(0.0, ge=0.0, le=0.05),
+    futures_slippage_pct: float = Query(0.0, ge=0.0, le=0.05),
 ):
-    """Concrete holdings ledger (date/contract/dir/qty/price) for calendar-vol QIS."""
+    """Concrete holdings ledger (date/contract/dir/qty/price) for calendar-vol or Vol RV."""
+    if strategy_id == "csi300_vol_rv":
+        from engine.csi300_vol_rv_strategy import Csi300VolRvEngine
+
+        eng = Csi300VolRvEngine(
+            initial_nav=_INITIAL_NAV,
+            universe=universe,
+            tilt=tilt,
+            target_otm_delta=target_otm_delta,
+            long_delta_threshold=long_delta_threshold,
+            hedger_mode=hedger_mode,
+            option_fee_pct=option_fee_pct,
+            option_slippage_pct=option_slippage_pct,
+            futures_fee_pct=futures_fee_pct,
+            futures_slippage_pct=futures_slippage_pct,
+            run_ablation=False,
+        )
+        try:
+            eng.run()
+        except FileNotFoundError as e:
+            raise HTTPException(503, str(e)) from e
+        except (RuntimeError, ValueError) as e:
+            raise HTTPException(400, str(e)) from e
+        disk = None
+        if persist:
+            from pathlib import Path
+
+            root = Path(__file__).resolve().parents[3]
+            disk = eng.write_holdings_excel(
+                root / "data" / "exports" / f"vol_rv_{universe}_{tilt}_holdings.xlsx"
+            )
+        buf = io.BytesIO()
+        df = eng.holdings_dataframe()
+        with pd.ExcelWriter(buf, engine="openpyxl") as xl:
+            df.to_excel(xl, sheet_name="holdings", index=False)
+            meta = pd.DataFrame(
+                [
+                    {"key": "strategy_id", "value": strategy_id},
+                    {"key": "universe", "value": universe},
+                    {"key": "tilt", "value": tilt},
+                    {"key": "target_otm_delta", "value": target_otm_delta},
+                    {"key": "long_delta_threshold", "value": long_delta_threshold},
+                    {"key": "hedger_mode", "value": hedger_mode},
+                    {"key": "price", "value": "option close (mid_price) / futures close"},
+                    {"key": "n_rows", "value": len(df)},
+                    {"key": "persisted_path", "value": str(disk) if disk else ""},
+                ]
+            )
+            meta.to_excel(xl, sheet_name="meta", index=False)
+        buf.seek(0)
+        filename = f"csi300_vol_rv_{universe}_{tilt}_holdings.xlsx"
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        if disk is not None:
+            headers["X-Holdings-Path"] = str(disk)
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers=headers,
+        )
+
     from engine.calendar_vol_strategy import (
         STRATEGY_BY_ID,
         CalendarVolBacktestEngine,
@@ -768,7 +836,7 @@ def download_holdings(
     if strategy_id not in STRATEGY_BY_ID:
         raise HTTPException(
             404,
-            f"Holdings export only for calendar-vol strategies; got {strategy_id}",
+            f"Holdings export only for calendar-vol or Vol RV; got {strategy_id}",
         )
     try:
         tp = normalize_tenor_pair(tenor_pair)
