@@ -169,6 +169,8 @@ export interface ImpliedCrpMeta {
   tenors: number[];
   mnys: number[];
   variants: string[];
+  metrics?: string[];
+  dates?: string[];
   history_start: string | null;
   history_end: string | null;
   n_rows: number;
@@ -176,6 +178,43 @@ export interface ImpliedCrpMeta {
   atm_crp_points: number;
   capabilities: string[];
   note?: string;
+}
+
+export type ImpliedCrpMetric = 'rho_imp' | 'rho_real' | 'crp';
+
+export interface ImpliedCrpLevelsResponse {
+  basket: string;
+  variant: string;
+  metrics: string[];
+  tenors: number[];
+  mnys: number[];
+  levels: Record<string, Record<string, Record<string, Array<{ d: string; v: number }>>>>;
+  note?: string;
+}
+
+export interface ImpliedCrpSkewResponse {
+  mode: string;
+  basket: string;
+  trade_date: string;
+  tenor_days: number;
+  variant: string;
+  label: string;
+  points: Array<{ mny: number; rho_imp: number | null; rho_real: number | null; crp: number | null }>;
+}
+
+export interface ImpliedCrpTermResponse {
+  mode: string;
+  basket: string;
+  trade_date: string;
+  mny: number;
+  variant: string;
+  label: string;
+  points: Array<{
+    tenor_days: number;
+    rho_imp: number | null;
+    rho_real: number | null;
+    crp: number | null;
+  }>;
 }
 
 export interface ImpliedCrpSeriesResponse {
@@ -219,6 +258,57 @@ export function fetchImpliedCrpSeries(
   });
   return getJsonWithRetry<ImpliedCrpSeriesResponse>(
     `/api/v1/correlation/implied-crp/series?${q}`,
+    _asRetryOpts(opts)
+  );
+}
+
+export function fetchImpliedCrpLevels(
+  params: {
+    variant?: 'clean' | 'dirty';
+    metrics?: ImpliedCrpMetric[];
+    tenors?: number[];
+    mnys?: number[];
+  },
+  opts?: AbortSignal | FetchRetryOpts
+) {
+  const q = new URLSearchParams({
+    variant: params.variant ?? 'clean',
+  });
+  if (params.metrics?.length) q.set('metrics', params.metrics.join(','));
+  if (params.tenors?.length) q.set('tenors', params.tenors.join(','));
+  if (params.mnys?.length) q.set('mnys', params.mnys.join(','));
+  return getJsonWithRetry<ImpliedCrpLevelsResponse>(
+    `/api/v1/correlation/implied-crp/levels?${q}`,
+    _asRetryOpts(opts)
+  );
+}
+
+export function fetchImpliedCrpSkew(
+  params: { trade_date?: string; tenor_days?: number; variant?: 'clean' | 'dirty' },
+  opts?: AbortSignal | FetchRetryOpts
+) {
+  const q = new URLSearchParams({
+    tenor_days: String(params.tenor_days ?? 30),
+    variant: params.variant ?? 'clean',
+  });
+  if (params.trade_date) q.set('trade_date', params.trade_date);
+  return getJsonWithRetry<ImpliedCrpSkewResponse>(
+    `/api/v1/correlation/implied-crp/skew?${q}`,
+    _asRetryOpts(opts)
+  );
+}
+
+export function fetchImpliedCrpTerm(
+  params: { trade_date?: string; mny?: number; variant?: 'clean' | 'dirty' },
+  opts?: AbortSignal | FetchRetryOpts
+) {
+  const q = new URLSearchParams({
+    mny: String(params.mny ?? 1),
+    variant: params.variant ?? 'clean',
+  });
+  if (params.trade_date) q.set('trade_date', params.trade_date);
+  return getJsonWithRetry<ImpliedCrpTermResponse>(
+    `/api/v1/correlation/implied-crp/term-structure?${q}`,
     _asRetryOpts(opts)
   );
 }
