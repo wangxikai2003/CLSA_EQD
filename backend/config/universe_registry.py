@@ -178,9 +178,10 @@ def load_registry() -> dict[str, Any]:
             caps = ["pairwise_corr", "corr_matrix", "corr_spread"]
             if instrument == "BASKET":
                 caps = ["corr_matrix"]
-            # NDX basket average implied / CRP (precomputed parquet)
-            if cal == "NDX":
+            # Basket average implied / CRP (precomputed parquet; NDX densified, SPX/HSI may bootstrap)
+            if cal in ("NDX", "SPX", "HSI"):
                 caps = list(dict.fromkeys([*caps, "implied_crp"]))
+
             targets.append(
                 {
                     "symbol": cal,

@@ -123,14 +123,18 @@ def get_precomputed_matrix(
 
 
 @router.get("/implied-crp/meta")
-def get_implied_crp_meta() -> dict[str, Any]:
-    """Available tenors / moneyness / history for NDX basket implied CRP."""
+def get_implied_crp_meta(
+    basket: str = Query("NDX", description="NDX | SPX | HSI"),
+) -> dict[str, Any]:
+    """Available tenors / moneyness / history for basket implied CRP."""
     try:
         from engine import implied_corr_service as svc
 
-        return svc.meta()
+        return svc.meta(basket=basket)
     except FileNotFoundError as ex:
         raise HTTPException(status_code=503, detail=str(ex)) from ex
+    except KeyError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
     except Exception as ex:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(ex)) from ex
 
@@ -140,12 +144,13 @@ def get_implied_crp_series(
     tenor_days: int = Query(30, description="30 | 60 | 90"),
     mny: float = Query(1.0, description="Spot moneyness K/S"),
     variant: str = Query("clean", pattern="^(clean|dirty)$"),
+    basket: str = Query("NDX"),
 ) -> dict[str, Any]:
-    """NDX basket implied vs forward realized CRP time series (spread-shaped payload)."""
+    """Basket implied vs forward realized CRP time series (spread-shaped payload)."""
     try:
         from engine import implied_corr_service as svc
 
-        return svc.series(tenor_days=tenor_days, mny=mny, variant=variant)
+        return svc.series(tenor_days=tenor_days, mny=mny, variant=variant, basket=basket)
     except FileNotFoundError as ex:
         raise HTTPException(status_code=503, detail=str(ex)) from ex
     except KeyError as ex:
@@ -160,14 +165,17 @@ def get_implied_crp_levels(
     metrics: Optional[str] = Query("rho_imp,rho_real,crp", description="Comma list"),
     tenors: Optional[str] = Query(None, description="Comma list e.g. 30,60,90"),
     mnys: Optional[str] = Query(None, description="Comma list e.g. 0.95,1,1.05"),
+    basket: str = Query("NDX"),
 ) -> dict[str, Any]:
     """Bulk levels nested like vol-spreads for multi-select overlays."""
     try:
         from engine import implied_corr_service as svc
 
-        return svc.levels(variant=variant, metrics=metrics, tenors=tenors, mnys=mnys)
+        return svc.levels(variant=variant, metrics=metrics, tenors=tenors, mnys=mnys, basket=basket)
     except FileNotFoundError as ex:
         raise HTTPException(status_code=503, detail=str(ex)) from ex
+    except KeyError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
     except Exception as ex:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(ex)) from ex
 
@@ -177,12 +185,13 @@ def get_implied_crp_skew(
     trade_date: Optional[str] = Query(None, description="YYYY-MM-DD; default latest"),
     tenor_days: int = Query(30),
     variant: str = Query("clean", pattern="^(clean|dirty)$"),
+    basket: str = Query("NDX"),
 ) -> dict[str, Any]:
     """Fixed-date moneyness skew (ρ_imp / CRP vs mny)."""
     try:
         from engine import implied_corr_service as svc
 
-        return svc.skew_slice(trade_date=trade_date, tenor_days=tenor_days, variant=variant)
+        return svc.skew_slice(trade_date=trade_date, tenor_days=tenor_days, variant=variant, basket=basket)
     except FileNotFoundError as ex:
         raise HTTPException(status_code=503, detail=str(ex)) from ex
     except KeyError as ex:
@@ -196,12 +205,33 @@ def get_implied_crp_term(
     trade_date: Optional[str] = Query(None, description="YYYY-MM-DD; default latest"),
     mny: float = Query(1.0),
     variant: str = Query("clean", pattern="^(clean|dirty)$"),
+    basket: str = Query("NDX"),
 ) -> dict[str, Any]:
     """Fixed-date term structure (ρ_imp / ρ_real / CRP vs tenor)."""
     try:
         from engine import implied_corr_service as svc
 
-        return svc.term_structure(trade_date=trade_date, mny=mny, variant=variant)
+        return svc.term_structure(trade_date=trade_date, mny=mny, variant=variant, basket=basket)
+    except FileNotFoundError as ex:
+        raise HTTPException(status_code=503, detail=str(ex)) from ex
+    except KeyError as ex:
+        raise HTTPException(status_code=404, detail=str(ex)) from ex
+    except Exception as ex:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+
+
+@router.get("/implied-crp/surface")
+def get_implied_crp_surface(
+    trade_date: Optional[str] = Query(None, description="YYYY-MM-DD; default latest"),
+    variant: str = Query("clean", pattern="^(clean|dirty)$"),
+    metric: str = Query("rho_imp", description="rho_imp | crp | rho_real"),
+    basket: str = Query("NDX"),
+) -> dict[str, Any]:
+    """Fixed-date tenor × moneyness matrix for surface / heatmap."""
+    try:
+        from engine import implied_corr_service as svc
+
+        return svc.surface_slice(trade_date=trade_date, variant=variant, metric=metric, basket=basket)
     except FileNotFoundError as ex:
         raise HTTPException(status_code=503, detail=str(ex)) from ex
     except KeyError as ex:

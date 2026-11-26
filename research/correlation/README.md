@@ -68,10 +68,19 @@ python corr_mark_cmds.py --mode EQ.EQ --rules
 后端：`GET/POST /api/v1/correlation/*`（universe / pairwise / matrix / spreads）  
 前端：Market Data → **Corr**；Spread → **Corr** 子 Tab。
 
-## Web 上线（NDX Implied / CRP）
+## Web 上线（Implied / CRP · Surface）
 
 离线（课题树）：`ndx_implied_corr.py` → `compute_us_realized_corr.py` → `validate_phase1_pipeline.py`  
-Web 导出：`python build_web_implied_data.py` → `CLSA_EQD/data/corr_ndx_implied_crp.parquet`  
 
-后端：`GET /api/v1/correlation/implied-crp/meta`、`GET .../implied-crp/series`  
-前端：Spread → Corr → 数据源 **Implied vs Realized (CRP)**（NDX Top50 / NDXP）。
+加密面板（周频 + 近端日频，ρ_imp 时间插值 + forward realized）：
+
+```bash
+python densify_implied_crp_panel.py --recent-days 120
+# 多篮子（需对应 {basket}_implied_corr_surface.parquet）：
+python build_basket_implied_crp.py --basket SPX
+```
+
+产出：`corr_{ndx,spx,hsi}_implied_crp.parquet`（SPX/HSI 可先 bootstrap，manifest 标注）。
+
+后端：`GET /api/v1/correlation/implied-crp/{meta,series,levels,skew,term-structure,surface}?basket=`  
+前端：Market/Spread Corr → **Implied + Realized Analytics**（Levels / Skew / Term / Surface，NDX·SPX·HSI）。
