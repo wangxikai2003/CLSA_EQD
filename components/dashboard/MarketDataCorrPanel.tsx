@@ -10,24 +10,15 @@ import {
   Area,
   ComposedChart,
   Legend,
-  LineChart,
 } from 'recharts';
 import AssetUniverseSelector from '../common/AssetUniverseSelector';
+import ImpliedCorrAnalytics from './ImpliedCorrAnalytics';
 import {
   CorrMatrixResponse,
   CorrPairwiseResponse,
   CorrUniverseResponse,
-  ImpliedCrpLevelsResponse,
-  ImpliedCrpMeta,
-  ImpliedCrpMetric,
-  ImpliedCrpSkewResponse,
-  ImpliedCrpTermResponse,
   fetchCorrPairwise,
   fetchCorrUniverse,
-  fetchImpliedCrpLevels,
-  fetchImpliedCrpMeta,
-  fetchImpliedCrpSkew,
-  fetchImpliedCrpTerm,
   postCorrMatrix,
 } from '../../services/api_v1';
 import { ArrowLeftRight } from 'lucide-react';
@@ -38,26 +29,12 @@ const WIN_COLORS: Record<number, string> = {
   63: '#000066',
   126: '#0891b2',
 };
-const METRIC_COLORS: Record<ImpliedCrpMetric, string> = {
-  rho_imp: '#0891b2',
-  rho_real: '#EAB308',
-  crp: '#000066',
-};
-const METRIC_LABEL: Record<ImpliedCrpMetric, string> = {
-  rho_imp: 'ρ_imp',
-  rho_real: 'ρ_real',
-  crp: 'CRP',
-};
-const LINE_PALETTE = ['#000066', '#EAB308', '#0891b2', '#E20000', '#16a34a', '#7c3aed', '#dc2626', '#0ea5e9'];
 
 const METRICS = [
   ['realized', 'Realized'],
   ['desk_mark', 'Desk Mark'],
   ['diff', 'Mark − Realized'],
 ] as const;
-
-const selectClass =
-  'px-2 py-1.5 text-xs font-bold border border-slate-200 rounded-md bg-slate-50 text-[#000066]';
 
 function heatColor(v: number | null, metric: string): string {
   if (v == null || Number.isNaN(v)) return '#f1f5f9';
@@ -83,13 +60,8 @@ function toggleKeepOne<T>(prev: T[], item: T): T[] {
   return [...prev, item];
 }
 
-/** Match Python f"{m:g}" keys from implied_corr_service.levels */
-function mnyKey(m: number): string {
-  return Number(m).toString();
-}
-
 const MarketDataCorrPanel: React.FC = () => {
-  const [view, setView] = useState<'realized' | 'analytics'>('realized');
+  const [view, setView] = useState<'realized' | 'analytics'>('analytics');
   const [sym1, setSym1] = useState('SPX');
   const [sym2, setSym2] = useState('NDX');
   const [wins, setWins] = useState<number[]>([21, 63, 126]);
@@ -110,40 +82,10 @@ const MarketDataCorrPanel: React.FC = () => {
   const [matrix, setMatrix] = useState<CorrMatrixResponse | null>(null);
   const [matrixLoading, setMatrixLoading] = useState(false);
 
-  // Implied analytics (Vol-style)
-  const [crpMeta, setCrpMeta] = useState<ImpliedCrpMeta | null>(null);
-  const [levelFamilies, setLevelFamilies] = useState<ImpliedCrpMetric[]>(['rho_imp', 'rho_real']);
-  const [levelTenors, setLevelTenors] = useState<number[]>([30, 60, 90]);
-  const [levelMny, setLevelMny] = useState<number[]>([1.0]);
-  const [variant, setVariant] = useState<'clean' | 'dirty'>('clean');
-  const [levels, setLevels] = useState<ImpliedCrpLevelsResponse | null>(null);
-  const [levelsLoading, setLevelsLoading] = useState(false);
-  const [asof, setAsof] = useState<string>('');
-  const [skewTenor, setSkewTenor] = useState(30);
-  const [termMny, setTermMny] = useState(1.0);
-  const [skew, setSkew] = useState<ImpliedCrpSkewResponse | null>(null);
-  const [term, setTerm] = useState<ImpliedCrpTermResponse | null>(null);
-
   const focusWin = primaryWin(wins);
 
   useEffect(() => {
     fetchCorrUniverse().then(setUni).catch(() => setUni(null));
-    fetchImpliedCrpMeta()
-      .then((m) => {
-        setCrpMeta(m);
-        if (m.tenors?.length) {
-          setLevelTenors(m.tenors);
-          setSkewTenor(m.tenors.includes(30) ? 30 : m.tenors[0]);
-        }
-        if (m.mnys?.length) {
-          const atm = m.mnys.find((x) => Math.abs(x - 1) < 1e-9) ?? m.mnys[0];
-          setLevelMny([atm]);
-          setTermMny(atm);
-        }
-        if (m.dates?.length) setAsof(m.dates[m.dates.length - 1]);
-        else if (m.history_end) setAsof(m.history_end);
-      })
-      .catch(() => setCrpMeta(null));
   }, []);
 
   useEffect(() => {
@@ -189,45 +131,6 @@ const MarketDataCorrPanel: React.FC = () => {
     return () => ac.abort();
   }, [view, matrixSyms, focusWin, metric, useRules]);
 
-  useEffect(() => {
-    if (view !== 'analytics') return;
-    const ac = new AbortController();
-    setLevelsLoading(true);
-    fetchImpliedCrpLevels(
-      {
-        variant,
-        metrics: levelFamilies,
-        tenors: levelTenors,
-        mnys: levelMny,
-      },
-      { signal: ac.signal }
-    )
-      .then((d) => {
-        if (!ac.signal.aborted) setLevels(d);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!ac.signal.aborted) setLevelsLoading(false);
-      });
-    return () => ac.abort();
-  }, [view, variant, levelFamilies, levelTenors, levelMny]);
-
-  useEffect(() => {
-    if (view !== 'analytics' || !asof) return;
-    const ac = new AbortController();
-    Promise.all([
-      fetchImpliedCrpSkew({ trade_date: asof, tenor_days: skewTenor, variant }, { signal: ac.signal }),
-      fetchImpliedCrpTerm({ trade_date: asof, mny: termMny, variant }, { signal: ac.signal }),
-    ])
-      .then(([sk, tm]) => {
-        if (ac.signal.aborted) return;
-        setSkew(sk);
-        setTerm(tm);
-      })
-      .catch(() => {});
-    return () => ac.abort();
-  }, [view, asof, skewTenor, termMny, variant]);
-
   const focusPair = pairByWin[focusWin] ?? null;
 
   const pairwiseChart = useMemo(() => {
@@ -258,65 +161,6 @@ const MarketDataCorrPanel: React.FC = () => {
     });
   }, [wins, pairByWin, focusPair]);
 
-  const levelSeriesKeys = useMemo(() => {
-    const keys: { key: string; label: string; color: string }[] = [];
-    let i = 0;
-    for (const fam of levelFamilies) {
-      for (const t of levelTenors) {
-        for (const m of levelMny) {
-          // rho_real identical across mny — only plot once per tenor
-          if (fam === 'rho_real' && Math.abs(m - levelMny[0]) > 1e-9) continue;
-          const key = `${fam}_${t}_${mnyKey(m)}`;
-          const label =
-            fam === 'rho_real'
-              ? `${METRIC_LABEL[fam]} ${t}D`
-              : `${METRIC_LABEL[fam]} ${t}D @${m.toFixed(2)}`;
-          keys.push({
-            key,
-            label,
-            color: fam === 'rho_imp' || fam === 'rho_real' || fam === 'crp' ? METRIC_COLORS[fam] : LINE_PALETTE[i % LINE_PALETTE.length],
-          });
-          i += 1;
-        }
-      }
-    }
-    // diversify colors when many lines
-    if (keys.length > 3) {
-      keys.forEach((k, idx) => {
-        k.color = LINE_PALETTE[idx % LINE_PALETTE.length];
-      });
-    }
-    return keys;
-  }, [levelFamilies, levelTenors, levelMny]);
-
-  const levelsChart = useMemo(() => {
-    if (!levels) return [];
-    const dateSet = new Set<string>();
-    for (const fam of levelFamilies) {
-      for (const t of levelTenors) {
-        for (const m of levelMny) {
-          const pts = levels.levels?.[fam]?.[String(t)]?.[mnyKey(m)] || [];
-          for (const p of pts) dateSet.add(p.d);
-        }
-      }
-    }
-    const dates = [...dateSet].sort();
-    return dates.map((d) => {
-      const row: Record<string, string | number | null> = { d };
-      for (const fam of levelFamilies) {
-        for (const t of levelTenors) {
-          for (const m of levelMny) {
-            if (fam === 'rho_real' && Math.abs(m - levelMny[0]) > 1e-9) continue;
-            const pts = levels.levels?.[fam]?.[String(t)]?.[mnyKey(m)] || [];
-            const hit = pts.find((p) => p.d === d);
-            row[`${fam}_${t}_${mnyKey(m)}`] = hit ? hit.v : null;
-          }
-        }
-      }
-      return row;
-    });
-  }, [levels, levelFamilies, levelTenors, levelMny]);
-
   const toggleWin = (w: number) => setWins((prev) => toggleKeepOne(prev, w));
 
   const applyPreset = (id: string) => {
@@ -324,14 +168,7 @@ const MarketDataCorrPanel: React.FC = () => {
     if (p?.symbols?.length) setMatrixSyms(p.symbols.slice(0, 12));
   };
 
-  const tenors = crpMeta?.tenors?.length ? crpMeta.tenors : [30, 60, 90];
-  const mnys = crpMeta?.mnys?.length ? crpMeta.mnys : [0.95, 1.0, 1.05];
-  const dates = crpMeta?.dates?.length
-    ? crpMeta.dates
-    : asof
-      ? [asof]
-      : [];
-  const busy = view === 'realized' ? loading || matrixLoading : levelsLoading;
+  const busy = view === 'realized' && (loading || matrixLoading);
 
   return (
     <div className="space-y-4 relative">
@@ -345,8 +182,8 @@ const MarketDataCorrPanel: React.FC = () => {
       <div className="flex gap-1 bg-slate-100 p-1 rounded-lg w-fit">
         {(
           [
-            ['realized', 'Pairwise Realized'],
             ['analytics', 'Implied + Realized Analytics'],
+            ['realized', 'Pairwise Realized'],
           ] as const
         ).map(([id, lab]) => (
           <button
@@ -363,210 +200,7 @@ const MarketDataCorrPanel: React.FC = () => {
       </div>
 
       {view === 'analytics' ? (
-        <>
-          {/* Levels — VolSpreadPanel style multi-select */}
-          <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
-            <div className="text-[11px] font-bold text-[#000066]">
-              ① Levels（可同时勾选 ρ_imp + ρ_real，多期限 / moneyness）
-            </div>
-            <div className="flex flex-wrap gap-2 items-center">
-              <span className="text-[10px] font-bold text-slate-500 uppercase">Family</span>
-              {(['rho_imp', 'rho_real', 'crp'] as ImpliedCrpMetric[]).map((f) => (
-                <button
-                  key={f}
-                  type="button"
-                  onClick={() => setLevelFamilies((prev) => toggleKeepOne(prev, f))}
-                  className={`px-2 py-1 text-[10px] font-bold rounded border ${
-                    levelFamilies.includes(f)
-                      ? f === 'rho_real'
-                        ? 'bg-[#FFF100] text-[#000066] border-[#EAB308]'
-                        : 'bg-[#000066] text-white border-[#000066]'
-                      : 'bg-white text-slate-500 border-slate-200'
-                  }`}
-                >
-                  {METRIC_LABEL[f]}
-                </button>
-              ))}
-              <span className="text-[10px] font-bold text-slate-500 uppercase ml-2">Tenor</span>
-              {tenors.map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => setLevelTenors((prev) => toggleKeepOne(prev, t))}
-                  className={`px-2 py-1 text-[10px] font-bold rounded border ${
-                    levelTenors.includes(t)
-                      ? 'bg-[#000066] text-white border-[#000066]'
-                      : 'bg-white text-slate-500 border-slate-200'
-                  }`}
-                >
-                  {t}D
-                </button>
-              ))}
-              {levelFamilies.some((f) => f !== 'rho_real') && (
-                <>
-                  <span className="text-[10px] font-bold text-slate-500 uppercase ml-2">Mny</span>
-                  {mnys.map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      onClick={() => setLevelMny((prev) => toggleKeepOne(prev, m))}
-                      className={`px-2 py-1 text-[10px] font-bold rounded border ${
-                        levelMny.some((x) => Math.abs(x - m) < 1e-9)
-                          ? 'bg-[#E20000]/10 text-[#E20000] border-[#E20000]'
-                          : 'bg-white text-slate-500 border-slate-200'
-                      }`}
-                    >
-                      {m.toFixed(2)}
-                    </button>
-                  ))}
-                </>
-              )}
-              <select
-                className={`${selectClass} ml-auto`}
-                value={variant}
-                onChange={(e) => setVariant(e.target.value as 'clean' | 'dirty')}
-              >
-                <option value="clean">Clean</option>
-                <option value="dirty">Dirty</option>
-              </select>
-            </div>
-            <div className="text-[10px] text-slate-400">
-              NDX Top50 · NDXP · forward realized · history {crpMeta?.history_start} → {crpMeta?.history_end}
-            </div>
-            <div className="h-[280px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={levelsChart}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
-                  <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
-                  <Tooltip contentStyle={{ fontSize: 11 }} />
-                  <Legend wrapperStyle={{ fontSize: 10 }} />
-                  {levelSeriesKeys.map((s) => (
-                    <Line
-                      key={s.key}
-                      type="monotone"
-                      dataKey={s.key}
-                      name={s.label}
-                      stroke={s.color}
-                      strokeWidth={s.key.startsWith('crp') ? 2.25 : 1.75}
-                      strokeDasharray={s.key.startsWith('rho_real') ? '4 3' : undefined}
-                      dot={false}
-                      connectNulls
-                    />
-                  ))}
-                  <ReferenceLine y={0} stroke="#cbd5e1" />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          {/* Skew + Term — VolAnalytics style */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="bg-white border border-slate-200 rounded-lg p-4">
-              <div className="flex flex-wrap gap-2 items-center mb-2">
-                <span className="text-[11px] font-bold text-[#000066]">② Implied Corr Skew</span>
-                <select className={selectClass} value={asof} onChange={(e) => setAsof(e.target.value)}>
-                  {dates.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
-                <div className="flex gap-1">
-                  {tenors.map((t) => (
-                    <button
-                      key={t}
-                      type="button"
-                      onClick={() => setSkewTenor(t)}
-                      className={`px-2 py-1 text-[10px] font-bold rounded border ${
-                        skewTenor === t
-                          ? 'bg-[#000066] text-white border-[#000066]'
-                          : 'bg-white text-slate-500 border-slate-200'
-                      }`}
-                    >
-                      {t}D
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="text-[10px] text-slate-400 mb-2">{skew?.label}</div>
-              <div className="h-[240px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={skew?.points || []}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis dataKey="mny" tick={{ fontSize: 10 }} tickFormatter={(v) => Number(v).toFixed(2)} />
-                    <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
-                    <Tooltip contentStyle={{ fontSize: 11 }} />
-                    <Legend wrapperStyle={{ fontSize: 10 }} />
-                    <Line type="monotone" dataKey="rho_imp" name="ρ_imp" stroke="#0891b2" strokeWidth={2} dot={{ r: 3 }} />
-                    <Line type="monotone" dataKey="crp" name="CRP" stroke="#000066" strokeWidth={2} dot={{ r: 3 }} />
-                    <Line
-                      type="monotone"
-                      dataKey="rho_real"
-                      name="ρ_real"
-                      stroke="#EAB308"
-                      strokeWidth={1.5}
-                      strokeDasharray="4 3"
-                      dot={false}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            <div className="bg-white border border-slate-200 rounded-lg p-4">
-              <div className="flex flex-wrap gap-2 items-center mb-2">
-                <span className="text-[11px] font-bold text-[#000066]">③ Term Structure</span>
-                <select className={selectClass} value={asof} onChange={(e) => setAsof(e.target.value)}>
-                  {dates.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
-                <div className="flex gap-1">
-                  {mnys.map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      onClick={() => setTermMny(m)}
-                      className={`px-2 py-1 text-[10px] font-bold rounded border ${
-                        Math.abs(termMny - m) < 1e-9
-                          ? 'bg-[#E20000]/10 text-[#E20000] border-[#E20000]'
-                          : 'bg-white text-slate-500 border-slate-200'
-                      }`}
-                    >
-                      {m.toFixed(2)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="text-[10px] text-slate-400 mb-2">{term?.label}</div>
-              <div className="h-[240px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={term?.points || []}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                    <XAxis dataKey="tenor_days" tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}D`} />
-                    <YAxis tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
-                    <Tooltip contentStyle={{ fontSize: 11 }} />
-                    <Legend wrapperStyle={{ fontSize: 10 }} />
-                    <Line type="monotone" dataKey="rho_imp" name="ρ_imp" stroke="#0891b2" strokeWidth={2} dot={{ r: 3 }} />
-                    <Line
-                      type="monotone"
-                      dataKey="rho_real"
-                      name="ρ_real"
-                      stroke="#EAB308"
-                      strokeWidth={2}
-                      strokeDasharray="4 3"
-                      dot={{ r: 3 }}
-                    />
-                    <Line type="monotone" dataKey="crp" name="CRP" stroke="#000066" strokeWidth={2} dot={{ r: 3 }} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          </div>
-        </>
+        <ImpliedCorrAnalytics />
       ) : (
         <>
           <div className="bg-white border border-slate-200 rounded-lg p-4">
@@ -634,37 +268,48 @@ const MarketDataCorrPanel: React.FC = () => {
             )}
 
             <div className="h-[280px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={pairwiseChart}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
-                  <YAxis domain={[-1, 1]} tick={{ fontSize: 10 }} />
-                  <Tooltip contentStyle={{ fontSize: 11 }} />
-                  <Legend wrapperStyle={{ fontSize: 10 }} />
-                  {focusPair && (
-                    <>
-                      <Area type="monotone" dataKey="p90" stroke="none" fill="#94a3b8" fillOpacity={0.15} name="p90" />
-                      <Area type="monotone" dataKey="p10" stroke="none" fill="#ffffff" fillOpacity={1} name="p10" />
-                      <Line type="monotone" dataKey="p50" stroke="#94a3b8" strokeDasharray="4 4" dot={false} name={`Median@${focusWin}D`} />
-                    </>
-                  )}
-                  {wins.map((w) => (
-                    <Line
-                      key={w}
-                      type="monotone"
-                      dataKey={`v${w}`}
-                      stroke={WIN_COLORS[w]}
-                      strokeWidth={w === focusWin ? 2.25 : 1.5}
-                      dot={false}
-                      connectNulls
-                      name={`${w}D`}
-                    />
-                  ))}
-                  {focusPair?.desk_mark != null && (
-                    <ReferenceLine y={focusPair.desk_mark} stroke="#E20000" strokeDasharray="6 4" label={`Desk@${focusWin}D`} />
-                  )}
-                </ComposedChart>
-              </ResponsiveContainer>
+              {pairwiseChart.length ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={pairwiseChart}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                    <XAxis dataKey="d" tick={{ fontSize: 9 }} minTickGap={40} />
+                    <YAxis domain={[-1, 1]} tick={{ fontSize: 10 }} />
+                    <Tooltip contentStyle={{ fontSize: 11 }} />
+                    <Legend wrapperStyle={{ fontSize: 10 }} />
+                    {focusPair && (
+                      <>
+                        <Area type="monotone" dataKey="p90" stroke="none" fill="#94a3b8" fillOpacity={0.15} name="p90" />
+                        <Area type="monotone" dataKey="p10" stroke="none" fill="#ffffff" fillOpacity={1} name="p10" />
+                        <Line
+                          type="monotone"
+                          dataKey="p50"
+                          stroke="#94a3b8"
+                          strokeDasharray="4 4"
+                          dot={false}
+                          name={`Median@${focusWin}D`}
+                        />
+                      </>
+                    )}
+                    {wins.map((w) => (
+                      <Line
+                        key={w}
+                        type="monotone"
+                        dataKey={`v${w}`}
+                        stroke={WIN_COLORS[w]}
+                        strokeWidth={w === focusWin ? 2.25 : 1.5}
+                        dot={false}
+                        connectNulls
+                        name={`${w}D`}
+                      />
+                    ))}
+                    {focusPair?.desk_mark != null && (
+                      <ReferenceLine y={focusPair.desk_mark} stroke="#E20000" strokeDasharray="6 4" label={`Desk@${focusWin}D`} />
+                    )}
+                  </ComposedChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-full flex items-center justify-center text-slate-400 text-sm">No pairwise series</div>
+              )}
             </div>
           </div>
 
@@ -695,7 +340,7 @@ const MarketDataCorrPanel: React.FC = () => {
                 ))}
               </div>
             </div>
-            {matrix && (
+            {matrix ? (
               <table className="text-[10px] border-collapse">
                 <thead>
                   <tr>
@@ -734,6 +379,8 @@ const MarketDataCorrPanel: React.FC = () => {
                   ))}
                 </tbody>
               </table>
+            ) : (
+              <div className="text-slate-400 text-sm py-6 text-center">No matrix</div>
             )}
           </div>
         </>

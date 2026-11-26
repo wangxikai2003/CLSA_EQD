@@ -1,0 +1,20 @@
+{
+  "built_at": "2026-11-26T03:55:26.833977+00:00",
+  "basket": "HSI",
+  "bootstrap_from_ndx": true,
+  "rows": 1836,
+  "dates": 102,
+  "date_min": "2024-09-06",
+  "date_max": "2026-05-01",
+  "tenors": [
+    30,
+    60,
+    90
+  ],
+  "mnys": [
+    0.95,
+    1.0,
+    1.05
+  ],
+  "note": "Bootstrap from densified NDX CRP for multi-basket API/UI wiring; replace via CMDS basket run."
+}

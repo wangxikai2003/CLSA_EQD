@@ -37,6 +37,12 @@ COPY data/corr_realized_timeseries.parquet /app/data/corr_realized_timeseries.pa
 COPY data/us_realized_corr_timeseries.parquet /app/data/us_realized_corr_timeseries.parquet
 COPY data/ndx_implied_corr_surface.parquet /app/data/ndx_implied_corr_surface.parquet
 COPY data/corr_ndx_implied_crp.parquet /app/data/corr_ndx_implied_crp.parquet
+COPY data/corr_ndx_implied_crp_manifest.json /app/data/corr_ndx_implied_crp_manifest.json
+COPY data/corr_spx_implied_crp.parquet /app/data/corr_spx_implied_crp.parquet
+COPY data/corr_spx_implied_crp_manifest.json /app/data/corr_spx_implied_crp_manifest.json
+COPY data/corr_hsi_implied_crp.parquet /app/data/corr_hsi_implied_crp.parquet
+COPY data/corr_hsi_implied_crp_manifest.json /app/data/corr_hsi_implied_crp_manifest.json
+
 COPY data/corr_web_matrices.json /app/data/corr_web_matrices.json
 COPY data/corr_mark_universe.csv /app/data/corr_mark_universe.csv
 # Runtime imports corr_mark_cmds.py / corr_mark_local.py / corr_mark_cmds_mapping.py

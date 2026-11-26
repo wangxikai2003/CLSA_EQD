@@ -1,29 +1,47 @@
-"""In-memory NDX Implied Correlation / CRP reader (precomputed parquet only)."""
+"""In-memory Implied Correlation / CRP reader (precomputed parquet panels).
+
+Supports baskets: NDX (primary densified), SPX / HSI (bootstrap or CMDS-built).
+"""
 
 from __future__ import annotations
 
 import math
 import threading
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
-PANEL_CANDIDATES = [
-    ROOT / "data" / "corr_ndx_implied_crp.parquet",
-    ROOT / "research" / "correlation" / "data" / "corr_ndx_implied_crp.parquet",
-]
 
-_lock = threading.Lock()
-_df: pd.DataFrame | None = None
+BASKETS = ("NDX", "SPX", "HSI")
+DEFAULT_BASKET = "NDX"
 
 METRIC_COLS = {
     "rho_imp": "rho_imp",
     "rho_real": "rho_real",
     "crp": "crp",
 }
+
+_lock = threading.Lock()
+_cache: dict[str, pd.DataFrame] = {}
+
+
+def _panel_candidates(basket: str) -> list[Path]:
+    key = basket.strip().lower()
+    names = [f"corr_{key}_implied_crp.parquet"]
+    if key == "ndx":
+        names.append("corr_ndx_implied_crp.parquet")
+    out: list[Path] = []
+    for name in names:
+        out.extend(
+            [
+                ROOT / "data" / name,
+                ROOT / "research" / "correlation" / "data" / name,
+            ]
+        )
+    return out
 
 
 def _first_existing(paths: list[Path]) -> Path | None:
@@ -33,15 +51,38 @@ def _first_existing(paths: list[Path]) -> Path | None:
     return None
 
 
-def load_panel(force: bool = False) -> pd.DataFrame:
-    global _df
+def _norm_basket(basket: str | None) -> str:
+    b = (basket or DEFAULT_BASKET).strip().upper()
+    if b not in BASKETS:
+        raise KeyError(f"unsupported basket={basket}; expected one of {BASKETS}")
+    return b
+
+
+def available_baskets() -> list[dict[str, Any]]:
+    rows = []
+    for b in BASKETS:
+        path = _first_existing(_panel_candidates(b))
+        if path is None:
+            rows.append({"basket": b, "available": False, "n_dates": 0, "path": None})
+            continue
+        try:
+            df = pd.read_parquet(path, columns=["trade_date"])
+            n = int(pd.to_datetime(df["trade_date"].astype(str)).dt.strftime("%Y-%m-%d").nunique())
+        except Exception:
+            n = 0
+        rows.append({"basket": b, "available": n > 0, "n_dates": n, "path": str(path)})
+    return rows
+
+
+def load_panel(basket: str | None = None, force: bool = False) -> pd.DataFrame:
+    b = _norm_basket(basket)
     with _lock:
-        if _df is not None and not force:
-            return _df
-        path = _first_existing(PANEL_CANDIDATES)
+        if b in _cache and not force:
+            return _cache[b]
+        path = _first_existing(_panel_candidates(b))
         if path is None:
             raise FileNotFoundError(
-                "corr_ndx_implied_crp.parquet missing — run research/correlation/build_web_implied_data.py"
+                f"corr_{b.lower()}_implied_crp.parquet missing — run densify/build_basket_implied_crp"
             )
         df = pd.read_parquet(path)
         df["trade_date"] = pd.to_datetime(df["trade_date"].astype(str)).dt.strftime("%Y-%m-%d")
@@ -52,18 +93,38 @@ def load_panel(force: bool = False) -> pd.DataFrame:
             df["variant"] = df["variant"].astype(str).str.lower()
         if "status" in df.columns:
             df = df[df["status"].fillna("ok") == "ok"]
-        _df = df.sort_values(["trade_date", "tenor_days", "mny", "variant"]).reset_index(drop=True)
-        return _df
+        df = df.sort_values(["trade_date", "tenor_days", "mny", "variant"]).reset_index(drop=True)
+        _cache[b] = df
+        return df
 
 
-def meta() -> dict[str, Any]:
-    df = load_panel()
+def _manifest_note(basket: str) -> str | None:
+    key = basket.lower()
+    for base in (ROOT / "data", ROOT / "research" / "correlation" / "data"):
+        p = base / f"corr_{key}_implied_crp_manifest.json"
+        if p.exists():
+            try:
+                import json
+
+                return json.loads(p.read_text()).get("note")
+            except Exception:
+                return None
+    return None
+
+
+def meta(basket: str | None = None) -> dict[str, Any]:
+    b = _norm_basket(basket)
+    df = load_panel(b)
     atm = df[np.isclose(df["mny"].astype(float), 1.0)]
     dates = sorted(df["trade_date"].unique().tolist())
+    note = _manifest_note(b) or (
+        "Basket average implied corr (variance decomposition); CRP = ρ_imp − ρ_real(forward)."
+    )
     return {
-        "basket": "NDX",
-        "top_n": 50,
-        "root_pref": "NDXP",
+        "basket": b,
+        "baskets": available_baskets(),
+        "top_n": 50 if b == "NDX" else None,
+        "root_pref": "NDXP" if b == "NDX" else None,
         "tenors": sorted(int(x) for x in df["tenor_days"].dropna().unique()),
         "mnys": sorted(float(x) for x in df["mny"].dropna().unique()),
         "variants": sorted(df["variant"].dropna().unique().tolist()) if "variant" in df.columns else ["clean"],
@@ -74,8 +135,14 @@ def meta() -> dict[str, Any]:
         "n_rows": int(len(df)),
         "n_dates": int(len(dates)),
         "atm_crp_points": int(atm["crp"].notna().sum()) if "crp" in atm.columns else 0,
-        "capabilities": ["implied_crp", "implied_crp_levels", "implied_crp_skew", "implied_crp_term"],
-        "note": "Basket average implied corr (variance decomposition); CRP = ρ_imp − ρ_real(forward).",
+        "capabilities": [
+            "implied_crp",
+            "implied_crp_levels",
+            "implied_crp_skew",
+            "implied_crp_term",
+            "implied_crp_surface",
+        ],
+        "note": note,
     }
 
 
@@ -139,8 +206,10 @@ def series(
     tenor_days: int = 30,
     mny: float = 1.0,
     variant: str = "clean",
+    basket: str | None = None,
 ) -> dict[str, Any]:
-    df = load_panel()
+    b = _norm_basket(basket)
+    df = load_panel(b)
     variant = (variant or "clean").lower()
     sub = df[
         (df["tenor_days"].astype(int) == int(tenor_days))
@@ -148,7 +217,7 @@ def series(
         & (df["variant"].astype(str).str.lower() == variant)
     ].sort_values("trade_date")
     if sub.empty:
-        raise KeyError(f"no implied/CRP rows for tenor={tenor_days} mny={mny} variant={variant}")
+        raise KeyError(f"no implied/CRP rows for basket={b} tenor={tenor_days} mny={mny} variant={variant}")
 
     series_rows: list[dict[str, Any]] = []
     for _, r in sub.iterrows():
@@ -165,18 +234,16 @@ def series(
     crp_vals = np.array([p["crp"] for p in series_rows if p["crp"] is not None], dtype=float)
     imp_vals = np.array([p["rho_imp"] for p in series_rows if p["rho_imp"] is not None], dtype=float)
     real_vals = np.array([p["rho_real"] for p in series_rows if p["rho_real"] is not None], dtype=float)
-
-    label = (
-        f"NDX CRP clean ATM@{tenor_days}D"
-        if variant == "clean" and abs(mny - 1.0) < 1e-9
-        else f"NDX CRP {variant} mny={mny:g} @{tenor_days}D"
-    )
-
     last = series_rows[-1] if series_rows else {}
+    label = (
+        f"{b} CRP clean ATM@{tenor_days}D"
+        if variant == "clean" and abs(mny - 1.0) < 1e-9
+        else f"{b} CRP {variant} mny={mny:g} @{tenor_days}D"
+    )
     return {
         "mode": "implied_crp",
         "label": label,
-        "basket": "NDX",
+        "basket": b,
         "tenor_days": int(tenor_days),
         "mny": float(mny),
         "variant": variant,
@@ -190,7 +257,7 @@ def series(
         "realized_last": last.get("rho_real"),
         "implied_last": last.get("rho_imp"),
         "crp_last": last.get("crp"),
-        "note": "Top50 | NDXP | forward realized aligned to tenor",
+        "note": _manifest_note(b),
     }
 
 
@@ -199,12 +266,10 @@ def levels(
     metrics: str | None = None,
     tenors: str | None = None,
     mnys: str | None = None,
+    basket: str | None = None,
 ) -> dict[str, Any]:
-    """Bulk levels nested like vol-spreads: levels[metric][tenor][mny] -> [{d,v}].
-
-    rho_real is duplicated across mny (same forward realized per tenor).
-    """
-    df = load_panel()
+    b = _norm_basket(basket)
+    df = load_panel(b)
     variant = (variant or "clean").lower()
     metric_list = _parse_metrics(metrics)
     tenor_list = _parse_list_ints(tenors, sorted(int(x) for x in df["tenor_days"].unique()))
@@ -230,7 +295,7 @@ def levels(
                 out[metric][str(t)][f"{m:g}"] = pts
 
     return {
-        "basket": "NDX",
+        "basket": b,
         "variant": variant,
         "metrics": metric_list,
         "tenors": tenor_list,
@@ -249,7 +314,6 @@ def _resolve_asof(df: pd.DataFrame, trade_date: str | None) -> str:
     td = pd.Timestamp(trade_date).strftime("%Y-%m-%d")
     if td in dates:
         return td
-    # nearest earlier
     earlier = [d for d in dates if d <= td]
     if earlier:
         return earlier[-1]
@@ -260,9 +324,10 @@ def skew_slice(
     trade_date: str | None = None,
     tenor_days: int = 30,
     variant: str = "clean",
+    basket: str | None = None,
 ) -> dict[str, Any]:
-    """Fixed-date moneyness skew: ρ_imp / CRP vs mny (ρ_real flat across mny)."""
-    df = load_panel()
+    b = _norm_basket(basket)
+    df = load_panel(b)
     variant = (variant or "clean").lower()
     asof = _resolve_asof(df, trade_date)
     sub = df[
@@ -271,7 +336,7 @@ def skew_slice(
         & (df["variant"].astype(str).str.lower() == variant)
     ].sort_values("mny")
     if sub.empty:
-        raise KeyError(f"no skew slice for {asof} tenor={tenor_days} variant={variant}")
+        raise KeyError(f"no skew slice for {b} {asof} tenor={tenor_days} variant={variant}")
 
     points = []
     for _, r in sub.iterrows():
@@ -285,12 +350,12 @@ def skew_slice(
         )
     return {
         "mode": "skew",
-        "basket": "NDX",
+        "basket": b,
         "trade_date": asof,
         "tenor_days": int(tenor_days),
         "variant": variant,
         "points": points,
-        "label": f"NDX ρ skew @{asof} {tenor_days}D ({variant})",
+        "label": f"{b} ρ skew @{asof} {tenor_days}D ({variant})",
     }
 
 
@@ -298,9 +363,10 @@ def term_structure(
     trade_date: str | None = None,
     mny: float = 1.0,
     variant: str = "clean",
+    basket: str | None = None,
 ) -> dict[str, Any]:
-    """Fixed-date term structure: ρ_imp / ρ_real / CRP vs tenor."""
-    df = load_panel()
+    b = _norm_basket(basket)
+    df = load_panel(b)
     variant = (variant or "clean").lower()
     asof = _resolve_asof(df, trade_date)
     sub = df[
@@ -309,7 +375,7 @@ def term_structure(
         & (df["variant"].astype(str).str.lower() == variant)
     ].sort_values("tenor_days")
     if sub.empty:
-        raise KeyError(f"no term structure for {asof} mny={mny} variant={variant}")
+        raise KeyError(f"no term structure for {b} {asof} mny={mny} variant={variant}")
 
     points = []
     for _, r in sub.iterrows():
@@ -323,12 +389,66 @@ def term_structure(
         )
     return {
         "mode": "term",
-        "basket": "NDX",
+        "basket": b,
         "trade_date": asof,
         "mny": float(mny),
         "variant": variant,
         "points": points,
-        "label": f"NDX ρ term @{asof} mny={mny:g} ({variant})",
+        "label": f"{b} ρ term @{asof} mny={mny:g} ({variant})",
+    }
+
+
+def surface_slice(
+    trade_date: str | None = None,
+    variant: str = "clean",
+    metric: str = "rho_imp",
+    basket: str | None = None,
+) -> dict[str, Any]:
+    """Fixed-date tenor × moneyness matrix for Plotly surface / heatmap."""
+    b = _norm_basket(basket)
+    df = load_panel(b)
+    variant = (variant or "clean").lower()
+    metric = (metric or "rho_imp").lower()
+    if metric not in METRIC_COLS:
+        raise KeyError(f"metric must be one of {list(METRIC_COLS)}")
+    asof = _resolve_asof(df, trade_date)
+    sub = df[(df["trade_date"] == asof) & (df["variant"].astype(str).str.lower() == variant)]
+    if sub.empty:
+        raise KeyError(f"no surface for {b} {asof} variant={variant}")
+
+    tenors = sorted(int(x) for x in sub["tenor_days"].dropna().unique())
+    mnys = sorted(float(x) for x in sub["mny"].dropna().unique())
+    col = METRIC_COLS[metric]
+    z: list[list[float | None]] = []
+    z_real: list[list[float | None]] = []
+    for t in tenors:
+        row_z: list[float | None] = []
+        row_r: list[float | None] = []
+        for m in mnys:
+            hit = sub[(sub["tenor_days"].astype(int) == t) & np.isclose(sub["mny"].astype(float), m)]
+            if hit.empty or pd.isna(hit.iloc[0].get(col)):
+                row_z.append(None)
+            else:
+                row_z.append(float(hit.iloc[0][col]))
+            if hit.empty or pd.isna(hit.iloc[0].get("rho_real")):
+                row_r.append(None)
+            else:
+                row_r.append(float(hit.iloc[0]["rho_real"]))
+        z.append(row_z)
+        z_real.append(row_r)
+
+    return {
+        "mode": "surface",
+        "basket": b,
+        "trade_date": asof,
+        "variant": variant,
+        "metric": metric,
+        "tenors": tenors,
+        "mnys": mnys,
+        "z": z,
+        "rho_real": z_real,
+        "label": f"{b} {metric} surface @{asof} ({variant})",
+        "note": _manifest_note(b),
     }
 
 

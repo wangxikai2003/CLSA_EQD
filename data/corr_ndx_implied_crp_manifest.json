@@ -1,8 +1,11 @@
 {
-  "built_at": "2026-11-25T05:46:28.283699+00:00",
-  "source": "ndx_implied_corr_surface + ndx_realized_corr forward",
-  "rows": 354,
-  "dates": 21,
+  "built_at": "2026-11-26T03:55:03.669882+00:00",
+  "method": "linear_interpolate_rho_imp_onto_weekly_plus_recent_daily",
+  "implied_source": "/Users/wangxikai/Desktop/CITICS CLSA/\u8bfe\u9898\uff1acorrelation/data/ndx_implied_corr_surface.parquet",
+  "realized_source": "/Users/wangxikai/Desktop/CITICS CLSA/\u8bfe\u9898\uff1acorrelation/data/ndx_realized_corr.parquet",
+  "recent_days": 120,
+  "rows": 1836,
+  "dates": 102,
   "date_min": "2024-09-06",
   "date_max": "2026-05-01",
   "tenors": [
@@ -15,5 +18,12 @@
     1.0,
     1.05
   ],
-  "note": "Top50 NDXP; history sparse until denser CMDS refresh merges"
+  "variants": [
+    "clean",
+    "dirty"
+  ],
+  "basket": "NDX",
+  "top_n": 50,
+  "root_pref": "NDXP",
+  "note": "Implied densified by calendar interpolation between CMDS surface dates; rho_real from forward realized."
 }

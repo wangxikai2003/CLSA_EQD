@@ -28,8 +28,11 @@ curl_ok() {
 
 echo "==> smoke $BASE"
 curl_ok "/api/v1/correlation/universe"
-curl_ok "/api/v1/correlation/implied-crp/meta"
-curl_ok "/api/v1/correlation/implied-crp/series?tenor_days=30&mny=1&variant=clean"
+curl_ok "/api/v1/correlation/implied-crp/meta?basket=NDX"
+curl_ok "/api/v1/correlation/implied-crp/series?tenor_days=30&mny=1&variant=clean&basket=NDX"
+curl_ok "/api/v1/correlation/implied-crp/surface?variant=clean&metric=rho_imp&basket=NDX"
+curl_ok "/api/v1/correlation/implied-crp/meta?basket=SPX"
+curl_ok "/api/v1/correlation/implied-crp/surface?variant=clean&metric=crp&basket=SPX"
 curl_ok "/api/v1/market/yield-curve?market=CN&history=1W"
 curl_ok "/api/v1/exotic/presets"
 curl_ok "/api/v1/qis/strategies"

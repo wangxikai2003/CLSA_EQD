@@ -160,12 +160,15 @@ export function fetchCorrSpreads(
   return getJsonWithRetry<CorrSpreadsResponse>(`/api/v1/correlation/spreads?${q}`, _asRetryOpts(opts));
 }
 
-/* ---------- NDX Implied / CRP ---------- */
+/* ---------- Implied / CRP (NDX / SPX / HSI) ---------- */
+
+export type ImpliedCrpBasket = 'NDX' | 'SPX' | 'HSI';
 
 export interface ImpliedCrpMeta {
   basket: string;
-  top_n: number;
-  root_pref: string;
+  baskets?: Array<{ basket: string; available: boolean; n_dates: number; path?: string | null }>;
+  top_n?: number | null;
+  root_pref?: string | null;
   tenors: number[];
   mnys: number[];
   variants: string[];
@@ -217,6 +220,20 @@ export interface ImpliedCrpTermResponse {
   }>;
 }
 
+export interface ImpliedCrpSurfaceResponse {
+  mode: string;
+  basket: string;
+  trade_date: string;
+  variant: string;
+  metric: string;
+  tenors: number[];
+  mnys: number[];
+  z: Array<Array<number | null>>;
+  rho_real?: Array<Array<number | null>>;
+  label: string;
+  note?: string;
+}
+
 export interface ImpliedCrpSeriesResponse {
   mode: string;
   label: string;
@@ -243,18 +260,28 @@ export interface ImpliedCrpSeriesResponse {
   note?: string;
 }
 
-export function fetchImpliedCrpMeta(opts?: AbortSignal | FetchRetryOpts) {
-  return getJsonWithRetry<ImpliedCrpMeta>(`/api/v1/correlation/implied-crp/meta`, _asRetryOpts(opts));
+export function fetchImpliedCrpMeta(
+  params?: { basket?: ImpliedCrpBasket },
+  opts?: AbortSignal | FetchRetryOpts
+) {
+  const q = new URLSearchParams({ basket: params?.basket ?? 'NDX' });
+  return getJsonWithRetry<ImpliedCrpMeta>(`/api/v1/correlation/implied-crp/meta?${q}`, _asRetryOpts(opts));
 }
 
 export function fetchImpliedCrpSeries(
-  params: { tenor_days?: number; mny?: number; variant?: 'clean' | 'dirty' },
+  params: {
+    tenor_days?: number;
+    mny?: number;
+    variant?: 'clean' | 'dirty';
+    basket?: ImpliedCrpBasket;
+  },
   opts?: AbortSignal | FetchRetryOpts
 ) {
   const q = new URLSearchParams({
     tenor_days: String(params.tenor_days ?? 30),
     mny: String(params.mny ?? 1),
     variant: params.variant ?? 'clean',
+    basket: params.basket ?? 'NDX',
   });
   return getJsonWithRetry<ImpliedCrpSeriesResponse>(
     `/api/v1/correlation/implied-crp/series?${q}`,
@@ -268,11 +295,13 @@ export function fetchImpliedCrpLevels(
     metrics?: ImpliedCrpMetric[];
     tenors?: number[];
     mnys?: number[];
+    basket?: ImpliedCrpBasket;
   },
   opts?: AbortSignal | FetchRetryOpts
 ) {
   const q = new URLSearchParams({
     variant: params.variant ?? 'clean',
+    basket: params.basket ?? 'NDX',
   });
   if (params.metrics?.length) q.set('metrics', params.metrics.join(','));
   if (params.tenors?.length) q.set('tenors', params.tenors.join(','));
@@ -284,12 +313,18 @@ export function fetchImpliedCrpLevels(
 }
 
 export function fetchImpliedCrpSkew(
-  params: { trade_date?: string; tenor_days?: number; variant?: 'clean' | 'dirty' },
+  params: {
+    trade_date?: string;
+    tenor_days?: number;
+    variant?: 'clean' | 'dirty';
+    basket?: ImpliedCrpBasket;
+  },
   opts?: AbortSignal | FetchRetryOpts
 ) {
   const q = new URLSearchParams({
     tenor_days: String(params.tenor_days ?? 30),
     variant: params.variant ?? 'clean',
+    basket: params.basket ?? 'NDX',
   });
   if (params.trade_date) q.set('trade_date', params.trade_date);
   return getJsonWithRetry<ImpliedCrpSkewResponse>(
@@ -299,16 +334,43 @@ export function fetchImpliedCrpSkew(
 }
 
 export function fetchImpliedCrpTerm(
-  params: { trade_date?: string; mny?: number; variant?: 'clean' | 'dirty' },
+  params: {
+    trade_date?: string;
+    mny?: number;
+    variant?: 'clean' | 'dirty';
+    basket?: ImpliedCrpBasket;
+  },
   opts?: AbortSignal | FetchRetryOpts
 ) {
   const q = new URLSearchParams({
     mny: String(params.mny ?? 1),
     variant: params.variant ?? 'clean',
+    basket: params.basket ?? 'NDX',
   });
   if (params.trade_date) q.set('trade_date', params.trade_date);
   return getJsonWithRetry<ImpliedCrpTermResponse>(
     `/api/v1/correlation/implied-crp/term-structure?${q}`,
+    _asRetryOpts(opts)
+  );
+}
+
+export function fetchImpliedCrpSurface(
+  params: {
+    trade_date?: string;
+    variant?: 'clean' | 'dirty';
+    metric?: ImpliedCrpMetric;
+    basket?: ImpliedCrpBasket;
+  },
+  opts?: AbortSignal | FetchRetryOpts
+) {
+  const q = new URLSearchParams({
+    variant: params.variant ?? 'clean',
+    metric: params.metric ?? 'rho_imp',
+    basket: params.basket ?? 'NDX',
+  });
+  if (params.trade_date) q.set('trade_date', params.trade_date);
+  return getJsonWithRetry<ImpliedCrpSurfaceResponse>(
+    `/api/v1/correlation/implied-crp/surface?${q}`,
     _asRetryOpts(opts)
   );
 }
