@@ -363,7 +363,8 @@ def vol_rv_cache_sig(
     th = int(round(float(long_delta_threshold) * 100))
     hm = str(hedger_mode or "eod_close").strip().lower().replace(" ", "")
     # Universe also encoded in tenor_pair PK; keep here for tilt fingerprint clarity.
-    return f"u{u}|tilt_{t}|d{d}|th{th}|{hm}|L{lam:.2f}_{lo:.2f}_{hi:.2f}|led1"
+    # fr1: dated futures leave the hedge the session before expiry, same n_roll as options.
+    return f"u{u}|tilt_{t}|d{d}|th{th}|{hm}|L{lam:.2f}_{lo:.2f}_{hi:.2f}|led1|fr1"
 
 
 def _frame_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
@@ -498,6 +499,144 @@ def _ranked_fut_day(day_fut: pd.DataFrame, root: str) -> pd.DataFrame:
     g.loc[~cont & g["_ym_ok"], "_rank"] = 100 + g.loc[~cont & g["_ym_ok"], "_ym_sort"].astype(int)
     g.loc[~cont & ~g["_ym_ok"], "_rank"] = 10_000
     return g.sort_values(["_rank", "wind_code"]).drop(columns=["_cont", "_ym_ok", "_ym_sort", "_rank"])
+
+
+def _third_friday(ym: str) -> str:
+    y = 2000 + int(str(ym)[:2])
+    m = int(str(ym)[2:])
+    days = pd.date_range(f"{y}-{m:02d}-01", periods=31, freq="D")
+    days = days[days.month == m]
+    fridays = days[days.weekday == 4]
+    picked = fridays[2] if len(fridays) >= 3 else days[-1]
+    return picked.strftime("%Y-%m-%d")
+
+
+def _calendar_fut_expiry(root: str, ym: str, trading_dates: Sequence[str]) -> Optional[str]:
+    """Exchange last-trading session for a contract still listed at the sample end.
+
+    Finished contracts use their last quoted session instead (see
+    ``futures_expiry_by_code``), which already includes holiday postponements.
+    """
+    if not _is_valid_ym(ym):
+        return None
+    root_u = str(root or "").upper()
+    dates = sorted({str(d)[:10] for d in trading_dates})
+    y = 2000 + int(ym[:2])
+    m = int(ym[2:])
+    anchor: Optional[str]
+    if root_u in {"IF", "IH", "IM", "ES"}:
+        # CFFEX / E-mini: third Friday, postponed to the next trading session.
+        anchor = _third_friday(ym)
+    elif root_u == "AU":
+        # SHFE gold: the 15th of the contract month, postponed if not a session.
+        anchor = f"{y:04d}-{m:02d}-15"
+    elif root_u == "SC":
+        # INE crude: last trading session of the month before delivery.
+        if m == 1:
+            py, pm = y - 1, 12
+        else:
+            py, pm = y, m - 1
+        prefix = f"{py:04d}-{pm:02d}"
+        days = [d for d in dates if d[:7] == prefix]
+        if not days:
+            return None
+        import calendar as _calendar
+
+        last_cal = f"{py:04d}-{pm:02d}-{_calendar.monthrange(py, pm)[1]:02d}"
+        month_done = any(d[:7] > prefix for d in dates) or days[-1] >= last_cal
+        return days[-1] if month_done else None
+    else:
+        return None
+    if anchor in dates:
+        return anchor
+    later = [d for d in dates if d >= anchor]
+    if later:
+        return later[0]
+    return anchor
+
+
+def futures_expiry_by_code(fut: pd.DataFrame, root: str) -> Dict[str, str]:
+    """Map a dated future to the session that is its expiry.
+
+    A contract whose last print is before the dataset end expired then: that
+    print is the expiry session, including holiday postponements. A contract
+    still quoted on the dataset end uses the exchange calendar.
+    Continuous codes (ESc1 / GCv1) have no expiry.
+    """
+    if fut is None or fut.empty:
+        return {}
+    work = fut.copy()
+    work["trade_date"] = work["trade_date"].astype(str).str[:10]
+    data_end = str(work["trade_date"].max())[:10]
+    trading_dates = sorted(set(work["trade_date"]))
+    out: Dict[str, str] = {}
+    for code, g in work.groupby("wind_code", sort=False):
+        code_s = str(code)
+        if _is_continuous_code(code_s, root):
+            continue
+        yms = [str(v) for v in g["contract_ym"].tolist() if _is_valid_ym(v)]
+        if not yms:
+            continue
+        last = str(g["trade_date"].max())[:10]
+        if last < data_end:
+            out[code_s] = last
+            continue
+        cal = _calendar_fut_expiry(root, yms[0], trading_dates)
+        if cal and cal >= last:
+            out[code_s] = cal
+    return out
+
+
+def futures_in_roll_window(
+    today: str,
+    expiry: str,
+    trading_dates: Sequence[str],
+    n_roll: int,
+) -> bool:
+    """True when the future should already be out of the hedge, matching options.
+
+    Options exit on the session where the number of later trading sessions
+    through expiry is <= n_roll (default 1: the previous trading session).
+    The expiry session itself is inside the window. A contract whose expiry
+    is still beyond the known calendar is kept, except when today is the last
+    known session and that expiry falls within the next n_roll business days.
+    """
+    today_s = str(today)[:10]
+    expiry_s = str(expiry)[:10]
+    n = max(1, int(n_roll))
+    if today_s >= expiry_s:
+        return True
+    cal = [str(d)[:10] for d in trading_dates]
+    if expiry_s not in set(cal):
+        if not cal or today_s != cal[-1]:
+            return False
+        limit = (pd.Timestamp(today_s) + pd.offsets.BDay(n)).strftime("%Y-%m-%d")
+        return expiry_s <= limit
+    later = [d for d in cal if today_s < d <= expiry_s]
+    return len(later) <= n
+
+
+def ranked_hedge_futures(
+    day_fut: pd.DataFrame,
+    root: str,
+    today: str,
+    trading_dates: Sequence[str],
+    expiry_by_code: Dict[str, str],
+    n_roll: int,
+) -> pd.DataFrame:
+    """Hedge chain with contracts inside the pre-expiry roll window removed."""
+    ranked = _ranked_fut_day(day_fut, root)
+    if ranked is None or ranked.empty:
+        return ranked
+    keep: List[Any] = []
+    for idx, row in ranked.iterrows():
+        exp = expiry_by_code.get(str(row["wind_code"]))
+        if exp and futures_in_roll_window(today, exp, trading_dates, n_roll):
+            continue
+        keep.append(idx)
+    if not keep:
+        return ranked.iloc[0:0]
+    return ranked.loc[keep]
 
 
 def pick_otm_strike_by_delta(
@@ -658,6 +797,7 @@ class Csi300VolRvEngine:
         self.m_fut = float(self.cfg["m_fut"])
         self._holdings_rows: List[Dict[str, Any]] = []
         self._ledger_days: List[Dict[str, Any]] = []
+        self._fut_expiry: Dict[str, str] = {}
 
     def _load(self) -> Tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
         if self.cfg["db"] == "commodity":
@@ -665,6 +805,8 @@ class Csi300VolRvEngine:
         else:
             db = _equity_db()
         conn = sqlite3.connect(str(db))
+        # Mark to close. option_iv.mid_price is Wind S_DQ_CLOSE (not bid/ask, not settle).
+        # futures_eod.close is S_DQ_CLOSE. The settle column is never read.
         opt = pd.read_sql(
             """
             SELECT trade_date, wind_code, expiry, ttm, strike, cp,
@@ -717,18 +859,6 @@ class Csi300VolRvEngine:
 
     def _fut_map(self, fut: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         return {td: g.copy() for td, g in fut.groupby("trade_date")}
-
-    def _pick_if(self, day_fut: pd.DataFrame, prefer_ym: Optional[str] = None) -> Tuple[str, float, str]:
-        if day_fut is None or day_fut.empty:
-            return "", float("nan"), ""
-        if prefer_ym and _is_valid_ym(prefer_ym):
-            hit = day_fut[day_fut["contract_ym"].astype(str) == str(prefer_ym)]
-            if not hit.empty:
-                r = hit.iloc[0]
-                return str(r["wind_code"]), float(r["close"]), str(r["contract_ym"])
-        g = _ranked_fut_day(day_fut, str(self.fut_root))
-        r = g.iloc[0]
-        return str(r["wind_code"]), float(r["close"]), str(r["contract_ym"])
 
     def _build_strangle(
         self,
@@ -1454,6 +1584,9 @@ class Csi300VolRvEngine:
                     for p in v.legs:
                         expired = str(p.expiry)[:10] <= d and math.isfinite(S)
                         if expired:
+                            # Production rolls the session before expiry, so this is
+                            # only a leftover. Value it from the spot close, not the
+                            # option settlement print.
                             mid_now = option_intrinsic(S, float(p.strike), p.cp)
                             iv_now = float(p.iv)
                             g = {"delta": 0.0, "gamma": 0.0, "vega": 0.0, "theta": 0.0}
@@ -1594,13 +1727,28 @@ class Csi300VolRvEngine:
             else:
                 dec = hedger.compute_eod_hedge(ctx)
 
-            # Map IF codes: front (c1 / nearest dated) for short; next dated for long.
-            code_s, px_s, _ = self._pick_if(day_fut)
-            code_l, px_l = code_s, px_s
-            ranked = _ranked_fut_day(day_fut, str(self.fut_root))
-            if ranked is not None and len(ranked) >= 2:
-                r1 = ranked.iloc[1]
-                code_l, px_l = str(r1["wind_code"]), float(r1["close"])
+            # Short hedge: nearest contract still outside the roll window.
+            # Long hedge: the next one. Dated futures roll at the same close as
+            # options — the session before expiry (n_roll), marked at close.
+            ranked = ranked_hedge_futures(
+                day_fut,
+                str(self.fut_root),
+                d,
+                dates,
+                self._fut_expiry,
+                self.n_roll,
+            )
+            if ranked is None or ranked.empty:
+                code_s, px_s = "", float("nan")
+                code_l, px_l = "", float("nan")
+            else:
+                r0 = ranked.iloc[0]
+                code_s, px_s = str(r0["wind_code"]), float(r0["close"])
+                if len(ranked) >= 2:
+                    r1 = ranked.iloc[1]
+                    code_l, px_l = str(r1["wind_code"]), float(r1["close"])
+                else:
+                    code_l, px_l = code_s, px_s
             t_s = float(dec.target_futures_positions.get("IF_short", 0.0))
             t_l = float(dec.target_futures_positions.get("IF_long", 0.0))
             d_s = t_s - book.fut_short
@@ -1714,6 +1862,7 @@ class Csi300VolRvEngine:
         self._holdings_rows = []
         self._ledger_days = []
         opt, spot, fut = self._load()
+        self._fut_expiry = futures_expiry_by_code(fut, self.fut_root)
         opt_by_day = {td: g.copy() for td, g in opt.groupby("trade_date")}
         fut_by_day = self._fut_map(fut)
         dates = sorted(set(opt_by_day) & set(spot.index) & set(fut_by_day))
@@ -1904,8 +2053,11 @@ class Csi300VolRvEngine:
                 "fee_pct": round(self.option_fee_pct * 100.0, 6),
                 "cost_rate": self.option_fee_pct + self.option_slippage_pct,
                 "rebalance": "daily vintage + EOD delta hedge",
-                "signal_lag": "t close open / hold to short expiry−N_roll",
-                "price": f"option mid_price←close; {self.fut_root} close",
+                "signal_lag": "t close; options and dated futures roll the session before expiry (n_roll)",
+                "price": (
+                    f"mark to close: option close (mid_price=S_DQ_CLOSE) / {self.fut_root} close; "
+                    "settle unused"
+                ),
                 "universe": self.universe,
                 "product": self.product,
                 "fut_root": self.fut_root,

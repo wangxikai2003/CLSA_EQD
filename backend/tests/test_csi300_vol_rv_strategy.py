@@ -1,6 +1,7 @@
 """CSI 300 Vol RV: contract rules, leverage, attribution, optional e2e."""
 from __future__ import annotations
 
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -28,8 +29,11 @@ from engine.csi300_vol_rv_strategy import (
     Vintage,
     causal_premium_ref,
     dynamic_leverage,
+    futures_expiry_by_code,
+    futures_in_roll_window,
     normalize_tilt,
     normalize_universe,
+    ranked_hedge_futures,
     select_short_expiry,
     trading_days_to_expiry,
     vol_rv_cache_sig,
@@ -87,7 +91,7 @@ def test_dynamic_leverage_iv_and_clip():
 def test_cache_sig_stable():
     a = vol_rv_cache_sig("balanced", 0.15, 0.05, "eod_close", universe="300")
     b = vol_rv_cache_sig("balanced", 0.15, 0.05, "eod_close", universe="300")
-    assert a == b and "tilt_balanced|" in a and a.startswith("u300|")
+    assert a == b and "tilt_balanced|" in a and a.startswith("u300|") and a.endswith("|fr1")
     assert vol_rv_cache_sig("balanced", 0.15, 0.05, "eod_close", universe="AU").startswith("uAU|")
 
 
@@ -253,3 +257,96 @@ def test_holdings_snapshot_option_and_futures():
     assert opt["contract_ym"] == "2506"
     futs = df[df["instrument"] == "future"]
     assert set(futs["leg"]) == {"hedge_short", "hedge_long"}
+
+
+def test_futures_roll_window_matches_option_session_before_expiry():
+    # Wed, Thu, Fri. Expiry is Friday. n_roll=1 drops the contract on Thursday.
+    dates = ["2026-10-14", "2026-10-15", "2026-10-16"]
+    assert futures_in_roll_window("2026-10-14", "2026-10-16", dates, 1) is False
+    assert futures_in_roll_window("2026-10-15", "2026-10-16", dates, 1) is True
+    assert futures_in_roll_window("2026-10-16", "2026-10-16", dates, 1) is True
+    # Sample ends well before a later expiry: do not treat the last day as a roll.
+    short = ["2026-10-23", "2026-10-26"]
+    assert futures_in_roll_window("2026-10-26", "2026-11-20", short, 1) is False
+    # Sample ends the business day before expiry, and that expiry is not in the calendar yet.
+    assert futures_in_roll_window("2026-11-19", "2026-11-20", ["2026-11-18", "2026-11-19"], 1) is True
+
+
+def test_finished_future_expiry_is_last_print_not_nominal_friday():
+    # IF2402's third Friday was 2024-02-16 (CNY). The last print is 2024-02-19.
+    rows = []
+    for d, code, ym in (
+        ("2024-02-08", "IF2402.CFE", "2402"),
+        ("2024-02-19", "IF2402.CFE", "2402"),
+        ("2024-02-19", "IF2403.CFE", "2403"),
+        ("2024-02-20", "IF2403.CFE", "2403"),
+    ):
+        rows.append({"trade_date": d, "wind_code": code, "contract_ym": ym, "close": 3000.0})
+    fut = pd.DataFrame(rows)
+    expiry = futures_expiry_by_code(fut, "IF")
+    assert expiry["IF2402.CFE"] == "2024-02-19"
+    dates = ["2024-02-08", "2024-02-19", "2024-02-20"]
+    # Feb 8 is the previous trading session before the postponed expiry, so IF2402 is already out.
+    day = fut[fut["trade_date"] == "2024-02-08"]
+    ranked = ranked_hedge_futures(day, "IF", "2024-02-08", dates, expiry, 1)
+    assert list(ranked["wind_code"]) == []
+
+
+@needs_vol_db
+def test_if2610_rolls_off_at_prior_close_not_settle():
+    con = sqlite3.connect(str(_VOL_DB))
+    fut = pd.read_sql(
+        """
+        SELECT trade_date, wind_code, contract_ym, close
+          FROM futures_eod
+         WHERE product='IO' AND trade_date BETWEEN '2026-09-01' AND '2026-10-20'
+        """,
+        con,
+    )
+    px = con.execute(
+        "SELECT close, settle FROM futures_eod WHERE wind_code='IF2610.CFE' AND trade_date='2026-10-15'"
+    ).fetchone()
+    con.close()
+    fut["trade_date"] = fut["trade_date"].astype(str).str[:10]
+    expiry = futures_expiry_by_code(fut, "IF")
+    assert expiry["IF2610.CFE"] == "2026-10-16"
+    dates = sorted(fut["trade_date"].unique())
+    held = ranked_hedge_futures(
+        fut[fut["trade_date"] == "2026-10-14"], "IF", "2026-10-14", dates, expiry, 1
+    )
+    rolled = ranked_hedge_futures(
+        fut[fut["trade_date"] == "2026-10-15"], "IF", "2026-10-15", dates, expiry, 1
+    )
+    assert held.iloc[0]["wind_code"] == "IF2610.CFE"
+    assert "IF2610.CFE" not in set(rolled["wind_code"])
+    assert rolled.iloc[0]["wind_code"] == "IF2611.CFE"
+    assert abs(float(px[0]) - float(px[1])) > 1.0
+
+    eng = Csi300VolRvEngine(
+        universe="300",
+        tilt="balanced",
+        run_ablation=False,
+        start_date="2026-07-01",
+        end_date="2026-10-20",
+    )
+    out = eng.run()
+    assert "settle unused" in out["params"]["price"]
+    led = pd.DataFrame(out["position_pnl_ledger"])
+    hedges = led[led["leg_role"] == "HEDGE_FUT"]
+
+    def open_codes(day: str) -> set:
+        sub = hedges[(hedges["trade_date"] == day) & (hedges["curr_pos"].abs() > 1e-6)]
+        return set(sub["ticker"])
+
+    assert "IF2610.CFE" in open_codes("2026-10-14")
+    assert "IF2610.CFE" not in open_codes("2026-10-15")
+    assert "IF2610.CFE" not in open_codes("2026-10-16")
+    blot = pd.DataFrame(out["trade_blotter"])
+    roll = blot[
+        (blot["trade_date"] == "2026-10-15")
+        & (blot["ticker"] == "IF2610.CFE")
+        & (blot["action_type"] == "FUTURES_ROLL")
+    ]
+    assert not roll.empty
+    assert float(roll["trade_price"].iloc[0]) == pytest.approx(float(px[0]))
+    assert float(roll["trade_price"].iloc[0]) != pytest.approx(float(px[1]))
